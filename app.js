@@ -179,38 +179,51 @@ if (process.env.NODE_ENV === 'production') {
   app.use(morgan('dev')); // Concise logs for development
 }
 
-// CORS configuration - works for both localhost and production
+// FIXED CORS configuration - allows development frontend to connect
 app.use(cors({
   origin: function (origin, callback) {
     // Allow requests with no origin (mobile apps, curl, etc.)
     if (!origin) return callback(null, true);
     
+    // Always allow development origins for testing
+    const developmentOrigins = [
+      'http://localhost:3000',
+      'http://localhost:5173',
+      'http://localhost:3001',
+      'http://127.0.0.1:3000',
+      'http://127.0.0.1:5173',
+      'http://127.0.0.1:3001'
+    ];
+    
+    if (developmentOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
     if (process.env.NODE_ENV === 'production') {
-      // In production, only allow specific origins
-      const allowedOrigins = [
+      // In production, also allow production frontend URLs
+      const productionOrigins = [
         process.env.FRONTEND_URL,
-        'https://your-frontend-domain.com', // Replace with your actual domain
-        'https://your-frontend-domain.netlify.app', // If using Netlify
-        'https://your-frontend-domain.vercel.app', // If using Vercel
-      ].filter(Boolean); // Remove any undefined values
+        'https://your-frontend-domain.com',
+        'https://your-frontend-domain.netlify.app',
+        'https://your-frontend-domain.vercel.app',
+      ].filter(Boolean);
       
-      if (allowedOrigins.includes(origin)) {
+      if (productionOrigins.includes(origin)) {
         return callback(null, true);
-      } else {
-        return callback(new Error('Not allowed by CORS'));
       }
+      
+      // Log blocked origins for debugging
+      console.log(`CORS blocked origin: ${origin}`);
+      return callback(new Error('Not allowed by CORS'));
     } else {
-      // In development, allow all localhost origins
-      if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
-        return callback(null, true);
-      }
-      return callback(null, true); // Allow all in development
+      // In development, allow all origins
+      return callback(null, true);
     }
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  optionsSuccessStatus: 200 // For legacy browser support
+  optionsSuccessStatus: 200
 }));
 
 app.use(express.json({ limit: '10mb' }));
@@ -298,7 +311,6 @@ function authenticateToken(req, res, next) {
 
 // Routes
 
-// Enhanced health check endpoint
 // Enhanced health check endpoint
 app.get('/api/health', async (req, res) => {
   try {
@@ -752,6 +764,32 @@ app.delete('/api/auth/account', authenticateToken, async (req, res) => {
   }
 });
 
+// Add a root route for basic API info
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: 'HomeHero API is running',
+    version: '1.0.0',
+    endpoints: {
+      health: 'GET /api/health',
+      auth: {
+        login: 'POST /api/auth/login',
+        signup: 'POST /api/auth/signup',
+        profile: 'GET /api/auth/profile',
+        updateProfile: 'PUT /api/auth/profile',
+        logout: 'POST /api/auth/logout',
+        deleteAccount: 'DELETE /api/auth/account'
+      },
+      users: 'GET /api/users',
+      availability: {
+        get: 'GET /api/availability',
+        add: 'POST /api/availability'
+      },
+      stats: 'GET /api/stats/users'
+    }
+  });
+});
+
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.log('\n🔄 Shutting down gracefully...');
@@ -783,7 +821,8 @@ app.use((err, req, res, next) => {
   if (err.message === 'Not allowed by CORS') {
     return res.status(403).json({
       success: false,
-      message: 'CORS error: Origin not allowed'
+      message: 'CORS error: Origin not allowed',
+      origin: req.headers.origin
     });
   }
   
