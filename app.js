@@ -7,16 +7,31 @@ import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import morgan from 'morgan';
 import cookieParser from 'cookie-parser';
+import nodemailer from 'nodemailer';
+import crypto from 'crypto';
 
 // Load environment variables
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3001; // Render will use process.env.PORT, localhost uses 3001
+const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/homehero';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
-// Validate JWT_SECRET in production
+// Email configuration
+const EMAIL_CONFIG = {
+  service: 'gmail', // or 'smtp'
+  host: process.env.EMAIL_HOST || 'smtp.gmail.com',
+  port: process.env.EMAIL_PORT || 587,
+  secure: false, // true for 465, false for other ports
+  auth: {
+    user: process.env.EMAIL_USER, // Your email address
+    pass: process.env.EMAIL_PASSWORD, // Your email password or app password
+  },
+};
+
+// Validate required environment variables
 if (process.env.NODE_ENV === 'production') {
   if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
     console.error('❌ JWT_SECRET must be at least 32 characters long in production');
@@ -26,15 +41,22 @@ if (process.env.NODE_ENV === 'production') {
     console.error('❌ MONGODB_URI is required in production');
     process.exit(1);
   }
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
+    console.error('❌ EMAIL_USER and EMAIL_PASSWORD are required in production');
+    process.exit(1);
+  }
   console.log('🚀 Running in PRODUCTION mode');
 } else {
   console.log('🔧 Running in DEVELOPMENT mode');
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
+    console.warn('⚠️ Email credentials not configured. Email verification will be simulated.');
+  }
 }
 
 // Trust proxy for Render deployment
 app.set('trust proxy', 1);
 
-// MongoDB User Schema
+// MongoDB User Schema (updated with email verification)
 const userSchema = new mongoose.Schema({
   name: {
     type: String,
@@ -69,6 +91,26 @@ const userSchema = new mongoose.Schema({
   isActive: {
     type: Boolean,
     default: true
+  },
+  isEmailVerified: {
+    type: Boolean,
+    default: false
+  },
+  emailVerificationToken: {
+    type: String,
+    default: null
+  },
+  emailVerificationExpires: {
+    type: Date,
+    default: null
+  },
+  passwordResetToken: {
+    type: String,
+    default: null
+  },
+  passwordResetExpires: {
+    type: Date,
+    default: null
   },
   lastLogin: {
     type: Date,
@@ -126,16 +168,152 @@ const userSchema = new mongoose.Schema({
 userSchema.index({ userType: 1 });
 userSchema.index({ country: 1 });
 userSchema.index({ services: 1 });
+userSchema.index({ emailVerificationToken: 1 });
+userSchema.index({ passwordResetToken: 1 });
 
 // Create User model
 const User = mongoose.model('User', userSchema);
 
+// Email transporter setup
+let emailTransporter = null;
+
+const initializeEmailTransporter = () => {
+  if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
+    try {
+      // Fix the typo: createTransporter -> createTransport
+      emailTransporter = nodemailer.createTransport(EMAIL_CONFIG);
+      
+      // Verify connection configuration
+      emailTransporter.verify(function (error, success) {
+        if (error) {
+          console.error('❌ Email transporter verification failed:', error);
+        } else {
+          console.log('✅ Email transporter is ready to send messages');
+        }
+      });
+      
+      console.log('📧 Email transporter initialized successfully');
+    } catch (error) {
+      console.error('❌ Failed to initialize email transporter:', error);
+    }
+  } else {
+    console.warn('⚠️ Email credentials not configured. Email verification will be simulated.');
+  }
+};
+
+// Initialize email transporter
+initializeEmailTransporter();
+
+// Email templates
+const getVerificationEmailTemplate = (name, verificationUrl) => {
+  return {
+    subject: 'Verify Your HomeHero Account',
+    html: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Verify Your Email - HomeHero</title>
+      </head>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, #3B82F6 0%, #10B981 100%); border-radius: 10px; margin-bottom: 30px;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">Welcome to HomeHero!</h1>
+        </div>
+        
+        <div style="background: #f8f9fa; padding: 30px; border-radius: 10px; border: 1px solid #e9ecef;">
+          <h2 style="color: #2c3e50; margin-top: 0;">Hi ${name},</h2>
+          
+          <p style="font-size: 16px; margin-bottom: 25px;">
+            Thank you for joining HomeHero! We're excited to have you as part of our community of homeowners and service providers.
+          </p>
+          
+          <p style="font-size: 16px; margin-bottom: 30px;">
+            To complete your registration and start using all features, please verify your email address by clicking the button below:
+          </p>
+          
+          <div style="text-align: center; margin: 35px 0;">
+            <a href="${verificationUrl}" 
+               style="display: inline-block; background: linear-gradient(135deg, #3B82F6 0%, #10B981 100%); color: white; text-decoration: none; padding: 15px 40px; border-radius: 8px; font-weight: bold; font-size: 16px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+              Verify My Email
+            </a>
+          </div>
+          
+          <p style="font-size: 14px; color: #6c757d; margin-top: 30px; padding-top: 20px; border-top: 1px solid #dee2e6;">
+            If the button doesn't work, you can copy and paste this link into your browser:<br>
+            <span style="word-break: break-all; color: #3B82F6;">${verificationUrl}</span>
+          </p>
+          
+          <p style="font-size: 14px; color: #6c757d; margin-bottom: 0;">
+            This verification link will expire in 24 hours. If you didn't create this account, please ignore this email.
+          </p>
+        </div>
+        
+        <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e9ecef;">
+          <p style="color: #6c757d; font-size: 14px; margin: 0;">
+            Questions? Contact us at <a href="mailto:support@homehero.com" style="color: #3B82F6;">support@homehero.com</a>
+          </p>
+        </div>
+      </body>
+      </html>
+    `,
+    text: `
+      Hi ${name},
+      
+      Welcome to HomeHero! Thank you for joining our community.
+      
+      To complete your registration, please verify your email address by visiting this link:
+      ${verificationUrl}
+      
+      This link will expire in 24 hours.
+      
+      If you didn't create this account, please ignore this email.
+      
+      Questions? Contact us at support@homehero.com
+      
+      Best regards,
+      The HomeHero Team
+    `
+  };
+};
+
+// Send verification email function
+const sendVerificationEmail = async (user, verificationToken) => {
+  if (!emailTransporter) {
+    // Simulate email sending in development
+    console.log('📧 Simulated verification email sent to:', user.email);
+    console.log('🔗 Verification URL:', `${FRONTEND_URL}/verify-email?token=${verificationToken}`);
+    return { success: true, simulated: true };
+  }
+
+  try {
+    const verificationUrl = `${FRONTEND_URL}/verify-email?token=${verificationToken}`;
+    const emailTemplate = getVerificationEmailTemplate(user.name, verificationUrl);
+
+    const mailOptions = {
+      from: {
+        name: 'HomeHero Team',
+        address: process.env.EMAIL_USER
+      },
+      to: user.email,
+      subject: emailTemplate.subject,
+      html: emailTemplate.html,
+      text: emailTemplate.text
+    };
+
+    const result = await emailTransporter.sendMail(mailOptions);
+    console.log('📧 Verification email sent successfully to:', user.email);
+    return { success: true, messageId: result.messageId };
+  } catch (error) {
+    console.error('❌ Failed to send verification email:', error);
+    throw error;
+  }
+};
+
 // Connect to MongoDB with better error handling
 const connectDB = async () => {
   try {
-    const conn = await mongoose.connect(MONGODB_URI, {
-      // Modern Mongoose handles connection options automatically
-    });
+    const conn = await mongoose.connect(MONGODB_URI);
     console.log('✅ MongoDB connected successfully');
     console.log(`📊 Database: ${conn.connection.name}`);
     console.log(`🌐 MongoDB Host: ${conn.connection.host}`);
@@ -151,6 +329,7 @@ const connectDB = async () => {
           password: hashedPassword,
           userType: 'provider',
           country: 'USA',
+          isEmailVerified: true, // Pre-verify test user
           services: ['House Cleaning', 'Garden Maintenance'],
           hourlyRate: 25,
           experience: '3 years'
@@ -161,7 +340,6 @@ const connectDB = async () => {
     }
   } catch (error) {
     console.error('❌ MongoDB connection error:', error);
-    // In production, let the service restart; in development, exit
     if (process.env.NODE_ENV !== 'production') {
       process.exit(1);
     }
@@ -172,20 +350,17 @@ const connectDB = async () => {
 connectDB();
 
 // Middleware
-// Logging - different for production vs development
 if (process.env.NODE_ENV === 'production') {
-  app.use(morgan('combined')); // Detailed logs for production
+  app.use(morgan('combined'));
 } else {
-  app.use(morgan('dev')); // Concise logs for development
+  app.use(morgan('dev'));
 }
 
-// FIXED CORS configuration - allows development frontend to connect
+// CORS configuration
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, curl, etc.)
     if (!origin) return callback(null, true);
     
-    // Always allow development origins for testing
     const developmentOrigins = [
       'http://localhost:3000',
       'http://localhost:5173',
@@ -200,7 +375,6 @@ app.use(cors({
     }
     
     if (process.env.NODE_ENV === 'production') {
-      // In production, also allow production frontend URLs
       const productionOrigins = [
         process.env.FRONTEND_URL,
         'https://your-frontend-domain.com',
@@ -212,11 +386,9 @@ app.use(cors({
         return callback(null, true);
       }
       
-      // Log blocked origins for debugging
       console.log(`CORS blocked origin: ${origin}`);
       return callback(new Error('Not allowed by CORS'));
     } else {
-      // In development, allow all origins
       return callback(null, true);
     }
   },
@@ -236,14 +408,20 @@ const generateToken = (user) => {
     { 
       id: user._id, 
       email: user.email, 
-      userType: user.userType 
+      userType: user.userType,
+      isEmailVerified: user.isEmailVerified
     },
     JWT_SECRET,
     { expiresIn: '24h' }
   );
 };
 
-// Validation middleware
+// Generate verification token
+const generateVerificationToken = () => {
+  return crypto.randomBytes(32).toString('hex');
+};
+
+// Validation middleware - SINGLE DECLARATION
 const loginValidation = [
   body('email')
     .isEmail()
@@ -311,11 +489,12 @@ function authenticateToken(req, res, next) {
 
 // Routes
 
-// Enhanced health check endpoint
+// Health check endpoint
 app.get('/api/health', async (req, res) => {
   try {
     const dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
     const userCount = await User.countDocuments();
+    const verifiedUserCount = await User.countDocuments({ isEmailVerified: true });
     const providerCount = await User.countDocuments({ userType: { $in: ['provider', 'both'] } });
     const customerCount = await User.countDocuments({ userType: { $in: ['customer', 'both'] } });
     
@@ -323,22 +502,26 @@ app.get('/api/health', async (req, res) => {
       status: 'OK', 
       message: 'HomeHero API is running',
       environment: process.env.NODE_ENV || 'development',
-      version: process.env.npm_package_version || '1.0.0',
+      version: '2.0.0',
       uptime: Math.floor(process.uptime()),
       database: {
         status: dbStatus,
         name: mongoose.connection.name,
         host: mongoose.connection.host || 'localhost'
       },
+      email: {
+        configured: !!emailTransporter,
+        service: EMAIL_CONFIG.service
+      },
       statistics: {
         totalUsers: userCount,
+        verifiedUsers: verifiedUserCount,
         providers: providerCount,
         customers: customerCount
       },
       timestamp: new Date().toISOString()
     };
 
-    // Set appropriate status code
     if (dbStatus !== 'Connected') {
       return res.status(503).json({
         ...healthData,
@@ -359,6 +542,443 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
+// Updated signup endpoint with email verification
+app.post('/api/auth/signup', signupValidation, async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { name, email, password, userType, country } = req.body;
+
+    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: 'An account with this email already exists.'
+      });
+    }
+
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+    const verificationToken = generateVerificationToken();
+
+    const newUser = new User({
+      name: name.trim(),
+      email: email.toLowerCase(),
+      password: hashedPassword,
+      userType,
+      country,
+      emailVerificationToken: verificationToken,
+      emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 hours
+    });
+
+    const savedUser = await newUser.save();
+
+    // Send verification email
+    try {
+      await sendVerificationEmail(savedUser, verificationToken);
+    } catch (emailError) {
+      console.error('Email sending failed:', emailError);
+      // Don't fail registration if email fails
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Account created successfully! Please check your email to verify your account.',
+      data: {
+        user: {
+          id: savedUser._id,
+          name: savedUser.name,
+          email: savedUser.email,
+          userType: savedUser.userType,
+          country: savedUser.country,
+          isEmailVerified: savedUser.isEmailVerified,
+          createdAt: savedUser.createdAt
+        },
+        requiresVerification: true,
+        redirectTo: '/verify-email'
+      }
+    });
+
+  } catch (error) {
+    console.error('Signup error:', error);
+    
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: 'An account with this email already exists.'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error. Please try again later.'
+    });
+  }
+});
+
+// Email verification endpoint
+app.post('/api/auth/verify-email', async (req, res) => {
+  try {
+    const { token } = req.body;
+
+    if (!token) {
+      return res.status(400).json({
+        success: false,
+        message: 'Verification token is required'
+      });
+    }
+
+    const user = await User.findOne({
+      emailVerificationToken: token,
+      emailVerificationExpires: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired verification token'
+      });
+    }
+
+    // Update user verification status
+    user.isEmailVerified = true;
+    user.emailVerificationToken = null;
+    user.emailVerificationExpires = null;
+    await user.save();
+
+    // Generate JWT token for immediate login
+    const authToken = generateToken(user);
+
+    res.json({
+      success: true,
+      message: 'Email verified successfully!',
+      data: {
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          userType: user.userType,
+          country: user.country,
+          isEmailVerified: user.isEmailVerified
+        },
+        token: authToken,
+        redirectTo: user.userType === 'provider' || user.userType === 'both' 
+          ? '/provider/dashboard' 
+          : '/customer'
+      }
+    });
+
+  } catch (error) {
+    console.error('Email verification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error. Please try again later.'
+    });
+  }
+});
+
+// Resend verification email endpoint
+app.post('/api/auth/resend-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email address is required'
+      });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (user.isEmailVerified) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is already verified'
+      });
+    }
+
+    // Generate new verification token
+    const verificationToken = generateVerificationToken();
+    user.emailVerificationToken = verificationToken;
+    user.emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    await user.save();
+
+    // Send verification email
+    try {
+      await sendVerificationEmail(user, verificationToken);
+      
+      res.json({
+        success: true,
+        message: 'Verification email sent successfully! Please check your inbox.'
+      });
+    } catch (emailError) {
+      console.error('Email sending failed:', emailError);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to send verification email. Please try again later.'
+      });
+    }
+
+  } catch (error) {
+    console.error('Resend verification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error. Please try again later.'
+    });
+  }
+});
+
+// Updated login endpoint with user type restrictions
+app.post('/api/auth/login', loginValidation, async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { email, password, userType } = req.body;
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password. Please try again.'
+      });
+    }
+
+    if (!user.isActive) {
+      return res.status(401).json({
+        success: false,
+        message: 'Account is deactivated. Please contact support.'
+      });
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password. Please try again.'
+      });
+    }
+
+    // Check if email is verified
+    if (!user.isEmailVerified) {
+      return res.status(403).json({
+        success: false,
+        message: 'Please verify your email address before logging in.',
+        requiresVerification: true,
+        email: user.email
+      });
+    }
+
+    // User type validation logic
+    if (userType) {
+      const requestedUserType = userType.toLowerCase();
+      const userAccountType = user.userType.toLowerCase();
+
+      // If user signed up as 'customer' only, they cannot login as 'provider'
+      if (userAccountType === 'customer' && requestedUserType === 'provider') {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. Your account is registered as a customer only. Please login as a customer or upgrade your account to access provider features.',
+          allowedUserType: 'customer',
+          requestedUserType: requestedUserType
+        });
+      }
+
+      // If user signed up as 'provider' only, they cannot login as 'customer'
+      if (userAccountType === 'provider' && requestedUserType === 'customer') {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied. Your account is registered as a service provider only. Please login as a provider or contact support to modify your account type.',
+          allowedUserType: 'provider',
+          requestedUserType: requestedUserType
+        });
+      }
+
+      // If user signed up as 'both', they can login as either 'customer' or 'provider'
+      if (userAccountType === 'both') {
+        if (requestedUserType !== 'customer' && requestedUserType !== 'provider') {
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid login type. Please specify either "customer" or "provider".',
+            allowedUserTypes: ['customer', 'provider']
+          });
+        }
+      }
+
+      // Validate that requested user type matches allowed types
+      const validUserTypes = ['customer', 'provider'];
+      if (!validUserTypes.includes(requestedUserType)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid user type specified.',
+          allowedUserTypes: validUserTypes
+        });
+      }
+    }
+
+    user.lastLogin = new Date();
+    await user.save();
+
+    // Generate token with the requested user type (for 'both' users) or the user's registered type
+    const tokenUserType = userType && user.userType === 'both' 
+      ? userType.toLowerCase()
+      : user.userType;
+
+    const token = jwt.sign(
+      { 
+        id: user._id, 
+        email: user.email, 
+        userType: tokenUserType,
+        actualUserType: user.userType, // Keep track of the actual account type
+        isEmailVerified: user.isEmailVerified
+      },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    // Determine redirect path based on login type
+    let redirectTo = '/dashboard';
+    if (userType) {
+      redirectTo = userType.toLowerCase() === 'provider' 
+        ? '/provider/dashboard' 
+        : '/customer/dashboard';
+    } else {
+      // Default redirect based on user's account type
+      redirectTo = user.userType === 'provider' || user.userType === 'both' 
+        ? '/provider/dashboard' 
+        : '/customer/dashboard';
+    }
+
+    res.json({
+      success: true,
+      message: 'Login successful',
+      data: {
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          userType: tokenUserType, // The role they're logging in as
+          actualUserType: user.userType, // Their actual account type
+          country: user.country,
+          profilePicture: user.profilePicture,
+          isEmailVerified: user.isEmailVerified,
+          lastLogin: user.lastLogin,
+          services: user.services,
+          hourlyRate: user.hourlyRate
+        },
+        token,
+        redirectTo,
+        canSwitchRoles: user.userType === 'both' // Indicate if user can switch between roles
+      }
+    });
+
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error. Please try again later.'
+    });
+  }
+});
+
+// New endpoint to switch roles (for users with 'both' account type)
+app.post('/api/auth/switch-role', authenticateToken, async (req, res) => {
+  try {
+    const { newRole } = req.body;
+
+    if (!newRole || !['customer', 'provider'].includes(newRole.toLowerCase())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid role. Must be either "customer" or "provider".'
+      });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Only users with 'both' account type can switch roles
+    if (user.userType !== 'both') {
+      return res.status(403).json({
+        success: false,
+        message: 'Role switching is only available for accounts registered as both customer and provider.',
+        currentAccountType: user.userType
+      });
+    }
+
+    // Generate new token with the new role
+    const token = jwt.sign(
+      { 
+        id: user._id, 
+        email: user.email, 
+        userType: newRole.toLowerCase(),
+        actualUserType: user.userType,
+        isEmailVerified: user.isEmailVerified
+      },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    const redirectTo = newRole.toLowerCase() === 'provider' 
+      ? '/provider/dashboard' 
+      : '/customer/dashboard';
+
+    res.json({
+      success: true,
+      message: `Successfully switched to ${newRole.toLowerCase()} role`,
+      data: {
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          userType: newRole.toLowerCase(),
+          actualUserType: user.userType,
+          country: user.country,
+          profilePicture: user.profilePicture,
+          isEmailVerified: user.isEmailVerified,
+          services: user.services,
+          hourlyRate: user.hourlyRate
+        },
+        token,
+        redirectTo,
+        canSwitchRoles: true
+      }
+    });
+
+  } catch (error) {
+    console.error('Role switch error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error. Please try again later.'
+    });
+  }
+});
+
 // Get all users endpoint
 app.get('/api/users', authenticateToken, async (req, res) => {
   try {
@@ -369,7 +989,6 @@ app.get('/api/users', authenticateToken, async (req, res) => {
     const country = req.query.country;
     const search = req.query.search;
 
-    // Build filter object
     let filter = {};
     if (userType && userType !== 'all') {
       filter.userType = userType;
@@ -410,147 +1029,6 @@ app.get('/api/users', authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch users'
-    });
-  }
-});
-
-// Login endpoint
-app.post('/api/auth/login', loginValidation, async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Validation failed',
-        errors: errors.array()
-      });
-    }
-
-    const { email, password, userType } = req.body;
-
-    const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid email or password. Please try again.'
-      });
-    }
-
-    if (!user.isActive) {
-      return res.status(401).json({
-        success: false,
-        message: 'Account is deactivated. Please contact support.'
-      });
-    }
-
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid email or password. Please try again.'
-      });
-    }
-
-    user.lastLogin = new Date();
-    await user.save();
-
-    const token = generateToken(user);
-
-    res.json({
-      success: true,
-      message: 'Login successful',
-      data: {
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          userType: user.userType,
-          country: user.country,
-          profilePicture: user.profilePicture,
-          lastLogin: user.lastLogin,
-          services: user.services,
-          hourlyRate: user.hourlyRate
-        },
-        token,
-        redirectTo: user.userType === 'provider' || user.userType === 'both' ? '/dashboard' : '/customer'
-      }
-    });
-
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Internal server error. Please try again later.'
-    });
-  }
-});
-
-// Signup endpoint
-app.post('/api/auth/signup', signupValidation, async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Validation failed',
-        errors: errors.array()
-      });
-    }
-
-    const { name, email, password, userType, country } = req.body;
-
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
-    if (existingUser) {
-      return res.status(409).json({
-        success: false,
-        message: 'An account with this email already exists.'
-      });
-    }
-
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
-
-    const newUser = new User({
-      name: name.trim(),
-      email: email.toLowerCase(),
-      password: hashedPassword,
-      userType,
-      country
-    });
-
-    const savedUser = await newUser.save();
-    const token = generateToken(savedUser);
-
-    res.status(201).json({
-      success: true,
-      message: 'Account created successfully',
-      data: {
-        user: {
-          id: savedUser._id,
-          name: savedUser.name,
-          email: savedUser.email,
-          userType: savedUser.userType,
-          country: savedUser.country,
-          createdAt: savedUser.createdAt
-        },
-        token,
-        redirectTo: userType === 'provider' || userType === 'both' ? '/dashboard' : '/customer'
-      }
-    });
-
-  } catch (error) {
-    console.error('Signup error:', error);
-    
-    if (error.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        message: 'An account with this email already exists.'
-      });
-    }
-    
-    res.status(500).json({
-      success: false,
-      message: 'Internal server error. Please try again later.'
     });
   }
 });
@@ -686,6 +1164,7 @@ app.get('/api/availability', authenticateToken, async (req, res) => {
 app.get('/api/stats/users', authenticateToken, async (req, res) => {
   try {
     const totalUsers = await User.countDocuments();
+    const verifiedUsers = await User.countDocuments({ isEmailVerified: true });
     const customerCount = await User.countDocuments({ userType: 'customer' });
     const providerCount = await User.countDocuments({ userType: 'provider' });
     const bothCount = await User.countDocuments({ userType: 'both' });
@@ -700,7 +1179,6 @@ app.get('/api/stats/users', authenticateToken, async (req, res) => {
       createdAt: { $gte: thirtyDaysAgo }
     });
 
-    // Service distribution for providers
     const serviceStats = await User.aggregate([
       { $match: { userType: { $in: ['provider', 'both'] } } },
       { $unwind: { path: '$services', preserveNullAndEmptyArrays: true } },
@@ -713,6 +1191,7 @@ app.get('/api/stats/users', authenticateToken, async (req, res) => {
       success: true,
       data: {
         totalUsers,
+        verifiedUsers,
         userTypes: {
           customer: customerCount,
           provider: providerCount,
@@ -764,19 +1243,150 @@ app.delete('/api/auth/account', authenticateToken, async (req, res) => {
   }
 });
 
-// Add a root route for basic API info
+// Password reset request endpoint
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email address is required'
+      });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      // Don't reveal if user exists or not for security
+      return res.json({
+        success: true,
+        message: 'If an account with that email exists, a password reset link has been sent.'
+      });
+    }
+
+    // Generate reset token
+    const resetToken = generateVerificationToken();
+    user.passwordResetToken = resetToken;
+    user.passwordResetExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+    await user.save();
+
+    // Send reset email (implement similar to verification email)
+    if (emailTransporter) {
+      const resetUrl = `${FRONTEND_URL}/reset-password?token=${resetToken}`;
+      
+      const mailOptions = {
+        from: {
+          name: 'HomeHero Team',
+          address: process.env.EMAIL_USER
+        },
+        to: user.email,
+        subject: 'Reset Your HomeHero Password',
+        html: `
+          <div style="max-width: 600px; margin: 0 auto; padding: 20px; font-family: Arial, sans-serif;">
+            <h2>Password Reset Request</h2>
+            <p>Hi ${user.name},</p>
+            <p>You requested a password reset for your HomeHero account. Click the button below to reset your password:</p>
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${resetUrl}" style="background: #3B82F6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">Reset Password</a>
+            </div>
+            <p style="font-size: 14px; color: #666;">This link will expire in 1 hour. If you didn't request this reset, please ignore this email.</p>
+            <p style="font-size: 14px; color: #666;">If the button doesn't work, copy and paste this link: ${resetUrl}</p>
+          </div>
+        `
+      };
+
+      try {
+        await emailTransporter.sendMail(mailOptions);
+      } catch (emailError) {
+        console.error('Failed to send reset email:', emailError);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'If an account with that email exists, a password reset link has been sent.'
+    });
+
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error. Please try again later.'
+    });
+  }
+});
+
+// Password reset endpoint
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    if (!token || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Token and new password are required'
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 6 characters long'
+      });
+    }
+
+    const user = await User.findOne({
+      passwordResetToken: token,
+      passwordResetExpires: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired reset token'
+      });
+    }
+
+    // Hash new password and update user
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    user.password = hashedPassword;
+    user.passwordResetToken = null;
+    user.passwordResetExpires = null;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Password reset successfully! You can now login with your new password.'
+    });
+
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error. Please try again later.'
+    });
+  }
+});
+
+// Root route for basic API info
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: 'HomeHero API is running',
-    version: '1.0.0',
+    message: 'HomeHero API with Email Verification',
+    version: '2.0.0',
+    features: ['Email Verification', 'Password Reset', 'User Management', 'Role Switching'],
     endpoints: {
       health: 'GET /api/health',
       auth: {
-        login: 'POST /api/auth/login',
         signup: 'POST /api/auth/signup',
+        login: 'POST /api/auth/login',
+        verifyEmail: 'POST /api/auth/verify-email',
+        resendVerification: 'POST /api/auth/resend-verification',
         profile: 'GET /api/auth/profile',
         updateProfile: 'PUT /api/auth/profile',
+        switchRole: 'POST /api/auth/switch-role',
+        forgotPassword: 'POST /api/auth/forgot-password',
+        resetPassword: 'POST /api/auth/reset-password',
         logout: 'POST /api/auth/logout',
         deleteAccount: 'DELETE /api/auth/account'
       },
@@ -792,23 +1402,31 @@ app.get('/', (req, res) => {
 
 // Graceful shutdown
 process.on('SIGINT', async () => {
-  console.log('\n🔄 Shutting down gracefully...');
+  console.log('\nShutting down gracefully...');
   try {
     await mongoose.connection.close();
-    console.log('📊 MongoDB connection closed');
+    console.log('MongoDB connection closed');
+    if (emailTransporter) {
+      emailTransporter.close();
+      console.log('Email transporter closed');
+    }
   } catch (error) {
-    console.error('Error closing MongoDB connection:', error);
+    console.error('Error during shutdown:', error);
   }
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
-  console.log('🔄 SIGTERM received, shutting down gracefully...');
+  console.log('SIGTERM received, shutting down gracefully...');
   try {
     await mongoose.connection.close();
-    console.log('📊 MongoDB connection closed');
+    console.log('MongoDB connection closed');
+    if (emailTransporter) {
+      emailTransporter.close();
+      console.log('Email transporter closed');
+    }
   } catch (error) {
-    console.error('Error closing MongoDB connection:', error);
+    console.error('Error during shutdown:', error);
   }
   process.exit(0);
 });
@@ -817,7 +1435,6 @@ process.on('SIGTERM', async () => {
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   
-  // CORS error
   if (err.message === 'Not allowed by CORS') {
     return res.status(403).json({
       success: false,
@@ -839,7 +1456,7 @@ app.use('*', (req, res) => {
     message: 'API endpoint not found',
     availableEndpoints: {
       health: 'GET /api/health',
-      auth: 'POST /api/auth/login, POST /api/auth/signup',
+      auth: 'POST /api/auth/signup, POST /api/auth/login, POST /api/auth/verify-email, POST /api/auth/switch-role',
       users: 'GET /api/users',
       profile: 'GET /api/auth/profile, PUT /api/auth/profile',
       availability: 'GET /api/availability, POST /api/availability',
@@ -850,17 +1467,15 @@ app.use('*', (req, res) => {
 
 // Start server
 const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 HomeHero API server running on http://localhost:${PORT}`);
-  console.log(`📚 Health check: http://localhost:${PORT}/api/health`);
-  console.log(`🔐 Auth endpoints available`);
-  console.log(`👥 Users management endpoints available`);
-  console.log(`📊 Statistics endpoints available`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`HomeHero API server running on http://localhost:${PORT}`);
+  console.log(`Health check: http://localhost:${PORT}/api/health`);
+  console.log(`Email verification enabled: ${!!emailTransporter}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 }).on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
-    console.error(`❌ Port ${PORT} is already in use.`);
-    console.log(`💡 Try: PORT=3002 npm run dev`);
-    console.log(`💡 Or kill process: lsof -ti:${PORT} | xargs kill -9`);
+    console.error(`Port ${PORT} is already in use.`);
+    console.log(`Try: PORT=3002 npm run dev`);
+    console.log(`Or kill process: lsof -ti:${PORT} | xargs kill -9`);
     process.exit(1);
   } else {
     console.error('Server error:', err);
@@ -871,7 +1486,6 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 process.on('unhandledRejection', (err, promise) => {
   console.error('Unhandled Promise Rejection:', err);
   if (process.env.NODE_ENV === 'production') {
-    // Close server & exit process
     server.close(() => {
       process.exit(1);
     });
