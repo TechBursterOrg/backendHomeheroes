@@ -1,89 +1,193 @@
 import mongoose from 'mongoose';
-import bcrypt from 'bcryptjs';
 
 const userSchema = new mongoose.Schema({
+  // Existing fields
   name: {
     type: String,
-    required: [true, 'Name is required'],
+    required: true,
     trim: true,
-    minlength: [2, 'Name must be at least 2 characters long'],
-    maxlength: [50, 'Name cannot be more than 50 characters long']
+    minLength: 2,
+    maxLength: 50
   },
   email: {
     type: String,
-    required: [true, 'Email is required'],
+    required: true,
     unique: true,
     lowercase: true,
-    trim: true,
-    match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please enter a valid email']
+    trim: true
   },
   password: {
     type: String,
-    required: [true, 'Password is required'],
-    minlength: [6, 'Password must be at least 6 characters long']
+    required: true,
+    minLength: 6
   },
   userType: {
     type: String,
-    required: [true, 'User type is required'],
-    enum: {
-      values: ['customer', 'provider', 'both'],
-      message: 'User type must be customer, provider, or both'
-    }
+    enum: ['customer', 'provider', 'both'],
+    required: true
   },
   country: {
     type: String,
-    required: [true, 'Country is required'],
-    enum: {
-      values: ['UK', 'USA', 'CANADA', 'NIGERIA'],
-      message: 'Please select a valid country'
-    }
+    enum: ['UK', 'USA', 'CANADA', 'NIGERIA'],
+    required: true
   },
   isActive: {
     type: Boolean,
     default: true
   },
+  isEmailVerified: {
+    type: Boolean,
+    default: false
+  },
+  emailVerificationToken: {
+    type: String,
+    default: null
+  },
+  emailVerificationExpires: {
+    type: Date,
+    default: null
+  },
+  passwordResetToken: {
+    type: String,
+    default: null
+  },
+  passwordResetExpires: {
+    type: Date,
+    default: null
+  },
   lastLogin: {
-    type: Date
-  }
-}, {
-  timestamps: true // This adds createdAt and updatedAt fields automatically
-});
-
-// Index for faster email lookups
-userSchema.index({ email: 1 });
-
-// Hash password before saving
-userSchema.pre('save', async function(next) {
-  // Only hash the password if it has been modified (or is new)
-  if (!this.isModified('password')) return next();
+    type: Date,
+    default: null
+  },
+  profilePicture: {
+    type: String,
+    default: null
+  },
+  phoneNumber: {
+    type: String,
+    default: null
+  },
+  services: [{
+    type: String,
+    enum: [
+      'House Cleaning',
+      'Plumbing Repair', 
+      'Garden Maintenance',
+      'Electrical Work',
+      'Painting',
+      'General Maintenance',
+      'Barber Services',
+      'Hair Styling',
+      'Veterinary Services',
+      'Tailoring',
+      'Shoe Repair',
+      'Engineering Services',
+      'Mechanical Services',
+      'Car Washing',
+      'Carpentry',
+      'Other'
+    ]
+  }],
+  hourlyRate: {
+    type: Number,
+    default: null
+  },
+  experience: {
+    type: String,
+    default: null
+  },
+  certifications: [{
+    type: String
+  }],
   
-  try {
-    // Hash password with cost of 10
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-    next();
-  } catch (error) {
-    next(error);
-  }
+  // Dashboard-related fields
+  availability: [{
+    id: String,
+    date: {
+      type: String,
+      required: true
+    },
+    startTime: {
+      type: String,
+      required: true
+    },
+    endTime: {
+      type: String,
+      required: true
+    },
+    serviceType: {
+      type: String,
+      required: true
+    },
+    notes: {
+      type: String,
+      default: ''
+    },
+    status: {
+      type: String,
+      enum: ['active', 'inactive', 'booked'],
+      default: 'active'
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now
+    },
+    updatedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+  
+  // Stats for dashboard
+  totalEarnings: {
+    type: Number,
+    default: 0
+  },
+  completedJobs: {
+    type: Number,
+    default: 0
+  },
+  averageRating: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 5
+  },
+  activeClients: {
+    type: Number,
+    default: 0
+  },
+  
+  // Temporary fields for demo data (remove when you have real job system)
+  recentJobs: [{
+    id: Number,
+    title: String,
+    client: String,
+    location: String,
+    date: String,
+    time: String,
+    payment: String,
+    status: String,
+    category: String
+  }],
+  
+  upcomingTasks: [{
+    id: Number,
+    title: String,
+    time: String,
+    duration: String,
+    client: String,
+    priority: String,
+    category: String
+  }]
+}, {
+  timestamps: true
 });
 
-// Instance method to check password
-userSchema.methods.comparePassword = async function(candidatePassword) {
-  return bcrypt.compare(candidatePassword, this.password);
-};
-
-// Static method to find user by email (case-insensitive)
-userSchema.statics.findByEmail = function(email) {
-  return this.findOne({ email: email.toLowerCase() });
-};
-
-// Transform JSON output (remove password and version)
-userSchema.methods.toJSON = function() {
-  const userObject = this.toObject();
-  delete userObject.password;
-  delete userObject.__v;
-  return userObject;
-};
+// Index for better query performance
+userSchema.index({ email: 1 });
+userSchema.index({ emailVerificationToken: 1 });
+userSchema.index({ passwordResetToken: 1 });
 
 const User = mongoose.model('User', userSchema);
 
