@@ -10,7 +10,7 @@ import cookieParser from 'cookie-parser';
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
 
-// Load environment variables
+
 dotenv.config();
 
 const app = express();
@@ -19,19 +19,19 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-i
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/homehero';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
-// Email configuration
+
 const EMAIL_CONFIG = {
-  service: 'gmail', // or 'smtp'
+  service: 'gmail', 
   host: process.env.EMAIL_HOST || 'smtp.gmail.com',
   port: process.env.EMAIL_PORT || 587,
-  secure: false, // true for 465, false for other ports
+  secure: false, 
   auth: {
-    user: process.env.EMAIL_USER, // Your email address
-    pass: process.env.EMAIL_PASSWORD, // Your email password or app password
+    user: process.env.EMAIL_USER, 
+    pass: process.env.EMAIL_PASSWORD, 
   },
 };
 
-// Validate required environment variables
+
 if (process.env.NODE_ENV === 'production') {
   if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
     console.error('❌ JWT_SECRET must be at least 32 characters long in production');
@@ -53,10 +53,10 @@ if (process.env.NODE_ENV === 'production') {
   }
 }
 
-// Trust proxy for Render deployment
+
 app.set('trust proxy', 1);
 
-// MongoDB User Schema (updated with email verification)
+
 const userSchema = new mongoose.Schema({
   name: {
     type: String,
@@ -130,7 +130,7 @@ const userSchema = new mongoose.Schema({
     state: String,
     zipCode: String
   },
-  // Provider-specific fields
+  
   services: [{
     type: String,
     enum: ['House Cleaning', 'Plumbing Repair', 'Garden Maintenance', 'Electrical Work', 'Painting', 'General Maintenance', 'Other']
@@ -164,26 +164,26 @@ const userSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Create indexes for better performance
+
 userSchema.index({ userType: 1 });
 userSchema.index({ country: 1 });
 userSchema.index({ services: 1 });
 userSchema.index({ emailVerificationToken: 1 });
 userSchema.index({ passwordResetToken: 1 });
 
-// Create User model
+
 const User = mongoose.model('User', userSchema);
 
-// Email transporter setup
+
 let emailTransporter = null;
 
 const initializeEmailTransporter = () => {
   if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
     try {
-      // Fix the typo: createTransporter -> createTransport
+      
       emailTransporter = nodemailer.createTransport(EMAIL_CONFIG);
       
-      // Verify connection configuration
+      
       emailTransporter.verify(function (error, success) {
         if (error) {
           console.error('❌ Email transporter verification failed:', error);
@@ -201,10 +201,10 @@ const initializeEmailTransporter = () => {
   }
 };
 
-// Initialize email transporter
+
 initializeEmailTransporter();
 
-// Email templates
+
 const getVerificationEmailTemplate = (name, verificationUrl) => {
   return {
     subject: 'Verify Your HomeHero Account',
@@ -277,10 +277,10 @@ const getVerificationEmailTemplate = (name, verificationUrl) => {
   };
 };
 
-// Send verification email function
+
 const sendVerificationEmail = async (user, verificationToken) => {
   if (!emailTransporter) {
-    // Simulate email sending in development
+    
     console.log('📧 Simulated verification email sent to:', user.email);
     console.log('🔗 Verification URL:', `${FRONTEND_URL}/verify-email?token=${verificationToken}`);
     return { success: true, simulated: true };
@@ -310,7 +310,7 @@ const sendVerificationEmail = async (user, verificationToken) => {
   }
 };
 
-// Connect to MongoDB with better error handling
+
 const connectDB = async () => {
   try {
     const conn = await mongoose.connect(MONGODB_URI);
@@ -318,7 +318,7 @@ const connectDB = async () => {
     console.log(`📊 Database: ${conn.connection.name}`);
     console.log(`🌐 MongoDB Host: ${conn.connection.host}`);
     
-    // Create a test user if none exists (only in development)
+    
     if (process.env.NODE_ENV !== 'production') {
       const userCount = await User.countDocuments();
       if (userCount === 0) {
@@ -329,7 +329,7 @@ const connectDB = async () => {
           password: hashedPassword,
           userType: 'provider',
           country: 'USA',
-          isEmailVerified: true, // Pre-verify test user
+          isEmailVerified: true, 
           services: ['House Cleaning', 'Garden Maintenance'],
           hourlyRate: 25,
           experience: '3 years'
@@ -346,10 +346,10 @@ const connectDB = async () => {
   }
 };
 
-// Initialize database connection
+
 connectDB();
 
-// Middleware
+
 if (process.env.NODE_ENV === 'production') {
   app.use(morgan('combined'));
 } else {
@@ -402,7 +402,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
-// Helper function to generate JWT token
+
 const generateToken = (user) => {
   return jwt.sign(
     { 
@@ -416,12 +416,12 @@ const generateToken = (user) => {
   );
 };
 
-// Generate verification token
+
 const generateVerificationToken = () => {
   return crypto.randomBytes(32).toString('hex');
 };
 
-// Validation middleware - SINGLE DECLARATION
+
 const loginValidation = [
   body('email')
     .isEmail()
@@ -463,7 +463,7 @@ const signupValidation = [
     .withMessage('Please select a valid country')
 ];
 
-// JWT Authentication middleware
+
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -487,9 +487,7 @@ function authenticateToken(req, res, next) {
   });
 }
 
-// Routes
 
-// Health check endpoint
 app.get('/api/health', async (req, res) => {
   try {
     const dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
@@ -542,7 +540,7 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-// Updated signup endpoint with email verification
+
 app.post('/api/auth/signup', signupValidation, async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -580,12 +578,12 @@ app.post('/api/auth/signup', signupValidation, async (req, res) => {
 
     const savedUser = await newUser.save();
 
-    // Send verification email
+    
     try {
       await sendVerificationEmail(savedUser, verificationToken);
     } catch (emailError) {
       console.error('Email sending failed:', emailError);
-      // Don't fail registration if email fails
+      
     }
 
     res.status(201).json({
@@ -647,13 +645,13 @@ app.post('/api/auth/verify-email', async (req, res) => {
       });
     }
 
-    // Update user verification status
+    
     user.isEmailVerified = true;
     user.emailVerificationToken = null;
     user.emailVerificationExpires = null;
     await user.save();
 
-    // Generate JWT token for immediate login
+    
     const authToken = generateToken(user);
 
     res.json({
@@ -684,7 +682,7 @@ app.post('/api/auth/verify-email', async (req, res) => {
   }
 });
 
-// Resend verification email endpoint
+
 app.post('/api/auth/resend-verification', async (req, res) => {
   try {
     const { email } = req.body;
@@ -712,13 +710,13 @@ app.post('/api/auth/resend-verification', async (req, res) => {
       });
     }
 
-    // Generate new verification token
+    
     const verificationToken = generateVerificationToken();
     user.emailVerificationToken = verificationToken;
     user.emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
     await user.save();
 
-    // Send verification email
+    
     try {
       await sendVerificationEmail(user, verificationToken);
       
@@ -743,7 +741,7 @@ app.post('/api/auth/resend-verification', async (req, res) => {
   }
 });
 
-// Updated login endpoint with user type restrictions
+
 app.post('/api/auth/login', loginValidation, async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -780,7 +778,7 @@ app.post('/api/auth/login', loginValidation, async (req, res) => {
       });
     }
 
-    // Check if email is verified
+    
     if (!user.isEmailVerified) {
       return res.status(403).json({
         success: false,
@@ -790,12 +788,12 @@ app.post('/api/auth/login', loginValidation, async (req, res) => {
       });
     }
 
-    // User type validation logic
+    
     if (userType) {
       const requestedUserType = userType.toLowerCase();
       const userAccountType = user.userType.toLowerCase();
 
-      // If user signed up as 'customer' only, they cannot login as 'provider'
+      
       if (userAccountType === 'customer' && requestedUserType === 'provider') {
         return res.status(403).json({
           success: false,
@@ -805,7 +803,7 @@ app.post('/api/auth/login', loginValidation, async (req, res) => {
         });
       }
 
-      // If user signed up as 'provider' only, they cannot login as 'customer'
+      
       if (userAccountType === 'provider' && requestedUserType === 'customer') {
         return res.status(403).json({
           success: false,
@@ -815,7 +813,6 @@ app.post('/api/auth/login', loginValidation, async (req, res) => {
         });
       }
 
-      // If user signed up as 'both', they can login as either 'customer' or 'provider'
       if (userAccountType === 'both') {
         if (requestedUserType !== 'customer' && requestedUserType !== 'provider') {
           return res.status(400).json({
@@ -826,7 +823,6 @@ app.post('/api/auth/login', loginValidation, async (req, res) => {
         }
       }
 
-      // Validate that requested user type matches allowed types
       const validUserTypes = ['customer', 'provider'];
       if (!validUserTypes.includes(requestedUserType)) {
         return res.status(400).json({
@@ -840,7 +836,6 @@ app.post('/api/auth/login', loginValidation, async (req, res) => {
     user.lastLogin = new Date();
     await user.save();
 
-    // Generate token with the requested user type (for 'both' users) or the user's registered type
     const tokenUserType = userType && user.userType === 'both' 
       ? userType.toLowerCase()
       : user.userType;
@@ -850,21 +845,19 @@ app.post('/api/auth/login', loginValidation, async (req, res) => {
         id: user._id, 
         email: user.email, 
         userType: tokenUserType,
-        actualUserType: user.userType, // Keep track of the actual account type
+        actualUserType: user.userType, 
         isEmailVerified: user.isEmailVerified
       },
       JWT_SECRET,
       { expiresIn: '24h' }
     );
 
-    // Determine redirect path based on login type
     let redirectTo = '/dashboard';
     if (userType) {
       redirectTo = userType.toLowerCase() === 'provider' 
         ? '/provider/dashboard' 
         : '/customer/dashboard';
     } else {
-      // Default redirect based on user's account type
       redirectTo = user.userType === 'provider' || user.userType === 'both' 
         ? '/provider/dashboard' 
         : '/customer/dashboard';
@@ -878,8 +871,8 @@ app.post('/api/auth/login', loginValidation, async (req, res) => {
           id: user._id,
           name: user.name,
           email: user.email,
-          userType: tokenUserType, // The role they're logging in as
-          actualUserType: user.userType, // Their actual account type
+          userType: tokenUserType, 
+          actualUserType: user.userType, 
           country: user.country,
           profilePicture: user.profilePicture,
           isEmailVerified: user.isEmailVerified,
@@ -889,7 +882,7 @@ app.post('/api/auth/login', loginValidation, async (req, res) => {
         },
         token,
         redirectTo,
-        canSwitchRoles: user.userType === 'both' // Indicate if user can switch between roles
+        canSwitchRoles: user.userType === 'both' 
       }
     });
 
@@ -902,7 +895,6 @@ app.post('/api/auth/login', loginValidation, async (req, res) => {
   }
 });
 
-// New endpoint to switch roles (for users with 'both' account type)
 app.post('/api/auth/switch-role', authenticateToken, async (req, res) => {
   try {
     const { newRole } = req.body;
@@ -922,7 +914,6 @@ app.post('/api/auth/switch-role', authenticateToken, async (req, res) => {
       });
     }
 
-    // Only users with 'both' account type can switch roles
     if (user.userType !== 'both') {
       return res.status(403).json({
         success: false,
@@ -931,7 +922,6 @@ app.post('/api/auth/switch-role', authenticateToken, async (req, res) => {
       });
     }
 
-    // Generate new token with the new role
     const token = jwt.sign(
       { 
         id: user._id, 
@@ -979,7 +969,6 @@ app.post('/api/auth/switch-role', authenticateToken, async (req, res) => {
   }
 });
 
-// Get all users endpoint
 app.get('/api/users', authenticateToken, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -1033,7 +1022,6 @@ app.get('/api/users', authenticateToken, async (req, res) => {
   }
 });
 
-// Get user profile endpoint
 app.get('/api/auth/profile', authenticateToken, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password');
@@ -1057,7 +1045,6 @@ app.get('/api/auth/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// Update user profile endpoint
 app.put('/api/auth/profile', authenticateToken, async (req, res) => {
   try {
     const { name, phoneNumber, address, services, hourlyRate, experience } = req.body;
@@ -1097,7 +1084,6 @@ app.put('/api/auth/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// Add availability slot endpoint
 app.post('/api/availability', authenticateToken, async (req, res) => {
   try {
     const { date, startTime, endTime, serviceType, notes } = req.body;
@@ -1136,7 +1122,6 @@ app.post('/api/availability', authenticateToken, async (req, res) => {
   }
 });
 
-// Get user's availability slots
 app.get('/api/availability', authenticateToken, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('availability');
@@ -1160,7 +1145,6 @@ app.get('/api/availability', authenticateToken, async (req, res) => {
   }
 });
 
-// Get user statistics endpoint
 app.get('/api/stats/users', authenticateToken, async (req, res) => {
   try {
     const totalUsers = await User.countDocuments();
@@ -1211,7 +1195,6 @@ app.get('/api/stats/users', authenticateToken, async (req, res) => {
   }
 });
 
-// Logout endpoint
 app.post('/api/auth/logout', authenticateToken, (req, res) => {
   res.json({
     success: true,
@@ -1219,7 +1202,6 @@ app.post('/api/auth/logout', authenticateToken, (req, res) => {
   });
 });
 
-// Delete user account
 app.delete('/api/auth/account', authenticateToken, async (req, res) => {
   try {
     const user = await User.findByIdAndDelete(req.user.id);
@@ -1243,7 +1225,6 @@ app.delete('/api/auth/account', authenticateToken, async (req, res) => {
   }
 });
 
-// Password reset request endpoint
 app.post('/api/auth/forgot-password', async (req, res) => {
   try {
     const { email } = req.body;
@@ -1257,20 +1238,20 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) {
-      // Don't reveal if user exists or not for security
+      
       return res.json({
         success: true,
         message: 'If an account with that email exists, a password reset link has been sent.'
       });
     }
 
-    // Generate reset token
+    
     const resetToken = generateVerificationToken();
     user.passwordResetToken = resetToken;
     user.passwordResetExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
     await user.save();
 
-    // Send reset email (implement similar to verification email)
+    
     if (emailTransporter) {
       const resetUrl = `${FRONTEND_URL}/reset-password?token=${resetToken}`;
       
@@ -1316,7 +1297,6 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   }
 });
 
-// Password reset endpoint
 app.post('/api/auth/reset-password', async (req, res) => {
   try {
     const { token, newPassword } = req.body;
@@ -1347,7 +1327,6 @@ app.post('/api/auth/reset-password', async (req, res) => {
       });
     }
 
-    // Hash new password and update user
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     user.password = hashedPassword;
     user.passwordResetToken = null;
@@ -1368,7 +1347,6 @@ app.post('/api/auth/reset-password', async (req, res) => {
   }
 });
 
-// Root route for basic API info
 app.get('/', (req, res) => {
   res.json({
     success: true,
@@ -1431,7 +1409,6 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
-// Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   
@@ -1482,7 +1459,6 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   }
 });
 
-// Handle unhandled promise rejections
 process.on('unhandledRejection', (err, promise) => {
   console.error('Unhandled Promise Rejection:', err);
   if (process.env.NODE_ENV === 'production') {
