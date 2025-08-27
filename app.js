@@ -115,15 +115,115 @@ if (process.env.NODE_ENV === 'production') {
   app.use(morgan('dev'));
 }
 
+// Add to your server.js in the API routes section
+app.get('/api/user/schedule', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Fetch appointments for this user (provider)
+    const appointments = await Job.find({ 
+      providerId: userId,
+      date: { $gte: new Date() } // Only future appointments
+    })
+    .sort({ date: 1, startTime: 1 })
+    .populate('clientId', 'name phoneNumber address');
+    
+    // Format the response
+    const formattedAppointments = appointments.map(appointment => ({
+      id: appointment._id,
+      title: appointment.serviceType,
+      client: appointment.clientId?.name || 'Unknown Client',
+      phone: appointment.clientId?.phoneNumber || 'No phone provided',
+      location: appointment.location || appointment.clientId?.address || 'Location not specified',
+      date: appointment.date.toISOString().split('T')[0],
+      time: appointment.startTime,
+      endTime: calculateEndTime(appointment.startTime, appointment.duration),
+      duration: appointment.duration,
+      payment: appointment.payment,
+      status: appointment.status,
+      notes: appointment.notes || '',
+      category: appointment.category || 'other',
+      priority: appointment.priority || 'medium'
+    }));
+    
+    res.json({
+      success: true,
+      data: formattedAppointments
+    });
+  } catch (error) {
+    console.error('Schedule API error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch schedule data',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+// Helper function to calculate end time
+function calculateEndTime(startTime, duration) {
+  if (!startTime || !duration) return '';
+  
+  try {
+    const [time, modifier] = startTime.split(' ');
+    let [hours, minutes] = time.split(':').map(Number);
+    
+    if (modifier === 'PM' && hours !== 12) hours += 12;
+    if (modifier === 'AM' && hours === 12) hours = 0;
+    
+    // Parse duration (e.g., "2 hours", "1.5 hours")
+    const durationMatch = duration.match(/(\d+(\.\d+)?)\s*hours?/i);
+    if (!durationMatch) return '';
+    
+    const durationHours = parseFloat(durationMatch[1]);
+    const totalMinutes = hours * 60 + minutes + durationHours * 60;
+    
+    let endHours = Math.floor(totalMinutes / 60) % 24;
+    const endMinutes = totalMinutes % 60;
+    
+    const endModifier = endHours >= 12 ? 'PM' : 'AM';
+    if (endHours > 12) endHours -= 12;
+    if (endHours === 0) endHours = 12;
+    
+    return `${endHours}:${endMinutes.toString().padStart(2, '0')} ${endModifier}`;
+  } catch (error) {
+    console.error('Error calculating end time:', error);
+    return '';
+  }
+}
+
 // CORS configuration - MUST come before routes
+const allowedOrigins = process.env.NODE_ENV === 'production' 
+  ? [
+      'https://homeheroes.help',
+      'https://www.homeheroes.help',
+      // Add other production domains as needed
+    ]
+  : [
+      'http://localhost:5173',
+      'http://localhost:3000',
+      'http://127.0.0.1:5173',
+      'http://localhost:4173' // Vite preview
+    ];
+
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? process.env.FRONTEND_URL 
-    : ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173'],
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
 }));
+
+// Handle preflight requests
+app.options('*', cors());
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));

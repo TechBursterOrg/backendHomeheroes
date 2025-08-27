@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 
+// models/Job.js - ensure these fields exist
 const jobSchema = new mongoose.Schema({
   serviceType: { type: String, required: true },
   clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -16,6 +17,7 @@ const jobSchema = new mongoose.Schema({
   },
   priority: { type: String, enum: ['low', 'medium', 'high'], default: 'medium' },
   category: { type: String, default: 'other' },
+  notes: { type: String, default: '' },
   createdAt: { type: Date, default: Date.now }
 });
 
