@@ -328,7 +328,7 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
         email: user.email,
         id: user._id,
         country: user.country,
-        profileImage: user.profileImage || '' // Include profile image in response
+        profileImage: user.profilePicture || '' // Use profilePicture field
       },
       availabilitySlots,
       recentJobs: recentJobs.map(job => ({
@@ -510,9 +510,14 @@ app.get('/api/auth/profile', authenticateToken, async (req, res) => {
       });
     }
 
+    const userWithProfileImage = {
+      ...user.toObject(),
+      profileImage: user.profilePicture || ''
+    };
+
     res.json({
       success: true,
-      data: { user }
+      data: { user: userWithProfileImage }
     });
   } catch (error) {
     console.error('Profile error:', error);
