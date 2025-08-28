@@ -7,6 +7,8 @@ import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fileUpload from 'express-fileupload';
+import fs from 'fs'; // Added missing import
 
 // Import models
 import User from './models/User.js';
@@ -65,7 +67,8 @@ const connectDB = async () => {
             isEmailVerified: true,
             services: ['House Cleaning', 'Garden Maintenance'],
             hourlyRate: 25,
-            experience: '3 years'
+            experience: '3 years',
+            profileImage: '' // Added profileImage field
           });
           await testUser.save();
           console.log('🧪 Test user created: alex@example.com / Password123');
@@ -83,114 +86,6 @@ const connectDB = async () => {
 };
 
 connectDB();
-
-// Authentication middleware
-function authenticateToken(req, res, next) {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    return res.status(401).json({
-      success: false,
-      message: 'Access token required'
-    });
-  }
-
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({
-        success: false,
-        message: 'Invalid or expired token'
-      });
-    }
-    req.user = user;
-    next();
-  });
-}
-
-// Middleware
-if (process.env.NODE_ENV === 'production') {
-  app.use(morgan('combined'));
-} else {
-  app.use(morgan('dev'));
-}
-
-// Add to your server.js in the API routes section
-app.get('/api/user/schedule', authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    
-    // Fetch appointments for this user (provider)
-    const appointments = await Job.find({ 
-      providerId: userId,
-      date: { $gte: new Date() } // Only future appointments
-    })
-    .sort({ date: 1, startTime: 1 })
-    .populate('clientId', 'name phoneNumber address');
-    
-    // Format the response
-    const formattedAppointments = appointments.map(appointment => ({
-      id: appointment._id,
-      title: appointment.serviceType,
-      client: appointment.clientId?.name || 'Unknown Client',
-      phone: appointment.clientId?.phoneNumber || 'No phone provided',
-      location: appointment.location || appointment.clientId?.address || 'Location not specified',
-      date: appointment.date.toISOString().split('T')[0],
-      time: appointment.startTime,
-      endTime: calculateEndTime(appointment.startTime, appointment.duration),
-      duration: appointment.duration,
-      payment: appointment.payment,
-      status: appointment.status,
-      notes: appointment.notes || '',
-      category: appointment.category || 'other',
-      priority: appointment.priority || 'medium'
-    }));
-    
-    res.json({
-      success: true,
-      data: formattedAppointments
-    });
-  } catch (error) {
-    console.error('Schedule API error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch schedule data',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
-    });
-  }
-});
-
-// Helper function to calculate end time
-function calculateEndTime(startTime, duration) {
-  if (!startTime || !duration) return '';
-  
-  try {
-    const [time, modifier] = startTime.split(' ');
-    let [hours, minutes] = time.split(':').map(Number);
-    
-    if (modifier === 'PM' && hours !== 12) hours += 12;
-    if (modifier === 'AM' && hours === 12) hours = 0;
-    
-    // Parse duration (e.g., "2 hours", "1.5 hours")
-    const durationMatch = duration.match(/(\d+(\.\d+)?)\s*hours?/i);
-    if (!durationMatch) return '';
-    
-    const durationHours = parseFloat(durationMatch[1]);
-    const totalMinutes = hours * 60 + minutes + durationHours * 60;
-    
-    let endHours = Math.floor(totalMinutes / 60) % 24;
-    const endMinutes = totalMinutes % 60;
-    
-    const endModifier = endHours >= 12 ? 'PM' : 'AM';
-    if (endHours > 12) endHours -= 12;
-    if (endHours === 0) endHours = 12;
-    
-    return `${endHours}:${endMinutes.toString().padStart(2, '0')} ${endModifier}`;
-  } catch (error) {
-    console.error('Error calculating end time:', error);
-    return '';
-  }
-}
 
 // CORS configuration - MUST come before routes
 const allowedOrigins = process.env.NODE_ENV === 'production' 
@@ -225,14 +120,99 @@ app.use(cors({
 // Handle preflight requests
 app.options('*', cors());
 
+// Middleware
+if (process.env.NODE_ENV === 'production') {
+  app.use(morgan('combined'));
+} else {
+  app.use(morgan('dev'));
+}
+
+app.use(fileUpload({
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  abortOnLimit: true,
+  createParentPath: true // This creates the directory if it doesn't exist
+}));
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
-// ==================== API ROUTES (MUST COME FIRST) ====================
+// Serve static files for uploaded images
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// Authentication middleware
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: 'Access token required'
+    });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({
+        success: false,
+        message: 'Invalid or expired token'
+      });
+    }
+    req.user = user;
+    next();
+  });
+}
+
+// ==================== API ROUTES ====================
 
 // Auth routes
 app.use('/api/auth', authRoutes);
+
+// Profile image upload endpoint - FIXED VERSION
+app.post('/api/auth/profile/image', authenticateToken, async (req, res) => {
+  try {
+    if (!req.files || !req.files.profileImage) {
+      return res.status(400).json({
+        success: false,
+        message: 'No image file provided'
+      });
+    }
+
+    const profileImage = req.files.profileImage;
+    
+    // Generate unique filename
+    const fileExtension = path.extname(profileImage.name);
+    const fileName = `profile-${req.user.id}-${Date.now()}${fileExtension}`;
+    const uploadDir = path.join(__dirname, 'uploads', 'profiles');
+    const uploadPath = path.join(uploadDir, fileName);
+
+    // Create uploads directory if it doesn't exist
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
+    // Move the file to the upload directory
+    await profileImage.mv(uploadPath);
+
+    // Update user profile with image path
+    const imageUrl = `/uploads/profiles/${fileName}`;
+    await User.findByIdAndUpdate(req.user.id, { profileImage: imageUrl });
+
+    res.json({
+      success: true,
+      message: 'Profile image uploaded successfully',
+      data: { imageUrl }
+    });
+  } catch (error) {
+    console.error('Profile image upload error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to upload profile image',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
 
 // Health check endpoint
 app.get('/api/health', async (req, res) => {
@@ -347,7 +327,8 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
         name: user.name,
         email: user.email,
         id: user._id,
-        country: user.country
+        country: user.country,
+        profileImage: user.profileImage || '' // Include profile image in response
       },
       availabilitySlots,
       recentJobs: recentJobs.map(job => ({
@@ -386,6 +367,83 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
     });
   }
 });
+
+// Add to your server.js in the API routes section
+app.get('/api/user/schedule', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Fetch appointments for this user (provider)
+    const appointments = await Job.find({ 
+      providerId: userId,
+      date: { $gte: new Date() } // Only future appointments
+    })
+    .sort({ date: 1, startTime: 1 })
+    .populate('clientId', 'name phoneNumber address');
+    
+    // Format the response
+    const formattedAppointments = appointments.map(appointment => ({
+      id: appointment._id,
+      title: appointment.serviceType,
+      client: appointment.clientId?.name || 'Unknown Client',
+      phone: appointment.clientId?.phoneNumber || 'No phone provided',
+      location: appointment.location || appointment.clientId?.address || 'Location not specified',
+      date: appointment.date.toISOString().split('T')[0],
+      time: appointment.startTime,
+      endTime: calculateEndTime(appointment.startTime, appointment.duration),
+      duration: appointment.duration,
+      payment: appointment.payment,
+      status: appointment.status,
+      notes: appointment.notes || '',
+      category: appointment.category || 'other',
+      priority: appointment.priority || 'medium'
+    }));
+    
+    res.json({
+      success: true,
+      data: formattedAppointments
+    });
+  } catch (error) {
+    console.error('Schedule API error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch schedule data',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+// Helper function to calculate end time
+function calculateEndTime(startTime, duration) {
+  if (!startTime || !duration) return '';
+  
+  try {
+    const [time, modifier] = startTime.split(' ');
+    let [hours, minutes] = time.split(':').map(Number);
+    
+    if (modifier === 'PM' && hours !== 12) hours += 12;
+    if (modifier === 'AM' && hours === 12) hours = 0;
+    
+    // Parse duration (e.g., "2 hours", "1.5 hours")
+    const durationMatch = duration.match(/(\d+(\.\d+)?)\s*hours?/i);
+    if (!durationMatch) return '';
+    
+    const durationHours = parseFloat(durationMatch[1]);
+    const totalMinutes = hours * 60 + minutes + durationHours * 60;
+    
+    let endHours = Math.floor(totalMinutes / 60) % 24;
+    const endMinutes = totalMinutes % 60;
+    
+    const endModifier = endHours >= 12 ? 'PM' : 'AM';
+    if (endHours > 12) endHours -= 12;
+    if (endHours === 0) endHours = 12;
+    
+    return `${endHours}:${endMinutes.toString().padStart(2, '0')} ${endModifier}`;
+  } catch (error) {
+    console.error('Error calculating end time:', error);
+    return '';
+  }
+}
 
 // Users endpoint
 app.get('/api/users', authenticateToken, async (req, res) => {
@@ -467,7 +525,7 @@ app.get('/api/auth/profile', authenticateToken, async (req, res) => {
 
 app.put('/api/auth/profile', authenticateToken, async (req, res) => {
   try {
-    const { name, phoneNumber, address, services, hourlyRate, experience } = req.body;
+    const { name, phoneNumber, address, services, hourlyRate, experience, profileImage } = req.body;
     
     const updateData = {};
     if (name) updateData.name = name.trim();
@@ -476,6 +534,7 @@ app.put('/api/auth/profile', authenticateToken, async (req, res) => {
     if (services) updateData.services = services;
     if (hourlyRate !== undefined) updateData.hourlyRate = hourlyRate;
     if (experience) updateData.experience = experience;
+    if (profileImage) updateData.profileImage = profileImage;
 
     const updatedUser = await User.findByIdAndUpdate(
       req.user.id,
@@ -658,7 +717,7 @@ app.get('/', (req, res) => {
         profile: 'GET /api/auth/profile',
         updateProfile: 'PUT /api/auth/profile',
         switchRole: 'POST /api/auth/switch-role',
-        forgotPassword: 'POST /api/auth/forgot-password',
+        forgotPassword: 'POST /api/auth/forgot-email',
         resetPassword: 'POST /api/auth/reset-password',
         logout: 'POST /api/auth/logout',
         deleteAccount: 'DELETE /api/auth/account'
