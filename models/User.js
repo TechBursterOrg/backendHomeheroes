@@ -92,6 +92,10 @@ const userSchema = new mongoose.Schema({
     type: Number,
     default: null
   },
+  profileImage: {
+    type: String,
+    default: ''
+  },
   experience: {
     type: String,
     default: null
