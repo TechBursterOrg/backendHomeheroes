@@ -3,10 +3,35 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { body, validationResult } from 'express-validator';
 import crypto from 'crypto';
-import User from '../models/User.js'; // You'll need to create this model file
-import { sendVerificationEmail, generateVerificationToken } from '../utils/emailService.js'; // Extract email functions
+import path from 'path';
+import User from '../models/User.js';
+import { sendVerificationEmail, generateVerificationToken } from '../utils/emailService.js';
 
 const router = express.Router();
+
+// Authentication middleware
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: 'Access token required'
+    });
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({
+        success: false,
+        message: 'Invalid or expired token'
+      });
+    }
+    req.user = user;
+    next();
+  });
+}
 
 // Validation middleware
 const loginValidation = [
@@ -491,13 +516,164 @@ router.post('/reset-password', async (req, res) => {
   }
 });
 
+// FIXED: Get profile endpoint
+router.get('/profile', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('-password');
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // FIXED: Map both profilePicture and profileImage fields
+    const userResponse = {
+      ...user.toObject(),
+      profileImage: user.profileImage || user.profilePicture || '',
+      profilePicture: user.profilePicture || user.profileImage || ''
+    };
+
+    res.json({
+      success: true,
+      data: { user: userResponse }
+    });
+  } catch (error) {
+    console.error('Profile error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch user profile'
+    });
+  }
+});
+
+// FIXED: Update profile endpoint
+router.put('/profile', authenticateToken, async (req, res) => {
+  try {
+    const { name, phoneNumber, address, services, hourlyRate, experience } = req.body;
+    
+    const updateData = {};
+    if (name) updateData.name = name.trim();
+    if (phoneNumber !== undefined) updateData.phoneNumber = phoneNumber;
+    if (address !== undefined) updateData.address = address;
+    if (services) updateData.services = services;
+    if (hourlyRate !== undefined) updateData.hourlyRate = hourlyRate;
+    if (experience !== undefined) updateData.experience = experience;
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user.id,
+      updateData,
+      { new: true, runValidators: true }
+    ).select('-password');
+
+    if (!updatedUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      data: { user: updatedUser }
+    });
+  } catch (error) {
+    console.error('Profile update error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update profile',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+// NEW: Profile image upload endpoint
+router.post('/profile/image', authenticateToken, async (req, res) => {
+  try {
+    if (!req.files || !req.files.profileImage) {
+      return res.status(400).json({
+        success: false,
+        message: 'No image file provided'
+      });
+    }
+
+    const profileImage = req.files.profileImage;
+    
+    // Validate file type
+    if (!profileImage.mimetype.startsWith('image/')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please upload a valid image file'
+      });
+    }
+
+    // Validate file size (5MB limit)
+    if (profileImage.size > 5 * 1024 * 1024) {
+      return res.status(400).json({
+        success: false,
+        message: 'Image size should be less than 5MB'
+      });
+    }
+
+    // Generate unique filename
+    const fileExtension = profileImage.name.split('.').pop();
+    const fileName = `profile-${req.user.id}-${Date.now()}.${fileExtension}`;
+    const uploadDir = path.join(process.cwd(), 'uploads', 'profiles');
+    const uploadPath = path.join(uploadDir, fileName);
+
+    // Create uploads directory if it doesn't exist
+    const fs = await import('fs');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
+    // Move the file to the upload directory
+    await profileImage.mv(uploadPath);
+
+    // Update user profile with image path
+    const imageUrl = `/uploads/profiles/${fileName}`;
+    
+    // FIXED: Update both profileImage and profilePicture fields for compatibility
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user.id, 
+      { 
+        profileImage: imageUrl,
+        profilePicture: imageUrl // Keep both fields in sync
+      }, 
+      { new: true }
+    ).select('-password');
+
+    if (!updatedUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Profile image uploaded successfully',
+      data: { 
+        imageUrl,
+        user: updatedUser
+      }
+    });
+  } catch (error) {
+    console.error('Profile image upload error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to upload profile image',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
 router.post('/logout', (req, res) => {
   res.json({
     success: true,
     message: 'Logged out successfully'
   });
 });
-
-
 
 export default router;
