@@ -156,7 +156,6 @@ app.use(cors({
 
 // Handle preflight requests
 app.options('*', cors());
-
 // Middleware
 if (process.env.NODE_ENV === 'production') {
   app.use(morgan('combined'));
@@ -399,6 +398,7 @@ app.use('/api/gallery', (req, res, next) => {
 });
 
 // Gallery upload using express-fileupload
+// Gallery upload endpoint
 app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
   try {
     console.log('=== GALLERY UPLOAD USING EXPRESS-FILEUPLOAD ===');
@@ -454,9 +454,12 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
 
     // FIXED: Create proper image URLs without double slashes
     const relativeUrl = `/uploads/gallery/${fileName}`;
-    const fullImageUrl = process.env.NODE_ENV === 'production' 
-      ? `https://homeheroes.help${relativeUrl}` // No extra slash here
-      : `http://localhost:${PORT}${relativeUrl}`;
+    
+    // Use the same domain for both development and production
+    // This ensures consistency and avoids CORS issues
+    const protocol = req.protocol;
+    const host = req.get('host');
+    const fullImageUrl = `${protocol}://${host}${relativeUrl}`;
 
     // Create gallery entry
     const newImage = new Gallery({
@@ -539,6 +542,7 @@ app.post('/api/test-upload', async (req, res) => {
 });
 
 // Gallery GET endpoint (for retrieving images)
+// Gallery GET endpoint (for retrieving images)
 app.get('/api/gallery', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -567,7 +571,10 @@ app.get('/api/gallery', async (req, res) => {
 
     const result = await Gallery.paginate(filter, options);
 
-    // FIXED: Consistent URL construction
+    // FIXED: Use request host to construct URLs
+    const protocol = req.protocol;
+    const host = req.get('host');
+    
     const imagesWithFullUrl = result.docs.map(image => {
       const imageObj = image.toObject();
       
@@ -576,7 +583,7 @@ app.get('/api/gallery', async (req, res) => {
         return imageObj;
       }
       
-      // Otherwise, construct proper URL
+      // Otherwise, construct proper URL using the request host
       let fullImageUrl;
       if (imageObj.imageUrl) {
         // Ensure imageUrl starts with /
@@ -584,11 +591,7 @@ app.get('/api/gallery', async (req, res) => {
           ? imageObj.imageUrl 
           : `/${imageObj.imageUrl}`;
           
-        if (process.env.NODE_ENV === 'production') {
-          fullImageUrl = `https://homeheroes.help${relativeUrl}`;
-        } else {
-          fullImageUrl = `http://localhost:${PORT}${relativeUrl}`;
-        }
+        fullImageUrl = `${protocol}://${host}${relativeUrl}`;
       }
       
       return {
@@ -704,16 +707,15 @@ app.get('/api/gallery/:id', async (req, res) => {
   }
 });
 
+// Serve static files for uploaded images
 app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
   setHeaders: (res, filePath) => {
     // Set proper caching headers for images
     if (filePath.match(/\.(jpg|jpeg|png|gif|webp)$/)) {
       res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 day
-      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Origin', '*'); // Allow all origins to access images
     }
-  },
-  // Add fallback for missing files
-  fallthrough: true
+  }
 }));
 
 app.use('/uploads', (req, res, next) => {
