@@ -465,25 +465,109 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
 
     // Create gallery entry - store both relative and absolute URLs
     const newImage = new Gallery({
-      title: title.trim(),
-      description: description ? description.trim() : '',
-      category: category || 'other',
-      imageUrl: imageUrl, // relative URL for storage
-      fullImageUrl: fullImageUrl, // absolute URL for frontend
-      userId: req.user.id,
-      tags: tags ? tags.split(',').map(tag => tag.trim()).filter(tag => tag) : [],
-      featured: featured === 'true' || featured === true
-    });
+  title: title.trim(),
+  description: description ? description.trim() : '',
+  category: category || 'other',
+  imageUrl: imageUrl, // relative URL for storage
+  fullImageUrl: process.env.NODE_ENV === 'production' 
+    ? `https://${process.env.DOMAIN}${imageUrl}`
+    : `http://localhost:${PORT}${imageUrl}`,
+  userId: req.user.id,
+  tags: tags ? tags.split(',').map(tag => tag.trim()).filter(tag => tag) : [],
+  featured: featured === 'true' || featured === true
+});
 
-    app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
-  setHeaders: (res, path) => {
+    // Serve static files for uploaded images - IMPROVED FOR PRODUCTION
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+  setHeaders: (res, filePath) => {
     // Set proper caching headers for images
-    if (path.endsWith('.jpg') || path.endsWith('.png') || path.endsWith('.jpeg') || path.endsWith('.gif')) {
-      res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 1 day
+    if (filePath.match(/\.(jpg|jpeg|png|gif|webp)$/)) {
+      res.setHeader('Cache-Control', 'public, max-age=86400');
     }
+    
+    // Set CORS headers for images
+    res.setHeader('Access-Control-Allow-Origin', 
+      process.env.NODE_ENV === 'production' 
+        ? 'https://homeheroes.help' 
+        : 'http://localhost:5173'
+    );
   }
 }));
 
+// Handle missing images gracefully
+app.use('/uploads', (req, res, next) => {
+  const filePath = path.join(__dirname, 'uploads', req.path);
+  
+  if (!fs.existsSync(filePath)) {
+    // Return a default image or 404
+    res.status(404).json({
+      success: false,
+      message: 'Image not found'
+    });
+  } else {
+    next();
+  }
+});
+
+// Test upload functionality
+app.post('/api/debug-upload', authenticateToken, async (req, res) => {
+  try {
+    console.log('DEBUG UPLOAD - Headers:', req.headers);
+    console.log('DEBUG UPLOAD - Files:', req.files);
+    console.log('DEBUG UPLOAD - Body:', req.body);
+    
+    if (req.files && req.files.image) {
+      const imageFile = req.files.image;
+      console.log('DEBUG - File details:', {
+        name: imageFile.name,
+        size: imageFile.size,
+        type: imageFile.mimetype,
+        tempPath: imageFile.tempFilePath
+      });
+      
+      // Test directory permissions
+      const uploadDir = path.join(__dirname, 'uploads', 'gallery');
+      const testFile = path.join(uploadDir, 'permission-test.txt');
+      
+      try {
+        if (!fs.existsSync(uploadDir)) {
+          fs.mkdirSync(uploadDir, { recursive: true });
+        }
+        fs.writeFileSync(testFile, 'test');
+        fs.unlinkSync(testFile);
+        
+        res.json({
+          success: true,
+          message: 'Upload directory is writable',
+          fileInfo: {
+            name: imageFile.name,
+            size: imageFile.size,
+            type: imageFile.mimetype
+          }
+        });
+      } catch (dirError) {
+        res.status(500).json({
+          success: false,
+          message: 'Directory permission error',
+          error: dirError.message
+        });
+      }
+    } else {
+      res.status(400).json({
+        success: false,
+        message: 'No file received',
+        filesAvailable: Object.keys(req.files || {})
+      });
+    }
+  } catch (error) {
+    console.error('Debug upload error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Debug failed',
+      error: error.message
+    });
+  }
+});
     // Create gallery entry
    
 
@@ -583,10 +667,35 @@ app.get('/api/gallery', async (req, res) => {
 
     const result = await Gallery.paginate(filter, options);
 
+    // FIXED: Proper URL construction for production
+    const imagesWithFullUrl = result.docs.map(image => {
+      const imageObj = image.toObject();
+      
+      // If imageUrl is already a full URL, use it
+      if (imageObj.imageUrl && imageObj.imageUrl.startsWith('http')) {
+        return imageObj;
+      }
+      
+      // Otherwise, construct the proper URL
+      let fullImageUrl;
+      if (process.env.NODE_ENV === 'production') {
+        // Use your actual domain in production
+        fullImageUrl = `https://homeheroes.help/${imageObj.imageUrl}`;
+      } else {
+        // Use localhost in development
+        fullImageUrl = `http://localhost:${PORT}${imageObj.imageUrl}`;
+      }
+      
+      return {
+        ...imageObj,
+        fullImageUrl
+      };
+    });
+
     res.json({
       success: true,
       data: {
-        docs: result.docs,
+        docs: imagesWithFullUrl,
         totalDocs: result.totalDocs,
         limit: result.limit,
         totalPages: result.totalPages,
@@ -606,6 +715,7 @@ app.get('/api/gallery', async (req, res) => {
     });
   }
 });
+
 
 // Gallery like endpoint
 app.post('/api/gallery/:id/like', authenticateToken, async (req, res) => {
@@ -653,9 +763,26 @@ app.get('/api/gallery/:id', async (req, res) => {
     image.views = (image.views || 0) + 1;
     await image.save();
 
+    // FIXED: Proper URL construction
+    const imageObj = image.toObject();
+    let fullImageUrl;
+    
+    if (imageObj.imageUrl && imageObj.imageUrl.startsWith('http')) {
+      fullImageUrl = imageObj.imageUrl;
+    } else if (process.env.NODE_ENV === 'production') {
+      fullImageUrl = `https://${req.get('host')}${imageObj.imageUrl}`;
+    } else {
+      fullImageUrl = `http://localhost:${PORT}${imageObj.imageUrl}`;
+    }
+
+    const imageWithFullUrl = {
+      ...imageObj,
+      fullImageUrl
+    };
+
     res.json({
       success: true,
-      data: image
+      data: imageWithFullUrl
     });
   } catch (error) {
     console.error('Get image error:', error);
@@ -692,6 +819,57 @@ app.get('/api/test-upload', (req, res) => {
       message: 'Upload directory error',
       error: error.message,
       path: uploadDir
+    });
+  }
+});
+
+// Gallery delete endpoint
+app.delete('/api/gallery/:id', authenticateToken, async (req, res) => {
+  try {
+    const imageId = req.params.id;
+    
+    // Find the image first to get the file path
+    const image = await Gallery.findById(imageId);
+    
+    if (!image) {
+      return res.status(404).json({
+        success: false,
+        message: 'Image not found'
+      });
+    }
+    
+    // Check if the user owns this image or is an admin
+    if (image.userId.toString() !== req.user.id && req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'You can only delete your own images'
+      });
+    }
+    
+    // Delete the physical file from the server
+    if (image.imageUrl) {
+      const filePath = path.join(__dirname, image.imageUrl);
+      
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        console.log(`Deleted file: ${filePath}`);
+      }
+    }
+    
+    // Delete the database record
+    await Gallery.findByIdAndDelete(imageId);
+    
+    res.json({
+      success: true,
+      message: 'Image deleted successfully'
+    });
+    
+  } catch (error) {
+    console.error('Delete image error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete image',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 });
