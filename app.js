@@ -470,7 +470,7 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
   category: category || 'other',
   imageUrl: imageUrl, // relative URL for storage
   fullImageUrl: process.env.NODE_ENV === 'production' 
-    ? `https://${process.env.DOMAIN}${imageUrl}`
+    ? `https://homeheroes.help${imageUrl}` // REMOVED the extra slash
     : `http://localhost:${PORT}${imageUrl}`,
   userId: req.user.id,
   tags: tags ? tags.split(',').map(tag => tag.trim()).filter(tag => tag) : [],
@@ -484,13 +484,6 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
     if (filePath.match(/\.(jpg|jpeg|png|gif|webp)$/)) {
       res.setHeader('Cache-Control', 'public, max-age=86400');
     }
-    
-    // Set CORS headers for images
-    res.setHeader('Access-Control-Allow-Origin', 
-      process.env.NODE_ENV === 'production' 
-        ? 'https://homeheroes.help' 
-        : 'http://localhost:5173'
-    );
   }
 }));
 
@@ -680,7 +673,7 @@ app.get('/api/gallery', async (req, res) => {
       let fullImageUrl;
       if (process.env.NODE_ENV === 'production') {
         // Use your actual domain in production
-        fullImageUrl = `https://homeheroes.help/${imageObj.imageUrl}`;
+        fullImageUrl = `https://homeheroes.help${imageObj.imageUrl}`;
       } else {
         // Use localhost in development
         fullImageUrl = `http://localhost:${PORT}${imageObj.imageUrl}`;
@@ -770,7 +763,7 @@ app.get('/api/gallery/:id', async (req, res) => {
     if (imageObj.imageUrl && imageObj.imageUrl.startsWith('http')) {
       fullImageUrl = imageObj.imageUrl;
     } else if (process.env.NODE_ENV === 'production') {
-      fullImageUrl = `https://${req.get('host')}${imageObj.imageUrl}`;
+      fullImageUrl = `https://homeheroes.help${imageObj.imageUrl}`; // FIXED
     } else {
       fullImageUrl = `http://localhost:${PORT}${imageObj.imageUrl}`;
     }
@@ -789,6 +782,33 @@ app.get('/api/gallery/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch image'
+    });
+  }
+});
+
+// Debug endpoint to check image URLs
+app.get('/api/debug/images', async (req, res) => {
+  try {
+    const images = await Gallery.find().limit(5);
+    const debugInfo = images.map(image => ({
+      _id: image._id,
+      storedImageUrl: image.imageUrl,
+      constructedUrl: process.env.NODE_ENV === 'production' 
+        ? `https://homeheroes.help${image.imageUrl}`
+        : `http://localhost:${PORT}${image.imageUrl}`,
+      fileExists: fs.existsSync(path.join(__dirname, image.imageUrl))
+    }));
+    
+    res.json({
+      success: true,
+      data: debugInfo,
+      environment: process.env.NODE_ENV,
+      domain: process.env.DOMAIN
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });
