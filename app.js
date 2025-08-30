@@ -9,6 +9,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fileUpload from 'express-fileupload';
 import fs from 'fs'; // Added missing import
+import galleryRoutes from './routes/gallery.routes.js';
+import Gallery from './models/Gallery.js';
+import multer from 'multer'; // Added for error handling
 
 // Import models
 import User from './models/User.js';
@@ -29,7 +32,7 @@ const envFile = process.env.NODE_ENV === 'production'
   : '.env';
 
 dotenv.config({ path: path.resolve(__dirname, envFile) });
-
+process.setMaxListeners(0);
 // Debug: Check which file is being loaded
 console.log(`📁 Loading environment from: ${envFile}`);
 console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL}`);
@@ -42,6 +45,40 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-i
 
 // Initialize email transporter
 initializeEmailTransporter();
+
+// ==================== UPLOAD DIRECTORY SETUP ====================
+
+// Check and create upload directories with proper permissions
+const setupUploadDirectories = () => {
+  const uploadDirs = [
+    path.join(__dirname, 'uploads', 'gallery'),
+    path.join(__dirname, 'uploads', 'profiles')
+  ];
+  
+  uploadDirs.forEach(uploadDir => {
+    try {
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { 
+          recursive: true,
+          mode: 0o755 // Read/write/execute for owner, read/execute for group and others
+        });
+      }
+      
+      // Test write permissions
+      const testFile = path.join(uploadDir, 'test.txt');
+      fs.writeFileSync(testFile, 'test');
+      fs.unlinkSync(testFile);
+      
+      console.log(`✅ Upload directory is writable: ${uploadDir}`);
+    } catch (error) {
+      console.error(`❌ Upload directory error for ${uploadDir}:`, error);
+      console.error('Please check directory permissions for:', uploadDir);
+    }
+  });
+};
+
+// Initialize upload directories
+setupUploadDirectories();
 
 // Connect to MongoDB
 const connectDB = async () => {
@@ -267,6 +304,397 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
+// Upload health check endpoint
+app.get('/api/health/upload', async (req, res) => {
+  try {
+    const uploadDirs = [
+      { name: 'gallery', path: path.join(__dirname, 'uploads', 'gallery') },
+      { name: 'profiles', path: path.join(__dirname, 'uploads', 'profiles') }
+    ];
+    
+    const results = {};
+    
+    for (const dir of uploadDirs) {
+      try {
+        // Check if directory exists and create if not
+        if (!fs.existsSync(dir.path)) {
+          fs.mkdirSync(dir.path, { recursive: true });
+        }
+        
+        // Test write permissions
+        const testFile = path.join(dir.path, 'test.txt');
+        fs.writeFileSync(testFile, 'test');
+        fs.unlinkSync(testFile);
+        
+        results[dir.name] = {
+          exists: true,
+          writable: true,
+          path: dir.path
+        };
+      } catch (error) {
+        results[dir.name] = {
+          exists: fs.existsSync(dir.path),
+          writable: false,
+          path: dir.path,
+          error: error.message
+        };
+      }
+    }
+    
+    const allWritable = Object.values(results).every(result => result.writable);
+    
+    res.status(allWritable ? 200 : 500).json({
+      success: allWritable,
+      message: allWritable ? 'All upload directories are writable' : 'Some upload directories have issues',
+      directories: results
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Upload directory health check failed',
+      error: error.message
+    });
+  }
+});
+
+// Gallery 
+// ==================== GALLERY UPLOAD ENDPOINT ====================
+
+// Configure multer specifically for gallery uploads
+const galleryStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const uploadDir = path.join(__dirname, 'uploads', 'gallery');
+    
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname);
+    cb(null, 'gallery-' + uniqueSuffix + ext);
+  }
+});
+
+const galleryUpload = multer({
+  storage: galleryStorage,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed!'), false);
+    }
+  }
+});
+
+// Gallery upload endpoint
+app.use('/api/gallery', (req, res, next) => {
+  // Temporarily disable fileUpload for gallery routes to avoid conflict with multer
+  next();
+});
+
+// Gallery upload using express-fileupload
+app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
+  try {
+    console.log('=== GALLERY UPLOAD USING EXPRESS-FILEUPLOAD ===');
+    
+    if (!req.files || !req.files.image) {
+      console.log('No image file in req.files:', req.files);
+      return res.status(400).json({
+        success: false,
+        message: 'No image file provided. Please select an image.'
+      });
+    }
+
+    const imageFile = req.files.image;
+    console.log('File received:', imageFile.name, imageFile.size, imageFile.mimetype);
+
+    const { title, description, category, tags, featured } = req.body;
+    console.log('Form data:', { title, description, category, tags, featured });
+
+    // Validate required fields
+    if (!title || !title.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Title is required'
+      });
+    }
+
+    // Validate file type
+    if (!imageFile.mimetype.startsWith('image/')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Only image files are allowed (jpg, png, gif, etc.)'
+      });
+    }
+
+    // Validate file size
+    if (imageFile.size > 5 * 1024 * 1024) {
+      return res.status(400).json({
+        success: false,
+        message: 'File size must be less than 5MB'
+      });
+    }
+
+    // Create upload directory if it doesn't exist
+    const uploadDir = path.join(__dirname, 'uploads', 'gallery');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
+    // Generate unique filename
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const fileExtension = path.extname(imageFile.name);
+    const fileName = `gallery-${uniqueSuffix}${fileExtension}`;
+    const filePath = path.join(uploadDir, fileName);
+
+    // Move the file
+    await imageFile.mv(filePath);
+
+    // Create image URL
+    const imageUrl = `/uploads/gallery/${fileName}`;
+
+    const fullImageUrl = process.env.NODE_ENV === 'production' 
+      ? imageUrl 
+      : `http://localhost:${PORT}${imageUrl}`;
+
+    // Create gallery entry - store both relative and absolute URLs
+    const newImage = new Gallery({
+      title: title.trim(),
+      description: description ? description.trim() : '',
+      category: category || 'other',
+      imageUrl: imageUrl, // relative URL for storage
+      fullImageUrl: fullImageUrl, // absolute URL for frontend
+      userId: req.user.id,
+      tags: tags ? tags.split(',').map(tag => tag.trim()).filter(tag => tag) : [],
+      featured: featured === 'true' || featured === true
+    });
+
+    app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+  setHeaders: (res, path) => {
+    // Set proper caching headers for images
+    if (path.endsWith('.jpg') || path.endsWith('.png') || path.endsWith('.jpeg') || path.endsWith('.gif')) {
+      res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 1 day
+    }
+  }
+}));
+
+    // Create gallery entry
+   
+
+    // Save to database
+    const savedImage = await newImage.save();
+    await savedImage.populate('userId', 'name profileImage');
+
+    console.log('Image uploaded successfully using express-fileupload:', savedImage._id);
+
+    res.status(201).json({
+      success: true,
+      message: 'Image uploaded successfully',
+      data: savedImage
+    });
+    
+  } catch (error) {
+    console.error('Gallery upload error (express-fileupload):', error);
+    
+    let errorMessage = 'Failed to upload image';
+    let statusCode = 500;
+    
+    if (error.name === 'ValidationError') {
+      errorMessage = 'Invalid data: ' + Object.values(error.errors).map(e => e.message).join(', ');
+      statusCode = 400;
+    }
+    
+    res.status(statusCode).json({
+      success: false,
+      message: errorMessage,
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
+// Simple test endpoint
+app.post('/api/test-upload', async (req, res) => {
+  try {
+    console.log('Test upload - Files:', req.files);
+    console.log('Test upload - Body:', req.body);
+    
+    if (req.files && req.files.testFile) {
+      const testFile = req.files.testFile;
+      console.log('Test file received:', testFile.name, testFile.size);
+      
+      res.json({
+        success: true,
+        message: 'File received successfully',
+        file: {
+          name: testFile.name,
+          size: testFile.size,
+          type: testFile.mimetype
+        }
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        message: 'No file received',
+        files: req.files
+      });
+    }
+  } catch (error) {
+    console.error('Test upload error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Test failed',
+      error: error.message
+    });
+  }
+});
+
+// Gallery GET endpoint (for retrieving images)
+app.get('/api/gallery', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const category = req.query.category;
+    const search = req.query.search;
+
+    let filter = {};
+    if (category && category !== 'all') {
+      filter.category = category;
+    }
+    if (search) {
+      filter.$or = [
+        { title: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { tags: { $in: [new RegExp(search, 'i')] } }
+      ];
+    }
+
+    const options = {
+      page,
+      limit,
+      sort: { createdAt: -1 },
+      populate: { path: 'userId', select: 'name profileImage' }
+    };
+
+    const result = await Gallery.paginate(filter, options);
+
+    res.json({
+      success: true,
+      data: {
+        docs: result.docs,
+        totalDocs: result.totalDocs,
+        limit: result.limit,
+        totalPages: result.totalPages,
+        page: result.page,
+        pagingCounter: result.pagingCounter,
+        hasPrevPage: result.hasPrevPage,
+        hasNextPage: result.hasNextPage,
+        prevPage: result.prevPage,
+        nextPage: result.nextPage
+      }
+    });
+  } catch (error) {
+    console.error('Get gallery error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch gallery images'
+    });
+  }
+});
+
+// Gallery like endpoint
+app.post('/api/gallery/:id/like', authenticateToken, async (req, res) => {
+  try {
+    const image = await Gallery.findById(req.params.id);
+    
+    if (!image) {
+      return res.status(404).json({
+        success: false,
+        message: 'Image not found'
+      });
+    }
+
+    image.likes = (image.likes || 0) + 1;
+    await image.save();
+
+    res.json({
+      success: true,
+      message: 'Image liked successfully',
+      data: { likes: image.likes }
+    });
+  } catch (error) {
+    console.error('Like image error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to like image'
+    });
+  }
+});
+
+// Gallery view count endpoint
+app.get('/api/gallery/:id', async (req, res) => {
+  try {
+    const image = await Gallery.findById(req.params.id)
+      .populate('userId', 'name profileImage');
+    
+    if (!image) {
+      return res.status(404).json({
+        success: false,
+        message: 'Image not found'
+      });
+    }
+
+    // Increment view count
+    image.views = (image.views || 0) + 1;
+    await image.save();
+
+    res.json({
+      success: true,
+      data: image
+    });
+  } catch (error) {
+    console.error('Get image error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch image'
+    });
+  }
+});
+
+// Test endpoint to check upload directory
+app.get('/api/test-upload', (req, res) => {
+  const uploadDir = path.join(__dirname, 'uploads', 'gallery');
+  const testFile = path.join(uploadDir, 'test.txt');
+  
+  try {
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    
+    // Test write permissions
+    fs.writeFileSync(testFile, 'test');
+    fs.unlinkSync(testFile);
+    
+    res.json({
+      success: true,
+      message: 'Upload directory is writable',
+      path: uploadDir
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Upload directory error',
+      error: error.message,
+      path: uploadDir
+    });
+  }
+});
 // Dashboard endpoint
 app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
   try {
@@ -498,7 +926,168 @@ app.get('/api/users', authenticateToken, async (req, res) => {
     });
   }
 });
+// Add to your server.js file
 
+// Earnings endpoint
+app.get('/api/earnings', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Fetch user to get currency preference
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+    
+    // Calculate earnings data
+    const completedJobs = await Job.countDocuments({ 
+      providerId: userId, 
+      status: 'completed' 
+    });
+    
+    const totalEarningsResult = await Job.aggregate([
+      { $match: { providerId: new mongoose.Types.ObjectId(userId), status: 'completed' } },
+      { $group: { _id: null, total: { $sum: '$payment' } } }
+    ]);
+    
+    const thisMonth = new Date();
+    thisMonth.setDate(1);
+    const thisMonthEarningsResult = await Job.aggregate([
+      { 
+        $match: { 
+          providerId: new mongoose.Types.ObjectId(userId), 
+          status: 'completed',
+          date: { $gte: thisMonth }
+        } 
+      },
+      { $group: { _id: null, total: { $sum: '$payment' } } }
+    ]);
+    
+    const lastMonth = new Date();
+    lastMonth.setMonth(lastMonth.getMonth() - 1);
+    lastMonth.setDate(1);
+    const lastMonthEarningsResult = await Job.aggregate([
+      { 
+        $match: { 
+          providerId: new mongoose.Types.ObjectId(userId), 
+          status: 'completed',
+          date: { 
+            $gte: lastMonth,
+            $lt: thisMonth
+          }
+        } 
+      },
+      { $group: { _id: null, total: { $sum: '$payment' } } }
+    ]);
+    
+    const pendingEarningsResult = await Job.aggregate([
+      { 
+        $match: { 
+          providerId: new mongoose.Types.ObjectId(userId), 
+          status: 'pending' 
+        } 
+      },
+      { $group: { _id: null, total: { $sum: '$payment' } } }
+    ]);
+    
+    const avgPerJobResult = await Job.aggregate([
+      { $match: { providerId: new mongoose.Types.ObjectId(userId), status: 'completed' } },
+      { $group: { _id: null, average: { $avg: '$payment' } } }
+    ]);
+    
+    // Calculate growth percentage
+    const thisMonthEarnings = thisMonthEarningsResult.length > 0 ? thisMonthEarningsResult[0].total : 0;
+    const lastMonthEarnings = lastMonthEarningsResult.length > 0 ? lastMonthEarningsResult[0].total : 0;
+    const growth = lastMonthEarnings > 0 
+      ? ((thisMonthEarnings - lastMonthEarnings) / lastMonthEarnings) * 100 
+      : 0;
+    
+    // Get recent transactions
+    const recentTransactions = await Job.find({ providerId: userId })
+      .sort({ date: -1 })
+      .limit(10)
+      .populate('clientId', 'name');
+    
+    // Get monthly data for the chart
+    const monthlyData = await Job.aggregate([
+      {
+        $match: {
+          providerId: new mongoose.Types.ObjectId(userId),
+          status: 'completed',
+          date: { $gte: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000) } // Last 6 months
+        }
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: '$date' },
+            month: { $month: '$date' }
+          },
+          total: { $sum: '$payment' },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { '_id.year': 1, '_id.month': 1 } },
+      { $limit: 7 }
+    ]);
+    
+    // Format monthly data
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const formattedMonthlyData = monthlyData.map((data, index, array) => {
+      const month = monthNames[data._id.month - 1];
+      const prevData = index > 0 ? array[index - 1].total : 0;
+      const growth = prevData > 0 ? ((data.total - prevData) / prevData) * 100 : 0;
+      
+      return {
+        month,
+        amount: data.total,
+        growth: Math.round(growth * 10) / 10
+      };
+    });
+    
+    // Format transactions
+    const formattedTransactions = recentTransactions.map(transaction => ({
+      id: transaction._id,
+      client: transaction.clientId?.name || 'Unknown Client',
+      service: transaction.serviceType,
+      amount: transaction.payment,
+      date: transaction.date.toISOString().split('T')[0],
+      status: transaction.status,
+      method: transaction.paymentMethod || 'Unknown',
+      category: transaction.category || 'other'
+    }));
+    
+    // Prepare response
+    const earningsData = {
+      total: totalEarningsResult.length > 0 ? totalEarningsResult[0].total : 0,
+      thisMonth: thisMonthEarnings,
+      lastMonth: lastMonthEarnings,
+      pending: pendingEarningsResult.length > 0 ? pendingEarningsResult[0].total : 0,
+      growth: Math.round(growth * 10) / 10,
+      avgPerJob: avgPerJobResult.length > 0 ? Math.round(avgPerJobResult[0].average) : 0,
+      currency: user.currency || 'USD'
+    };
+    
+    res.json({
+      success: true,
+      data: {
+        earnings: earningsData,
+        transactions: formattedTransactions,
+        monthlyData: formattedMonthlyData
+      }
+    });
+  } catch (error) {
+    console.error('Earnings API error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch earnings data',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
 // Profile endpoints
 app.get('/api/auth/profile', authenticateToken, async (req, res) => {
   try {
@@ -714,6 +1303,7 @@ app.get('/', (req, res) => {
     features: ['Email Verification', 'Password Reset', 'User Management', 'Role Switching'],
     endpoints: {
       health: 'GET /api/health',
+      uploadHealth: 'GET /api/health/upload',
       auth: {
         signup: 'POST /api/auth/signup',
         login: 'POST /api/auth/login',
@@ -732,7 +1322,10 @@ app.get('/', (req, res) => {
         get: 'GET /api/availability',
         add: 'POST /api/availability'
       },
-      stats: 'GET /api/stats/users'
+      stats: 'GET /api/stats/users',
+      earnings: 'GET /api/earnings',
+      schedule: 'GET /api/user/schedule',
+      dashboard: 'GET /api/user/dashboard'
     }
   });
 });
@@ -761,6 +1354,43 @@ if (process.env.NODE_ENV === 'production') {
 
 // ==================== ERROR HANDLING ====================
 
+// Multer and file upload error handling middleware
+app.use((error, req, res, next) => {
+  // Handle Multer errors
+  if (error instanceof multer.MulterError) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({
+        success: false,
+        message: 'File too large. Maximum size is 5MB.'
+      });
+    }
+    if (error.code === 'LIMIT_UNEXPECTED_FILE') {
+      return res.status(400).json({
+        success: false,
+        message: 'Unexpected file field'
+      });
+    }
+  }
+  
+  // Handle busboy errors (from express-fileupload)
+  if (error.message === 'Unexpected end of form') {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid form data. Please check your upload.'
+    });
+  }
+  
+  // Handle file size limit errors from express-fileupload
+  if (error.code === 'LIMIT_FILE_SIZE' || error.message.includes('File too large')) {
+    return res.status(413).json({
+      success: false,
+      message: 'File too large. Maximum size is 5MB.'
+    });
+  }
+  
+  next(error);
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
@@ -777,6 +1407,19 @@ app.use((err, req, res, next) => {
     success: false,
     message: process.env.NODE_ENV === 'production' ? 'Something went wrong!' : err.message
   });
+});
+
+// Debug middleware for file uploads
+app.use((req, res, next) => {
+  if (req.originalUrl.includes('/api/gallery/upload')) {
+    console.log('=== GALLERY UPLOAD DEBUG ===');
+    console.log('Content-Type:', req.headers['content-type']);
+    console.log('Auth header present:', !!req.headers.authorization);
+    console.log('Body keys:', Object.keys(req.body));
+    next();
+  } else {
+    next();
+  }
 });
 
 // 404 handler for non-API routes
@@ -797,11 +1440,15 @@ app.use('*', (req, res) => {
     message: 'Endpoint not found',
     availableEndpoints: {
       health: 'GET /api/health',
+      uploadHealth: 'GET /api/health/upload',
       auth: 'POST /api/auth/signup, POST /api/auth/login, POST /api/auth/verify-email, POST /api/auth/switch-role',
       users: 'GET /api/users',
       profile: 'GET /api/auth/profile, PUT /api/auth/profile',
       availability: 'GET /api/availability, POST /api/availability',
-      stats: 'GET /api/stats/users'
+      stats: 'GET /api/stats/users',
+      earnings: 'GET /api/earnings',
+      schedule: 'GET /api/user/schedule',
+      dashboard: 'GET /api/user/dashboard'
     }
   });
 });
@@ -833,6 +1480,7 @@ process.on('SIGTERM', async () => {
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`HomeHero API server running on http://localhost:${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/api/health`);
+  console.log(`Upload health check: http://localhost:${PORT}/api/health/upload`);
   console.log(`Email verification enabled: ${!!process.env.EMAIL_USER && !!process.env.EMAIL_PASSWORD}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 }).on('error', (err) => {
