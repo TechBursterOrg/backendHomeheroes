@@ -412,10 +412,7 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
     }
 
     const imageFile = req.files.image;
-    console.log('File received:', imageFile.name, imageFile.size, imageFile.mimetype);
-
     const { title, description, category, tags, featured } = req.body;
-    console.log('Form data:', { title, description, category, tags, featured });
 
     // Validate required fields
     if (!title || !title.trim()) {
@@ -425,7 +422,7 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
       });
     }
 
-    // Validate file type
+    // Validate file type and size
     if (!imageFile.mimetype.startsWith('image/')) {
       return res.status(400).json({
         success: false,
@@ -433,7 +430,6 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
       });
     }
 
-    // Validate file size
     if (imageFile.size > 5 * 1024 * 1024) {
       return res.status(400).json({
         success: false,
@@ -456,119 +452,29 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
     // Move the file
     await imageFile.mv(filePath);
 
-    // Create image URL
-    const imageUrl = `/uploads/gallery/${fileName}`;
-
+    // FIXED: Create proper image URLs without double slashes
+    const relativeUrl = `/uploads/gallery/${fileName}`;
     const fullImageUrl = process.env.NODE_ENV === 'production' 
-      ? imageUrl 
-      : `http://localhost:${PORT}${imageUrl}`;
+      ? `https://homeheroes.help${relativeUrl}` // No extra slash here
+      : `http://localhost:${PORT}${relativeUrl}`;
 
-    // Create gallery entry - store both relative and absolute URLs
-    const newImage = new Gallery({
-  title: title.trim(),
-  description: description ? description.trim() : '',
-  category: category || 'other',
-  imageUrl: imageUrl, // relative URL for storage
-  fullImageUrl: process.env.NODE_ENV === 'production' 
-    ? `https://homeheroes.help${imageUrl}` // REMOVED the extra slash
-    : `http://localhost:${PORT}${imageUrl}`,
-  userId: req.user.id,
-  tags: tags ? tags.split(',').map(tag => tag.trim()).filter(tag => tag) : [],
-  featured: featured === 'true' || featured === true
-});
-
-    // Serve static files for uploaded images - IMPROVED FOR PRODUCTION
-app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
-  setHeaders: (res, filePath) => {
-    // Set proper caching headers for images
-    if (filePath.match(/\.(jpg|jpeg|png|gif|webp)$/)) {
-      res.setHeader('Cache-Control', 'public, max-age=86400');
-    }
-  }
-}));
-
-// Handle missing images gracefully
-app.use('/uploads', (req, res, next) => {
-  const filePath = path.join(__dirname, 'uploads', req.path);
-  
-  if (!fs.existsSync(filePath)) {
-    // Return a default image or 404
-    res.status(404).json({
-      success: false,
-      message: 'Image not found'
-    });
-  } else {
-    next();
-  }
-});
-
-// Test upload functionality
-app.post('/api/debug-upload', authenticateToken, async (req, res) => {
-  try {
-    console.log('DEBUG UPLOAD - Headers:', req.headers);
-    console.log('DEBUG UPLOAD - Files:', req.files);
-    console.log('DEBUG UPLOAD - Body:', req.body);
-    
-    if (req.files && req.files.image) {
-      const imageFile = req.files.image;
-      console.log('DEBUG - File details:', {
-        name: imageFile.name,
-        size: imageFile.size,
-        type: imageFile.mimetype,
-        tempPath: imageFile.tempFilePath
-      });
-      
-      // Test directory permissions
-      const uploadDir = path.join(__dirname, 'uploads', 'gallery');
-      const testFile = path.join(uploadDir, 'permission-test.txt');
-      
-      try {
-        if (!fs.existsSync(uploadDir)) {
-          fs.mkdirSync(uploadDir, { recursive: true });
-        }
-        fs.writeFileSync(testFile, 'test');
-        fs.unlinkSync(testFile);
-        
-        res.json({
-          success: true,
-          message: 'Upload directory is writable',
-          fileInfo: {
-            name: imageFile.name,
-            size: imageFile.size,
-            type: imageFile.mimetype
-          }
-        });
-      } catch (dirError) {
-        res.status(500).json({
-          success: false,
-          message: 'Directory permission error',
-          error: dirError.message
-        });
-      }
-    } else {
-      res.status(400).json({
-        success: false,
-        message: 'No file received',
-        filesAvailable: Object.keys(req.files || {})
-      });
-    }
-  } catch (error) {
-    console.error('Debug upload error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Debug failed',
-      error: error.message
-    });
-  }
-});
     // Create gallery entry
-   
+    const newImage = new Gallery({
+      title: title.trim(),
+      description: description ? description.trim() : '',
+      category: category || 'other',
+      imageUrl: relativeUrl, // Store relative URL
+      fullImageUrl: fullImageUrl, // Store complete URL for easy access
+      userId: req.user.id,
+      tags: tags ? tags.split(',').map(tag => tag.trim()).filter(tag => tag) : [],
+      featured: featured === 'true' || featured === true
+    });
 
     // Save to database
     const savedImage = await newImage.save();
     await savedImage.populate('userId', 'name profileImage');
 
-    console.log('Image uploaded successfully using express-fileupload:', savedImage._id);
+    console.log('Image uploaded successfully:', savedImage._id, 'URL:', fullImageUrl);
 
     res.status(201).json({
       success: true,
@@ -577,7 +483,7 @@ app.post('/api/debug-upload', authenticateToken, async (req, res) => {
     });
     
   } catch (error) {
-    console.error('Gallery upload error (express-fileupload):', error);
+    console.error('Gallery upload error:', error);
     
     let errorMessage = 'Failed to upload image';
     let statusCode = 500;
@@ -594,6 +500,7 @@ app.post('/api/debug-upload', authenticateToken, async (req, res) => {
     });
   }
 });
+
 
 // Simple test endpoint
 app.post('/api/test-upload', async (req, res) => {
@@ -660,23 +567,28 @@ app.get('/api/gallery', async (req, res) => {
 
     const result = await Gallery.paginate(filter, options);
 
-    // FIXED: Proper URL construction for production
+    // FIXED: Consistent URL construction
     const imagesWithFullUrl = result.docs.map(image => {
       const imageObj = image.toObject();
       
-      // If imageUrl is already a full URL, use it
-      if (imageObj.imageUrl && imageObj.imageUrl.startsWith('http')) {
+      // If fullImageUrl is already stored, use it
+      if (imageObj.fullImageUrl) {
         return imageObj;
       }
       
-      // Otherwise, construct the proper URL
+      // Otherwise, construct proper URL
       let fullImageUrl;
-      if (process.env.NODE_ENV === 'production') {
-        // Use your actual domain in production
-        fullImageUrl = `https://homeheroes.help${imageObj.imageUrl}`;
-      } else {
-        // Use localhost in development
-        fullImageUrl = `http://localhost:${PORT}${imageObj.imageUrl}`;
+      if (imageObj.imageUrl) {
+        // Ensure imageUrl starts with /
+        const relativeUrl = imageObj.imageUrl.startsWith('/') 
+          ? imageObj.imageUrl 
+          : `/${imageObj.imageUrl}`;
+          
+        if (process.env.NODE_ENV === 'production') {
+          fullImageUrl = `https://homeheroes.help${relativeUrl}`;
+        } else {
+          fullImageUrl = `http://localhost:${PORT}${relativeUrl}`;
+        }
       }
       
       return {
@@ -756,16 +668,22 @@ app.get('/api/gallery/:id', async (req, res) => {
     image.views = (image.views || 0) + 1;
     await image.save();
 
-    // FIXED: Proper URL construction
+    // FIXED: Consistent URL construction
     const imageObj = image.toObject();
-    let fullImageUrl;
     
-    if (imageObj.imageUrl && imageObj.imageUrl.startsWith('http')) {
-      fullImageUrl = imageObj.imageUrl;
-    } else if (process.env.NODE_ENV === 'production') {
-      fullImageUrl = `https://homeheroes.help${imageObj.imageUrl}`; // FIXED
-    } else {
-      fullImageUrl = `http://localhost:${PORT}${imageObj.imageUrl}`;
+    let fullImageUrl;
+    if (imageObj.fullImageUrl) {
+      fullImageUrl = imageObj.fullImageUrl;
+    } else if (imageObj.imageUrl) {
+      const relativeUrl = imageObj.imageUrl.startsWith('/') 
+        ? imageObj.imageUrl 
+        : `/${imageObj.imageUrl}`;
+        
+      if (process.env.NODE_ENV === 'production') {
+        fullImageUrl = `https://homeheroes.help${relativeUrl}`;
+      } else {
+        fullImageUrl = `http://localhost:${PORT}${relativeUrl}`;
+      }
     }
 
     const imageWithFullUrl = {
@@ -785,6 +703,85 @@ app.get('/api/gallery/:id', async (req, res) => {
     });
   }
 });
+
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+  setHeaders: (res, filePath) => {
+    // Set proper caching headers for images
+    if (filePath.match(/\.(jpg|jpeg|png|gif|webp)$/)) {
+      res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 day
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+  },
+  // Add fallback for missing files
+  fallthrough: true
+}));
+
+app.use('/uploads', (req, res, next) => {
+  const filePath = path.join(__dirname, 'uploads', req.path);
+  
+  if (!fs.existsSync(filePath)) {
+    console.log(`File not found: ${filePath}`);
+    
+    // Return a JSON response instead of trying to serve a placeholder image
+    res.status(404).json({
+      success: false,
+      message: 'Image not found',
+      path: req.path
+    });
+  } else {
+    next();
+  }
+});
+
+app.post('/api/gallery/fix-urls', authenticateToken, async (req, res) => {
+  try {
+    const images = await Gallery.find({});
+    
+    let updatedCount = 0;
+    
+    for (const image of images) {
+      let needsUpdate = false;
+      let fullImageUrl;
+      
+      // Ensure imageUrl starts with /
+      if (image.imageUrl && !image.imageUrl.startsWith('/')) {
+        image.imageUrl = `/${image.imageUrl}`;
+        needsUpdate = true;
+      }
+      
+      // Generate fullImageUrl if missing
+      if (!image.fullImageUrl && image.imageUrl) {
+        if (process.env.NODE_ENV === 'production') {
+          fullImageUrl = `https://homeheroes.help${image.imageUrl}`;
+        } else {
+          fullImageUrl = `http://localhost:${PORT}${image.imageUrl}`;
+        }
+        image.fullImageUrl = fullImageUrl;
+        needsUpdate = true;
+      }
+      
+      if (needsUpdate) {
+        await image.save();
+        updatedCount++;
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Fixed URLs for ${updatedCount} images`,
+      totalImages: images.length,
+      updatedCount
+    });
+  } catch (error) {
+    console.error('Fix URLs error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fix URLs',
+      error: error.message
+    });
+  }
+});
+
 
 // Debug endpoint to check image URLs
 app.get('/api/debug/images', async (req, res) => {
