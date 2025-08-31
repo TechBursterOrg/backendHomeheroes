@@ -60,12 +60,9 @@ const setupUploadDirectories = () => {
       if (!fs.existsSync(uploadDir)) {
         fs.mkdirSync(uploadDir, { 
           recursive: true,
-          mode: 0o777 // More permissive permissions
+          mode: 0o755 // Read/write/execute for owner, read/execute for group and others
         });
       }
-      
-      // Set permissions on existing directory
-      fs.chmodSync(uploadDir, 0o777);
       
       // Test write permissions
       const testFile = path.join(uploadDir, 'test.txt');
@@ -75,6 +72,7 @@ const setupUploadDirectories = () => {
       console.log(`✅ Upload directory is writable: ${uploadDir}`);
     } catch (error) {
       console.error(`❌ Upload directory error for ${uploadDir}:`, error);
+      console.error('Please check directory permissions for:', uploadDir);
     }
   });
 };
@@ -403,9 +401,10 @@ app.use('/api/gallery', (req, res, next) => {
 // Gallery upload endpoint
 app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
   try {
-    console.log('=== GALLERY UPLOAD ===');
+    console.log('=== GALLERY UPLOAD USING EXPRESS-FILEUPLOAD ===');
     
     if (!req.files || !req.files.image) {
+      console.log('No image file in req.files:', req.files);
       return res.status(400).json({
         success: false,
         message: 'No image file provided. Please select an image.'
@@ -423,11 +422,11 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
       });
     }
 
-    // Validate file
+    // Validate file type and size
     if (!imageFile.mimetype.startsWith('image/')) {
       return res.status(400).json({
         success: false,
-        message: 'Only image files are allowed'
+        message: 'Only image files are allowed (jpg, png, gif, etc.)'
       });
     }
 
@@ -438,10 +437,10 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
       });
     }
 
-    // Ensure upload directory exists with proper permissions
+    // Create upload directory if it doesn't exist
     const uploadDir = path.join(__dirname, 'uploads', 'gallery');
     if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true, mode: 0o777 });
+      fs.mkdirSync(uploadDir, { recursive: true });
     }
 
     // Generate unique filename
@@ -452,36 +451,33 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
 
     // Move the file
     await imageFile.mv(filePath);
-    
-    // Set proper file permissions after creation
-    fs.chmodSync(filePath, 0o644);
 
-    // Create consistent relative path
+    // FIXED: Create proper image URLs without double slashes
     const relativeUrl = `/uploads/gallery/${fileName}`;
-    const fullImageUrl = constructImageUrl(relativeUrl, req);
+    
+    // Use the same domain for both development and production
+    // This ensures consistency and avoids CORS issues
+    const protocol = req.protocol;
+    const host = req.get('host');
+    const fullImageUrl = `${protocol}://${host}${relativeUrl}`;
 
     // Create gallery entry
     const newImage = new Gallery({
       title: title.trim(),
       description: description ? description.trim() : '',
       category: category || 'other',
-      imageUrl: relativeUrl, // Always store relative path
-      fullImageUrl: fullImageUrl, // Store complete URL for consistency
+      imageUrl: relativeUrl, // Store relative URL
+      fullImageUrl: fullImageUrl, // Store complete URL for easy access
       userId: req.user.id,
       tags: tags ? tags.split(',').map(tag => tag.trim()).filter(tag => tag) : [],
       featured: featured === 'true' || featured === true
     });
 
+    // Save to database
     const savedImage = await newImage.save();
     await savedImage.populate('userId', 'name profileImage');
 
-    console.log('Image uploaded successfully:', {
-      id: savedImage._id,
-      fileName: fileName,
-      relativePath: relativeUrl,
-      fullUrl: fullImageUrl,
-      fileExists: fs.existsSync(filePath)
-    });
+    console.log('Image uploaded successfully:', savedImage._id, 'URL:', fullImageUrl);
 
     res.status(201).json({
       success: true,
@@ -574,33 +570,40 @@ app.get('/api/gallery', async (req, res) => {
     };
 
     const result = await Gallery.paginate(filter, options);
+
+    // FIXED: Use request host to construct URLs
+    const protocol = req.protocol;
+    const host = req.get('host');
     
-    // Ensure all images have proper URLs and check file existence
-    const imagesWithUrls = result.docs.map(image => {
+    const imagesWithFullUrl = result.docs.map(image => {
       const imageObj = image.toObject();
       
-      // Check if file actually exists
-      const filePath = path.join(__dirname, imageObj.imageUrl || '');
-      const fileExists = fs.existsSync(filePath);
-      
-      if (!fileExists) {
-        console.warn(`File not found: ${filePath} for image ${imageObj._id}`);
+      // If fullImageUrl is already stored, use it
+      if (imageObj.fullImageUrl) {
+        return imageObj;
       }
       
-      // Construct proper URLs
-      const fullImageUrl = constructImageUrl(imageObj.imageUrl, req);
+      // Otherwise, construct proper URL using the request host
+      let fullImageUrl;
+      if (imageObj.imageUrl) {
+        // Ensure imageUrl starts with /
+        const relativeUrl = imageObj.imageUrl.startsWith('/') 
+          ? imageObj.imageUrl 
+          : `/${imageObj.imageUrl}`;
+          
+        fullImageUrl = `${protocol}://${host}${relativeUrl}`;
+      }
       
       return {
         ...imageObj,
-        fullImageUrl,
-        fileExists // Add this for debugging
+        fullImageUrl
       };
-    }).filter(image => image.fileExists); // Filter out missing files
+    });
 
     res.json({
       success: true,
       data: {
-        docs: imagesWithUrls,
+        docs: imagesWithFullUrl,
         totalDocs: result.totalDocs,
         limit: result.limit,
         totalPages: result.totalPages,
@@ -617,85 +620,6 @@ app.get('/api/gallery', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch gallery images'
-    });
-  }
-});
-
-app.post('/api/gallery/cleanup', authenticateToken, async (req, res) => {
-  try {
-    const images = await Gallery.find({});
-    let removedCount = 0;
-    
-    for (const image of images) {
-      if (image.imageUrl) {
-        const filePath = path.join(__dirname, image.imageUrl);
-        
-        if (!fs.existsSync(filePath)) {
-          console.log(`Removing database entry for missing file: ${image._id} - ${image.imageUrl}`);
-          await Gallery.findByIdAndDelete(image._id);
-          removedCount++;
-        }
-      }
-    }
-    
-    res.json({
-      success: true,
-      message: `Cleaned up ${removedCount} entries with missing files`,
-      removedCount
-    });
-  } catch (error) {
-    console.error('Cleanup error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to cleanup gallery',
-      error: error.message
-    });
-  }
-});
-
-
-
-app.get('/api/debug/file-status', authenticateToken, async (req, res) => {
-  try {
-    const images = await Gallery.find({}).limit(10);
-    const fileStatus = images.map(image => {
-      const filePath = path.join(__dirname, image.imageUrl || '');
-      const fileExists = fs.existsSync(filePath);
-      
-      let fileStats = null;
-      if (fileExists) {
-        try {
-          fileStats = fs.statSync(filePath);
-        } catch (err) {
-          console.error('Error getting file stats:', err);
-        }
-      }
-      
-      return {
-        id: image._id,
-        title: image.title,
-        imageUrl: image.imageUrl,
-        fullPath: filePath,
-        fileExists,
-        fileSize: fileStats ? fileStats.size : null,
-        lastModified: fileStats ? fileStats.mtime : null,
-        permissions: fileStats ? fileStats.mode.toString(8) : null
-      };
-    });
-    
-    res.json({
-      success: true,
-      data: fileStatus,
-      uploadDir: path.join(__dirname, 'uploads'),
-      uploadDirExists: fs.existsSync(path.join(__dirname, 'uploads')),
-      serverTime: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('File status check error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to check file status',
-      error: error.message
     });
   }
 });
@@ -785,48 +709,14 @@ app.get('/api/gallery/:id', async (req, res) => {
 
 // Serve static files for uploaded images
 app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
-  maxAge: '1d', // Cache for 1 day
-  etag: false,  // Disable etag to prevent caching issues
-  lastModified: true,
   setHeaders: (res, filePath) => {
     // Set proper caching headers for images
     if (filePath.match(/\.(jpg|jpeg|png|gif|webp)$/)) {
-      res.setHeader('Cache-Control', 'public, max-age=86400');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-    }
-    
-    // Add content-type headers
-    const ext = path.extname(filePath).toLowerCase();
-    const mimeTypes = {
-      '.jpg': 'image/jpeg',
-      '.jpeg': 'image/jpeg',
-      '.png': 'image/png',
-      '.gif': 'image/gif',
-      '.webp': 'image/webp'
-    };
-    
-    if (mimeTypes[ext]) {
-      res.setHeader('Content-Type', mimeTypes[ext]);
+      res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 day
+      res.setHeader('Access-Control-Allow-Origin', '*'); // Allow all origins to access images
     }
   }
 }));
-
-const constructImageUrl = (relativePath, req = null) => {
-  if (!relativePath) return null;
-  
-  // Ensure path starts with /
-  const cleanPath = relativePath.startsWith('/') ? relativePath : `/${relativePath}`;
-  
-  if (process.env.NODE_ENV === 'production') {
-    // Use your production domain
-    return `https://homeheroes.help${cleanPath}`;
-  } else {
-    // Use request host or fallback to localhost
-    const protocol = req ? req.protocol : 'http';
-    const host = req ? req.get('host') : `localhost:${PORT}`;
-    return `${protocol}://${host}${cleanPath}`;
-  }
-};
 
 app.use('/uploads', (req, res, next) => {
   const filePath = path.join(__dirname, 'uploads', req.path);
@@ -1800,8 +1690,6 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.error('Server error:', err);
   }
 });
-
-setupUploadDirectories();
 
 process.on('unhandledRejection', (err, promise) => {
   console.error('Unhandled Promise Rejection:', err);
