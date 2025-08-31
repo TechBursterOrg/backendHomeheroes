@@ -545,14 +545,17 @@ app.post('/api/test-upload', async (req, res) => {
 
 // Gallery GET endpoint (for retrieving images)
 // Gallery GET endpoint (for retrieving images)
-app.get('/api/gallery', async (req, res) => {
+// Gallery GET endpoint (for retrieving images) - MODIFIED
+app.get('/api/gallery', authenticateToken, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
     const category = req.query.category;
     const search = req.query.search;
 
-    let filter = {};
+    // ADDED: Filter by current user
+    let filter = { userId: req.user.id };
+    
     if (category && category !== 'all') {
       filter.category = category;
     }
@@ -639,6 +642,14 @@ app.post('/api/gallery/:id/like', authenticateToken, async (req, res) => {
       });
     }
 
+    // ADDED: Check if user owns this image
+    if (image.userId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'You can only like your own images'
+      });
+    }
+
     image.likes = (image.likes || 0) + 1;
     await image.save();
 
@@ -657,7 +668,7 @@ app.post('/api/gallery/:id/like', authenticateToken, async (req, res) => {
 });
 
 // Gallery view count endpoint
-app.get('/api/gallery/:id', async (req, res) => {
+app.get('/api/gallery/:id', authenticateToken, async (req, res) => {
   try {
     const image = await Gallery.findById(req.params.id)
       .populate('userId', 'name profileImage');
@@ -666,6 +677,14 @@ app.get('/api/gallery/:id', async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Image not found'
+      });
+    }
+
+    // ADDED: Check if user owns this image
+    if (image.userId._id.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. You can only view your own images.'
       });
     }
 
