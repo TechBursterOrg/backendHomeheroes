@@ -8,102 +8,49 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fileUpload from 'express-fileupload';
-import fs from 'fs';
-import multer from 'multer';
+import fs from 'fs'; // Added missing import
+import galleryRoutes from './routes/gallery.routes.js';
+import Gallery from './models/Gallery.js';
+import multer from 'multer'; // Added for error handling
+import { Message } from './models/Message.js';
+import { Conversation } from './models/Conversation.js';
 
 // Import models
 import User from './models/User.js';
 import Job from './models/Jobs.js';
 import Review from './models/Review.js';
-import Gallery from './models/Gallery.js';
-import { Message } from './models/Message.js';
-import { Conversation } from './models/Conversation.js';
 
 // Import routes
 import authRoutes from './routes/auth.routes.js';
-import galleryRoutes from './routes/gallery.routes.js';
-
-// Import utilities
 import { initializeEmailTransporter } from './utils/emailService.js';
 
-// ==================== CONFIGURATION SETUP ====================
+// Get __dirname equivalent in ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load environment variables
-const envFile = process.env.NODE_ENV === 'production' ? '.env.production' : '.env';
+// Load the appropriate .env file based on environment
+const envFile = process.env.NODE_ENV === 'production' 
+  ? '.env.production' 
+  : '.env';
+
 dotenv.config({ path: path.resolve(__dirname, envFile) });
 process.setMaxListeners(0);
-
-// Debug environment
+// Debug: Check which file is being loaded
 console.log(`📁 Loading environment from: ${envFile}`);
 console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL}`);
 console.log(`🏭 Environment: ${process.env.NODE_ENV || 'development'}`);
 
-// Constants
+const app = express();
 const PORT = process.env.PORT || 3001;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/homehero';
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
 
-// Initialize app
-const app = express();
+// Initialize email transporter
+initializeEmailTransporter();
 
-// ==================== MIDDLEWARE SETUP ====================
+// ==================== UPLOAD DIRECTORY SETUP ====================
 
-// CORS configuration
-const allowedOrigins = process.env.NODE_ENV === 'production'
-  ? [
-      'https://homeheroes.help',
-      'https://www.homeheroes.help',
-    ]
-  : [
-      'http://localhost:5173',
-      'http://localhost:3000',
-      'http://127.0.0.1:5173',
-      'http://localhost:4173'
-    ];
-
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
-      return callback(new Error(msg), false);
-    }
-    return callback(null, true);
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
-}));
-
-app.options('*', cors());
-
-// Logging
-if (process.env.NODE_ENV === 'production') {
-  app.use(morgan('combined'));
-} else {
-  app.use(morgan('dev'));
-}
-
-// File upload
-app.use(fileUpload({
-  limits: { fileSize: 5 * 1024 * 1024 },
-  abortOnLimit: true,
-  createParentPath: true
-}));
-
-// Body parsing
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-app.use(cookieParser());
-
-// Static files
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-
-// ==================== UTILITY FUNCTIONS ====================
-
-// Upload directory setup
+// Check and create upload directories with proper permissions
 const setupUploadDirectories = () => {
   const uploadDirs = [
     path.join(__dirname, 'uploads', 'gallery'),
@@ -115,10 +62,11 @@ const setupUploadDirectories = () => {
       if (!fs.existsSync(uploadDir)) {
         fs.mkdirSync(uploadDir, { 
           recursive: true,
-          mode: 0o755
+          mode: 0o755 // Read/write/execute for owner, read/execute for group and others
         });
       }
       
+      // Test write permissions
       const testFile = path.join(uploadDir, 'test.txt');
       fs.writeFileSync(testFile, 'test');
       fs.unlinkSync(testFile);
@@ -126,9 +74,109 @@ const setupUploadDirectories = () => {
       console.log(`✅ Upload directory is writable: ${uploadDir}`);
     } catch (error) {
       console.error(`❌ Upload directory error for ${uploadDir}:`, error);
+      console.error('Please check directory permissions for:', uploadDir);
     }
   });
 };
+
+// Initialize upload directories
+setupUploadDirectories();
+
+// Connect to MongoDB
+const connectDB = async () => {
+  try {
+    const conn = await mongoose.connect(MONGODB_URI);
+    console.log('✅ MongoDB connected successfully');
+    console.log(`📊 Database: ${conn.connection.name}`);
+    console.log(`🌐 MongoDB Host: ${conn.connection.host}`);
+    
+    // Create test user in development
+    if (process.env.NODE_ENV !== 'production') {
+      try {
+        const bcrypt = await import('bcryptjs');
+        const userCount = await User.countDocuments();
+        if (userCount === 0) {
+          const hashedPassword = await bcrypt.hash('Password123', 10);
+          const testUser = new User({
+            name: 'Alex Johnson',
+            email: 'alex@example.com',
+            password: hashedPassword,
+            userType: 'provider',
+            country: 'USA',
+            isEmailVerified: true,
+            services: ['House Cleaning', 'Garden Maintenance'],
+            hourlyRate: 25,
+            experience: '3 years',
+            profileImage: '' // Added profileImage field
+          });
+          await testUser.save();
+          console.log('🧪 Test user created: alex@example.com / Password123');
+        }
+      } catch (error) {
+        console.log('Note: Test user creation skipped - User model not available yet');
+      }
+    }
+  } catch (error) {
+    console.error('❌ MongoDB connection error:', error);
+    if (process.env.NODE_ENV !== 'production') {
+      process.exit(1);
+    }
+  }
+};
+
+connectDB();
+
+// CORS configuration - MUST come before routes
+const allowedOrigins = process.env.NODE_ENV === 'production' 
+  ? [
+      'https://homeheroes.help',
+      'https://www.homeheroes.help',
+      // Add other production domains as needed
+    ]
+  : [
+      'http://localhost:5173',
+      'http://localhost:3000',
+      'http://127.0.0.1:5173',
+      'http://localhost:4173' // Vite preview
+    ];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
+}));
+
+// Handle preflight requests
+app.options('*', cors());
+// Middleware
+if (process.env.NODE_ENV === 'production') {
+  app.use(morgan('combined'));
+} else {
+  app.use(morgan('dev'));
+}
+
+app.use(fileUpload({
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  abortOnLimit: true,
+  createParentPath: true // This creates the directory if it doesn't exist
+}));
+
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(cookieParser());
+
+// Serve static files for uploaded images
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Authentication middleware
 function authenticateToken(req, res, next) {
@@ -154,102 +202,57 @@ function authenticateToken(req, res, next) {
   });
 }
 
-// Helper functions
-function calculateEndTime(startTime, duration) {
-  if (!startTime || !duration) return '';
-  
+// ==================== API ROUTES ====================
+
+// Auth routes
+app.use('/api/auth', authRoutes);
+
+// Profile image upload endpoint - FIXED VERSION
+app.post('/api/auth/profile/image', authenticateToken, async (req, res) => {
   try {
-    const [time, modifier] = startTime.split(' ');
-    let [hours, minutes] = time.split(':').map(Number);
+    if (!req.files || !req.files.profileImage) {
+      return res.status(400).json({
+        success: false,
+        message: 'No image file provided'
+      });
+    }
+
+    const profileImage = req.files.profileImage;
     
-    if (modifier === 'PM' && hours !== 12) hours += 12;
-    if (modifier === 'AM' && hours === 12) hours = 0;
-    
-    const durationMatch = duration.match(/(\d+(\.\d+)?)\s*hours?/i);
-    if (!durationMatch) return '';
-    
-    const durationHours = parseFloat(durationMatch[1]);
-    const totalMinutes = hours * 60 + minutes + durationHours * 60;
-    
-    let endHours = Math.floor(totalMinutes / 60) % 24;
-    const endMinutes = totalMinutes % 60;
-    
-    const endModifier = endHours >= 12 ? 'PM' : 'AM';
-    if (endHours > 12) endHours -= 12;
-    if (endHours === 0) endHours = 12;
-    
-    return `${endHours}:${endMinutes.toString().padStart(2, '0')} ${endModifier}`;
+    // Generate unique filename
+    const fileExtension = path.extname(profileImage.name);
+    const fileName = `profile-${req.user.id}-${Date.now()}${fileExtension}`;
+    const uploadDir = path.join(__dirname, 'uploads', 'profiles');
+    const uploadPath = path.join(uploadDir, fileName);
+
+    // Create uploads directory if it doesn't exist
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
+    // Move the file to the upload directory
+    await profileImage.mv(uploadPath);
+
+    // Update user profile with image path
+    const imageUrl = `/uploads/profiles/${fileName}`;
+    await User.findByIdAndUpdate(req.user.id, { profileImage: imageUrl });
+
+    res.json({
+      success: true,
+      message: 'Profile image uploaded successfully',
+      data: { imageUrl }
+    });
   } catch (error) {
-    console.error('Error calculating end time:', error);
-    return '';
+    console.error('Profile image upload error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to upload profile image',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
   }
-}
+});
 
-// Call management
-const activeCalls = new Map();
-
-function cleanupOldCalls() {
-  const now = Date.now();
-  for (const [key, value] of activeCalls.entries()) {
-    if (now - value.timestamp > 60000) {
-      activeCalls.delete(key);
-    }
-  }
-}
-
-setInterval(cleanupOldCalls, 300000);
-
-// ==================== DATABASE CONNECTION ====================
-
-const connectDB = async () => {
-  try {
-    const conn = await mongoose.connect(MONGODB_URI);
-    console.log('✅ MongoDB connected successfully');
-    console.log(`📊 Database: ${conn.connection.name}`);
-    console.log(`🌐 MongoDB Host: ${conn.connection.host}`);
-    
-    // Create test user in development
-    if (process.env.NODE_ENV !== 'production') {
-      try {
-        const bcrypt = await import('bcryptjs');
-        const userCount = await User.countDocuments();
-        if (userCount === 0) {
-          const hashedPassword = await bcrypt.hash('Password123', 10);
-          const testUser = new User({
-            name: 'Alex Johnson',
-            email: 'alex@example.com',
-            password: hashedPassword,
-            userType: 'provider',
-            country: 'USA',
-            isEmailVerified: true,
-            services: ['House Cleaning', 'Garden Maintenance'],
-            hourlyRate: 25,
-            experience: '3 years',
-            profileImage: ''
-          });
-          await testUser.save();
-          console.log('🧪 Test user created: alex@example.com / Password123');
-        }
-      } catch (error) {
-        console.log('Note: Test user creation skipped - User model not available yet');
-      }
-    }
-  } catch (error) {
-    console.error('❌ MongoDB connection error:', error);
-    if (process.env.NODE_ENV !== 'production') {
-      process.exit(1);
-    }
-  }
-};
-
-// ==================== ROUTES ====================
-
-// Initialize services
-setupUploadDirectories();
-initializeEmailTransporter();
-connectDB();
-
-// Health endpoints
+// Health check endpoint
 app.get('/api/health', async (req, res) => {
   try {
     const dbStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
@@ -302,6 +305,7 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
+// Upload health check endpoint
 app.get('/api/health/upload', async (req, res) => {
   try {
     const uploadDirs = [
@@ -313,10 +317,12 @@ app.get('/api/health/upload', async (req, res) => {
     
     for (const dir of uploadDirs) {
       try {
+        // Check if directory exists and create if not
         if (!fs.existsSync(dir.path)) {
           fs.mkdirSync(dir.path, { recursive: true });
         }
         
+        // Test write permissions
         const testFile = path.join(dir.path, 'test.txt');
         fs.writeFileSync(testFile, 'test');
         fs.unlinkSync(testFile);
@@ -352,56 +358,55 @@ app.get('/api/health/upload', async (req, res) => {
   }
 });
 
-// Auth routes
-app.use('/api/auth', authRoutes);
+// Gallery 
+// ==================== GALLERY UPLOAD ENDPOINT ====================
 
-// Profile image upload
-app.post('/api/auth/profile/image', authenticateToken, async (req, res) => {
-  try {
-    if (!req.files || !req.files.profileImage) {
-      return res.status(400).json({
-        success: false,
-        message: 'No image file provided'
-      });
-    }
-
-    const profileImage = req.files.profileImage;
-    const fileExtension = path.extname(profileImage.name);
-    const fileName = `profile-${req.user.id}-${Date.now()}${fileExtension}`;
-    const uploadDir = path.join(__dirname, 'uploads', 'profiles');
-    const uploadPath = path.join(uploadDir, fileName);
-
+// Configure multer specifically for gallery uploads
+const galleryStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const uploadDir = path.join(__dirname, 'uploads', 'gallery');
+    
+    // Create directory if it doesn't exist
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
-
-    await profileImage.mv(uploadPath);
-
-    const imageUrl = `/uploads/profiles/${fileName}`;
-    await User.findByIdAndUpdate(req.user.id, { profileImage: imageUrl });
-
-    res.json({
-      success: true,
-      message: 'Profile image uploaded successfully',
-      data: { imageUrl }
-    });
-  } catch (error) {
-    console.error('Profile image upload error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to upload profile image',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
-    });
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const ext = path.extname(file.originalname);
+    cb(null, 'gallery-' + uniqueSuffix + ext);
   }
 });
 
-// Gallery routes
-app.use('/api/gallery', galleryRoutes);
+const galleryUpload = multer({
+  storage: galleryStorage,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed!'), false);
+    }
+  }
+});
 
+// Gallery upload endpoint
+app.use('/api/gallery', (req, res, next) => {
+  // Temporarily disable fileUpload for gallery routes to avoid conflict with multer
+  next();
+});
+
+// Gallery upload using express-fileupload
 // Gallery upload endpoint
 app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
   try {
+    console.log('=== GALLERY UPLOAD USING EXPRESS-FILEUPLOAD ===');
+    
     if (!req.files || !req.files.image) {
+      console.log('No image file in req.files:', req.files);
       return res.status(400).json({
         success: false,
         message: 'No image file provided. Please select an image.'
@@ -411,6 +416,7 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
     const imageFile = req.files.image;
     const { title, description, category, tags, featured } = req.body;
 
+    // Validate required fields
     if (!title || !title.trim()) {
       return res.status(400).json({
         success: false,
@@ -418,6 +424,7 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
       });
     }
 
+    // Validate file type and size
     if (!imageFile.mimetype.startsWith('image/')) {
       return res.status(400).json({
         success: false,
@@ -432,36 +439,47 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
       });
     }
 
+    // Create upload directory if it doesn't exist
     const uploadDir = path.join(__dirname, 'uploads', 'gallery');
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
 
+    // Generate unique filename
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
     const fileExtension = path.extname(imageFile.name);
     const fileName = `gallery-${uniqueSuffix}${fileExtension}`;
     const filePath = path.join(uploadDir, fileName);
 
+    // Move the file
     await imageFile.mv(filePath);
 
+    // FIXED: Create proper image URLs without double slashes
     const relativeUrl = `/uploads/gallery/${fileName}`;
+    
+    // Use the same domain for both development and production
+    // This ensures consistency and avoids CORS issues
     const protocol = req.protocol;
     const host = req.get('host');
     const fullImageUrl = `${protocol}://${host}${relativeUrl}`;
 
+    // Create gallery entry
     const newImage = new Gallery({
       title: title.trim(),
       description: description ? description.trim() : '',
       category: category || 'other',
-      imageUrl: relativeUrl,
-      fullImageUrl: fullImageUrl,
+      imageUrl: relativeUrl, // Store relative URL
+      fullImageUrl: fullImageUrl, // Store complete URL for easy access
       userId: req.user.id,
       tags: tags ? tags.split(',').map(tag => tag.trim()).filter(tag => tag) : [],
       featured: featured === 'true' || featured === true
     });
 
+    // Save to database
     const savedImage = await newImage.save();
     await savedImage.populate('userId', 'name profileImage');
+
+    console.log('Image uploaded successfully:', savedImage._id, 'URL:', fullImageUrl);
 
     res.status(201).json({
       success: true,
@@ -488,7 +506,45 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
   }
 });
 
-// Gallery endpoints
+
+// Simple test endpoint
+app.post('/api/test-upload', async (req, res) => {
+  try {
+    console.log('Test upload - Files:', req.files);
+    console.log('Test upload - Body:', req.body);
+    
+    if (req.files && req.files.testFile) {
+      const testFile = req.files.testFile;
+      console.log('Test file received:', testFile.name, testFile.size);
+      
+      res.json({
+        success: true,
+        message: 'File received successfully',
+        file: {
+          name: testFile.name,
+          size: testFile.size,
+          type: testFile.mimetype
+        }
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        message: 'No file received',
+        files: req.files
+      });
+    }
+  } catch (error) {
+    console.error('Test upload error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Test failed',
+      error: error.message
+    });
+  }
+});
+
+// Gallery GET endpoint (for retrieving images)
+// Gallery GET endpoint (for retrieving images)
 app.get('/api/gallery', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -517,18 +573,22 @@ app.get('/api/gallery', async (req, res) => {
 
     const result = await Gallery.paginate(filter, options);
 
+    // FIXED: Use request host to construct URLs
     const protocol = req.protocol;
     const host = req.get('host');
     
     const imagesWithFullUrl = result.docs.map(image => {
       const imageObj = image.toObject();
       
+      // If fullImageUrl is already stored, use it
       if (imageObj.fullImageUrl) {
         return imageObj;
       }
       
+      // Otherwise, construct proper URL using the request host
       let fullImageUrl;
       if (imageObj.imageUrl) {
+        // Ensure imageUrl starts with /
         const relativeUrl = imageObj.imageUrl.startsWith('/') 
           ? imageObj.imageUrl 
           : `/${imageObj.imageUrl}`;
@@ -566,6 +626,8 @@ app.get('/api/gallery', async (req, res) => {
   }
 });
 
+
+// Gallery like endpoint
 app.post('/api/gallery/:id/like', authenticateToken, async (req, res) => {
   try {
     const image = await Gallery.findById(req.params.id);
@@ -594,6 +656,7 @@ app.post('/api/gallery/:id/like', authenticateToken, async (req, res) => {
   }
 });
 
+// Gallery view count endpoint
 app.get('/api/gallery/:id', async (req, res) => {
   try {
     const image = await Gallery.findById(req.params.id)
@@ -606,9 +669,11 @@ app.get('/api/gallery/:id', async (req, res) => {
       });
     }
 
+    // Increment view count
     image.views = (image.views || 0) + 1;
     await image.save();
 
+    // FIXED: Consistent URL construction
     const imageObj = image.toObject();
     
     let fullImageUrl;
@@ -644,9 +709,147 @@ app.get('/api/gallery/:id', async (req, res) => {
   }
 });
 
+// Serve static files for uploaded images
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+  setHeaders: (res, filePath) => {
+    // Set proper caching headers for images
+    if (filePath.match(/\.(jpg|jpeg|png|gif|webp)$/)) {
+      res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 day
+      res.setHeader('Access-Control-Allow-Origin', '*'); // Allow all origins to access images
+    }
+  }
+}));
+
+app.use('/uploads', (req, res, next) => {
+  const filePath = path.join(__dirname, 'uploads', req.path);
+  
+  if (!fs.existsSync(filePath)) {
+    console.log(`File not found: ${filePath}`);
+    
+    // Return a JSON response instead of trying to serve a placeholder image
+    res.status(404).json({
+      success: false,
+      message: 'Image not found',
+      path: req.path
+    });
+  } else {
+    next();
+  }
+});
+
+app.post('/api/gallery/fix-urls', authenticateToken, async (req, res) => {
+  try {
+    const images = await Gallery.find({});
+    
+    let updatedCount = 0;
+    
+    for (const image of images) {
+      let needsUpdate = false;
+      let fullImageUrl;
+      
+      // Ensure imageUrl starts with /
+      if (image.imageUrl && !image.imageUrl.startsWith('/')) {
+        image.imageUrl = `/${image.imageUrl}`;
+        needsUpdate = true;
+      }
+      
+      // Generate fullImageUrl if missing
+      if (!image.fullImageUrl && image.imageUrl) {
+        if (process.env.NODE_ENV === 'production') {
+          fullImageUrl = `https://homeheroes.help${image.imageUrl}`;
+        } else {
+          fullImageUrl = `http://localhost:${PORT}${image.imageUrl}`;
+        }
+        image.fullImageUrl = fullImageUrl;
+        needsUpdate = true;
+      }
+      
+      if (needsUpdate) {
+        await image.save();
+        updatedCount++;
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Fixed URLs for ${updatedCount} images`,
+      totalImages: images.length,
+      updatedCount
+    });
+  } catch (error) {
+    console.error('Fix URLs error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fix URLs',
+      error: error.message
+    });
+  }
+});
+
+
+// Debug endpoint to check image URLs
+app.get('/api/debug/images', async (req, res) => {
+  try {
+    const images = await Gallery.find().limit(5);
+    const debugInfo = images.map(image => ({
+      _id: image._id,
+      storedImageUrl: image.imageUrl,
+      constructedUrl: process.env.NODE_ENV === 'production' 
+        ? `https://homeheroes.help${image.imageUrl}`
+        : `http://localhost:${PORT}${image.imageUrl}`,
+      fileExists: fs.existsSync(path.join(__dirname, image.imageUrl))
+    }));
+    
+    res.json({
+      success: true,
+      data: debugInfo,
+      environment: process.env.NODE_ENV,
+      domain: process.env.DOMAIN
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Test endpoint to check upload directory
+app.get('/api/test-upload', (req, res) => {
+  const uploadDir = path.join(__dirname, 'uploads', 'gallery');
+  const testFile = path.join(uploadDir, 'test.txt');
+  
+  try {
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    
+    // Test write permissions
+    fs.writeFileSync(testFile, 'test');
+    fs.unlinkSync(testFile);
+    
+    res.json({
+      success: true,
+      message: 'Upload directory is writable',
+      path: uploadDir
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Upload directory error',
+      error: error.message,
+      path: uploadDir
+    });
+  }
+});
+
+// Gallery delete endpoint
 app.delete('/api/gallery/:id', authenticateToken, async (req, res) => {
   try {
     const imageId = req.params.id;
+    
+    // Find the image first to get the file path
     const image = await Gallery.findById(imageId);
     
     if (!image) {
@@ -656,6 +859,7 @@ app.delete('/api/gallery/:id', authenticateToken, async (req, res) => {
       });
     }
     
+    // Check if the user owns this image or is an admin
     if (image.userId.toString() !== req.user.id && req.user.userType !== 'admin') {
       return res.status(403).json({
         success: false,
@@ -663,14 +867,17 @@ app.delete('/api/gallery/:id', authenticateToken, async (req, res) => {
       });
     }
     
+    // Delete the physical file from the server
     if (image.imageUrl) {
       const filePath = path.join(__dirname, image.imageUrl);
       
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
+        console.log(`Deleted file: ${filePath}`);
       }
     }
     
+    // Delete the database record
     await Gallery.findByIdAndDelete(imageId);
     
     res.json({
@@ -687,13 +894,13 @@ app.delete('/api/gallery/:id', authenticateToken, async (req, res) => {
     });
   }
 });
-
-// User endpoints
+// Dashboard endpoint
 app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    const user = await User.findById(userId).select('-password');
     
+    // Fetch user data
+    const user = await User.findById(userId).select('-password');
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -701,13 +908,16 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
       });
     }
 
+    // Fetch availability slots
     const availabilitySlots = user.availability || [];
     
+    // Fetch recent jobs
     const recentJobs = await Job.find({ providerId: userId })
       .sort({ date: -1 })
       .limit(3)
       .populate('clientId', 'name');
     
+    // Fetch upcoming tasks
     const upcomingTasks = await Job.find({ 
       providerId: userId, 
       status: { $in: ['confirmed', 'upcoming'] },
@@ -717,6 +927,7 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
     .limit(2)
     .populate('clientId', 'name');
     
+    // Calculate stats
     const completedJobs = await Job.countDocuments({ 
       providerId: userId, 
       status: 'completed' 
@@ -735,7 +946,7 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
     const activeClients = await Job.distinct('clientId', { 
       providerId: userId, 
       status: 'completed',
-      date: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
+      date: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } // Last 30 days
     });
     
     res.json({
@@ -744,7 +955,7 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
         email: user.email,
         id: user._id,
         country: user.country,
-        profileImage: user.profilePicture || ''
+        profileImage: user.profilePicture || '' // Use profilePicture field
       },
       availabilitySlots,
       recentJobs: recentJobs.map(job => ({
@@ -784,16 +995,20 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
   }
 });
 
+// Add to your server.js in the API routes section
 app.get('/api/user/schedule', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+    
+    // Fetch appointments for this user (provider)
     const appointments = await Job.find({ 
       providerId: userId,
-      date: { $gte: new Date() }
+      date: { $gte: new Date() } // Only future appointments
     })
     .sort({ date: 1, startTime: 1 })
     .populate('clientId', 'name phoneNumber address');
     
+    // Format the response
     const formattedAppointments = appointments.map(appointment => ({
       id: appointment._id,
       title: appointment.serviceType,
@@ -825,6 +1040,39 @@ app.get('/api/user/schedule', authenticateToken, async (req, res) => {
   }
 });
 
+// Helper function to calculate end time
+function calculateEndTime(startTime, duration) {
+  if (!startTime || !duration) return '';
+  
+  try {
+    const [time, modifier] = startTime.split(' ');
+    let [hours, minutes] = time.split(':').map(Number);
+    
+    if (modifier === 'PM' && hours !== 12) hours += 12;
+    if (modifier === 'AM' && hours === 12) hours = 0;
+    
+    // Parse duration (e.g., "2 hours", "1.5 hours")
+    const durationMatch = duration.match(/(\d+(\.\d+)?)\s*hours?/i);
+    if (!durationMatch) return '';
+    
+    const durationHours = parseFloat(durationMatch[1]);
+    const totalMinutes = hours * 60 + minutes + durationHours * 60;
+    
+    let endHours = Math.floor(totalMinutes / 60) % 24;
+    const endMinutes = totalMinutes % 60;
+    
+    const endModifier = endHours >= 12 ? 'PM' : 'AM';
+    if (endHours > 12) endHours -= 12;
+    if (endHours === 0) endHours = 12;
+    
+    return `${endHours}:${endMinutes.toString().padStart(2, '0')} ${endModifier}`;
+  } catch (error) {
+    console.error('Error calculating end time:', error);
+    return '';
+  }
+}
+
+// Users endpoint
 app.get('/api/users', authenticateToken, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -877,20 +1125,33 @@ app.get('/api/users', authenticateToken, async (req, res) => {
     });
   }
 });
+// Add to your server.js file
 
 // Earnings endpoint
 app.get('/api/earnings', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    const user = await User.findById(userId);
     
+    // Fetch user to get currency preference
+    const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
+
+
     }
 
+    
+
+    
+
+
+
+
+    
+    // Calculate earnings data
     const completedJobs = await Job.countDocuments({ 
       providerId: userId, 
       status: 'completed' 
@@ -946,23 +1207,26 @@ app.get('/api/earnings', authenticateToken, async (req, res) => {
       { $group: { _id: null, average: { $avg: '$payment' } } }
     ]);
     
+    // Calculate growth percentage
     const thisMonthEarnings = thisMonthEarningsResult.length > 0 ? thisMonthEarningsResult[0].total : 0;
     const lastMonthEarnings = lastMonthEarningsResult.length > 0 ? lastMonthEarningsResult[0].total : 0;
     const growth = lastMonthEarnings > 0 
       ? ((thisMonthEarnings - lastMonthEarnings) / lastMonthEarnings) * 100 
       : 0;
     
+    // Get recent transactions
     const recentTransactions = await Job.find({ providerId: userId })
       .sort({ date: -1 })
       .limit(10)
       .populate('clientId', 'name');
     
+    // Get monthly data for the chart
     const monthlyData = await Job.aggregate([
       {
         $match: {
           providerId: new mongoose.Types.ObjectId(userId),
           status: 'completed',
-          date: { $gte: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000) }
+          date: { $gte: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000) } // Last 6 months
         }
       },
       {
@@ -979,6 +1243,7 @@ app.get('/api/earnings', authenticateToken, async (req, res) => {
       { $limit: 7 }
     ]);
     
+    // Format monthly data
     const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const formattedMonthlyData = monthlyData.map((data, index, array) => {
       const month = monthNames[data._id.month - 1];
@@ -992,6 +1257,7 @@ app.get('/api/earnings', authenticateToken, async (req, res) => {
       };
     });
     
+    // Format transactions
     const formattedTransactions = recentTransactions.map(transaction => ({
       id: transaction._id,
       client: transaction.clientId?.name || 'Unknown Client',
@@ -1003,6 +1269,7 @@ app.get('/api/earnings', authenticateToken, async (req, res) => {
       category: transaction.category || 'other'
     }));
     
+    // Prepare response
     const earningsData = {
       total: totalEarningsResult.length > 0 ? totalEarningsResult[0].total : 0,
       thisMonth: thisMonthEarnings,
@@ -1031,8 +1298,9 @@ app.get('/api/earnings', authenticateToken, async (req, res) => {
   }
 });
 
-// Message endpoints
-app.post('/api/messages/conversation', authenticateToken, async (req, res) => {
+//Messages end point
+
+    app.post('/api/messages/conversation', authenticateToken, async (req, res) => {
   try {
     const { participantIds } = req.body;
     
@@ -1043,6 +1311,7 @@ app.post('/api/messages/conversation', authenticateToken, async (req, res) => {
       });
     }
 
+    // Check if conversation already exists
     let conversation = await Conversation.findOne({
       participants: { $all: participantIds, $size: participantIds.length }
     }).populate('participants', 'name email profileImage');
@@ -1068,6 +1337,7 @@ app.post('/api/messages/conversation', authenticateToken, async (req, res) => {
   }
 });
 
+// Send message
 app.post('/api/messages/send', authenticateToken, async (req, res) => {
   try {
     const { conversationId, content, messageType = 'text' } = req.body;
@@ -1079,6 +1349,7 @@ app.post('/api/messages/send', authenticateToken, async (req, res) => {
       });
     }
 
+    // Verify user is part of conversation
     const conversation = await Conversation.findById(conversationId);
     if (!conversation || !conversation.participants.includes(req.user.id)) {
       return res.status(403).json({
@@ -1096,10 +1367,12 @@ app.post('/api/messages/send', authenticateToken, async (req, res) => {
 
     await message.save();
     
+    // Update conversation last message and timestamp
     conversation.lastMessage = message._id;
     conversation.updatedAt = new Date();
     await conversation.save();
 
+    // Populate sender info
     await message.populate('senderId', 'name profileImage');
 
     res.status(201).json({
@@ -1116,12 +1389,14 @@ app.post('/api/messages/send', authenticateToken, async (req, res) => {
   }
 });
 
+// Get messages for conversation
 app.get('/api/messages/conversation/:conversationId', authenticateToken, async (req, res) => {
   try {
     const { conversationId } = req.params;
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 50;
 
+    // Verify user is part of conversation
     const conversation = await Conversation.findById(conversationId);
     if (!conversation || !conversation.participants.includes(req.user.id)) {
       return res.status(403).json({
@@ -1136,6 +1411,7 @@ app.get('/api/messages/conversation/:conversationId', authenticateToken, async (
       .skip((page - 1) * limit)
       .limit(limit);
 
+    // Mark messages as read if they're from other participants
     await Message.updateMany(
       {
         conversationId,
@@ -1148,7 +1424,7 @@ app.get('/api/messages/conversation/:conversationId', authenticateToken, async (
     res.json({
       success: true,
       data: {
-        messages: messages.reverse(),
+        messages: messages.reverse(), // Return in chronological order
         pagination: {
           currentPage: page,
           limit,
@@ -1165,6 +1441,7 @@ app.get('/api/messages/conversation/:conversationId', authenticateToken, async (
   }
 });
 
+// Get user conversations
 app.get('/api/messages/conversations', authenticateToken, async (req, res) => {
   try {
     const conversations = await Conversation.find({
@@ -1187,6 +1464,7 @@ app.get('/api/messages/conversations', authenticateToken, async (req, res) => {
   }
 });
 
+// Search conversations
 app.get('/api/messages/search', authenticateToken, async (req, res) => {
   try {
     const { query } = req.query;
@@ -1218,17 +1496,21 @@ app.get('/api/messages/search', authenticateToken, async (req, res) => {
   }
 });
 
-// Call endpoints
+// WebRTC signaling endpoints for free peer-to-peer calls
+const activeCalls = new Map();
+
 app.post('/api/calls/offer', authenticateToken, async (req, res) => {
   try {
     const { toUserId, offer } = req.body;
     
+    // Store the offer for the callee
     activeCalls.set(`offer-${toUserId}-${req.user.id}`, {
       offer,
       from: req.user.id,
       timestamp: Date.now()
     });
 
+    // Clean up old offers (older than 1 minute)
     cleanupOldCalls();
 
     res.json({
@@ -1248,6 +1530,7 @@ app.post('/api/calls/answer', authenticateToken, async (req, res) => {
   try {
     const { toUserId, answer } = req.body;
     
+    // Store the answer for the caller
     activeCalls.set(`answer-${toUserId}-${req.user.id}`, {
       answer,
       from: req.user.id,
@@ -1274,7 +1557,7 @@ app.get('/api/calls/check-offer/:fromUserId', authenticateToken, async (req, res
     const offer = activeCalls.get(offerKey);
     
     if (offer) {
-      activeCalls.delete(offerKey);
+      activeCalls.delete(offerKey); // Remove after retrieving
       res.json({
         success: true,
         data: { offer }
@@ -1301,7 +1584,7 @@ app.get('/api/calls/check-answer/:fromUserId', authenticateToken, async (req, re
     const answer = activeCalls.get(answerKey);
     
     if (answer) {
-      activeCalls.delete(answerKey);
+      activeCalls.delete(answerKey); // Remove after retrieving
       res.json({
         success: true,
         data: { answer }
@@ -1321,6 +1604,18 @@ app.get('/api/calls/check-answer/:fromUserId', authenticateToken, async (req, re
   }
 });
 
+// Clean up old call data
+function cleanupOldCalls() {
+  const now = Date.now();
+  for (const [key, value] of activeCalls.entries()) {
+    if (now - value.timestamp > 60000) { // 1 minute
+      activeCalls.delete(key);
+    }
+  }
+}
+
+// Clean up every 5 minutes
+setInterval(cleanupOldCalls, 300000);
 // Profile endpoints
 app.get('/api/auth/profile', authenticateToken, async (req, res) => {
   try {
@@ -1563,9 +1858,7 @@ app.get('/', (req, res) => {
   });
 });
 
-// ==================== ERROR HANDLING ====================
-
-// API 404 handler
+// API 404 handler (should come after all API routes)
 app.use('/api/*', (req, res) => {
   res.status(404).json({
     success: false,
@@ -1573,20 +1866,25 @@ app.use('/api/*', (req, res) => {
   });
 });
 
-// Static files (production only)
+// ==================== STATIC FILES (PRODUCTION ONLY) ====================
+
+// Static files (only in production)
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, 'client/dist')));
 }
 
-// Catch-all handler for SPA (production only)
+// Catch-all handler for SPA (only in production)
 if (process.env.NODE_ENV === 'production') {
   app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'client/dist', 'index.html'));
   });
 }
 
-// Error handling middleware
+// ==================== ERROR HANDLING ====================
+
+// Multer and file upload error handling middleware
 app.use((error, req, res, next) => {
+  // Handle Multer errors
   if (error instanceof multer.MulterError) {
     if (error.code === 'LIMIT_FILE_SIZE') {
       return res.status(413).json({
@@ -1602,6 +1900,7 @@ app.use((error, req, res, next) => {
     }
   }
   
+  // Handle busboy errors (from express-fileupload)
   if (error.message === 'Unexpected end of form') {
     return res.status(400).json({
       success: false,
@@ -1609,6 +1908,7 @@ app.use((error, req, res, next) => {
     });
   }
   
+  // Handle file size limit errors from express-fileupload
   if (error.code === 'LIMIT_FILE_SIZE' || error.message.includes('File too large')) {
     return res.status(413).json({
       success: false,
@@ -1619,7 +1919,7 @@ app.use((error, req, res, next) => {
   next(error);
 });
 
-// General error handler
+// Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   
@@ -1635,6 +1935,19 @@ app.use((err, req, res, next) => {
     success: false,
     message: process.env.NODE_ENV === 'production' ? 'Something went wrong!' : err.message
   });
+});
+
+// Debug middleware for file uploads
+app.use((req, res, next) => {
+  if (req.originalUrl.includes('/api/gallery/upload')) {
+    console.log('=== GALLERY UPLOAD DEBUG ===');
+    console.log('Content-Type:', req.headers['content-type']);
+    console.log('Auth header present:', !!req.headers.authorization);
+    console.log('Body keys:', Object.keys(req.body));
+    next();
+  } else {
+    next();
+  }
 });
 
 // 404 handler for non-API routes
