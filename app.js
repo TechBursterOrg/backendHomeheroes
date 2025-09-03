@@ -124,7 +124,7 @@ const connectDB = async () => {
   }
 };
 
-connectDB();
+
 
 function startCleanupTask() {
   console.log('🔄 Starting profile image cleanup task...');
@@ -153,6 +153,31 @@ function startCleanupTask() {
       }
     } catch (error) {
       console.error('Cleanup task error:', error);
+    }
+  }, 3600000); // Run every hour
+  setInterval(async () => {
+    try {
+      const galleryImages = await Gallery.find({ imageUrl: { $exists: true, $ne: '' } });
+      let cleanedCount = 0;
+      
+      for (const image of galleryImages) {
+        if (image.imageUrl && image.imageUrl.startsWith('/uploads/')) {
+          const filePath = path.join(__dirname, image.imageUrl);
+          if (!fs.existsSync(filePath)) {
+            console.log(`Gallery image missing: ${image._id}, ${image.imageUrl}`);
+            // Keep the record but mark it as missing
+            image.imageMissing = true;
+            await image.save();
+            cleanedCount++;
+          }
+        }
+      }
+      
+      if (cleanedCount > 0) {
+        console.log(`🖼️ Cleaned up ${cleanedCount} missing gallery images`);
+      }
+    } catch (error) {
+      console.error('Gallery cleanup task error:', error);
     }
   }, 3600000); // Run every hour
 }
@@ -626,7 +651,13 @@ app.get('/api/gallery', authenticateToken, async (req, res) => {
     
     const imagesWithFullUrl = result.docs.map(image => {
       const imageObj = image.toObject();
-      
+      if (imageObj.imageMissing) {
+        return {
+          ...imageObj,
+          fullImageUrl: 'https://via.placeholder.com/600x400/e2e8f0/64748b?text=Image+Not+Available',
+          imageMissing: true
+        };
+      }
       // If fullImageUrl is already stored, use it
       if (imageObj.fullImageUrl) {
         return imageObj;
@@ -790,26 +821,39 @@ app.use('/uploads', (req, res, next) => {
   if (!fs.existsSync(filePath)) {
     console.log(`File not found: ${filePath}`);
     
-    // For profile images, try to get from user record
+    // Handle profile images
     if (req.path.includes('/profiles/')) {
       const filename = path.basename(req.path);
-      const userId = filename.split('-')[1]; // Extract user ID from filename
+      const userId = filename.split('-')[1];
       
       if (userId && mongoose.Types.ObjectId.isValid(userId)) {
         return User.findById(userId)
           .then(user => {
             if (user && user.profileImageFull) {
-              // Redirect to the stored full URL
               return res.redirect(user.profileImageFull);
             }
-            // Return placeholder if no backup URL
             return res.redirect('https://via.placeholder.com/400x400/e2e8f0/64748b?text=Profile+Image');
           })
           .catch(() => {
-            // Fallback to placeholder
             return res.redirect('https://via.placeholder.com/400x400/e2e8f0/64748b?text=Profile+Image');
           });
       }
+    }
+    
+    // NEW: Handle gallery images
+    if (req.path.includes('/gallery/')) {
+      const filename = path.basename(req.path);
+      // Try to find the gallery image by filename
+      return Gallery.findOne({ imageUrl: `/uploads/gallery/${filename}` })
+        .then(image => {
+          if (image && image.fullImageUrl) {
+            return res.redirect(image.fullImageUrl);
+          }
+          return res.redirect('https://via.placeholder.com/600x400/e2e8f0/64748b?text=Gallery+Image');
+        })
+        .catch(() => {
+          return res.redirect('https://via.placeholder.com/600x400/e2e8f0/64748b?text=Gallery+Image');
+        });
     }
     
     // Return placeholder for other images
@@ -817,6 +861,7 @@ app.use('/uploads', (req, res, next) => {
   }
   next();
 });
+
 
 app.post('/api/gallery/fix-urls', authenticateToken, async (req, res) => {
   try {

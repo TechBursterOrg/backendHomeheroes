@@ -13,6 +13,10 @@ title: {
     maxlength: 500,
     default: ''
   },
+  imageMissing: {
+  type: Boolean,
+  default: false
+},
   category: {
     type: String,
     required: true,
