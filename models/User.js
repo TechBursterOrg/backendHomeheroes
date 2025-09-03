@@ -96,6 +96,10 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  profileImageFull: {
+  type: String,
+  default: ''
+},
   experience: {
     type: String,
     default: null

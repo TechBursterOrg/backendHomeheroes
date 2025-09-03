@@ -126,6 +126,39 @@ const connectDB = async () => {
 
 connectDB();
 
+function startCleanupTask() {
+  console.log('🔄 Starting profile image cleanup task...');
+  
+  setInterval(async () => {
+    try {
+      const users = await User.find({ profileImage: { $exists: true, $ne: '' } });
+      
+      let cleanedCount = 0;
+      for (const user of users) {
+        if (user.profileImage && user.profileImage.startsWith('/uploads/')) {
+          const filePath = path.join(__dirname, user.profileImage);
+          
+          if (!fs.existsSync(filePath)) {
+            console.log(`Profile image missing for user ${user._id}: ${user.profileImage}`);
+            // Set profile image to empty if file doesn't exist
+            user.profileImage = '';
+            await user.save();
+            cleanedCount++;
+          }
+        }
+      }
+      
+      if (cleanedCount > 0) {
+        console.log(`🧹 Cleaned up ${cleanedCount} missing profile images`);
+      }
+    } catch (error) {
+      console.error('Cleanup task error:', error);
+    }
+  }, 3600000); // Run every hour
+}
+
+// Then call connectDB to start everything
+connectDB();
 // CORS configuration - MUST come before routes
 const allowedOrigins = process.env.NODE_ENV === 'production' 
   ? [
@@ -233,14 +266,25 @@ app.post('/api/auth/profile/image', authenticateToken, async (req, res) => {
     // Move the file to the upload directory
     await profileImage.mv(uploadPath);
 
-    // Update user profile with image path
+    // FIXED: Use consistent URL construction
+    const protocol = req.secure ? 'https' : 'http';
+    const host = req.get('host');
     const imageUrl = `/uploads/profiles/${fileName}`;
-    await User.findByIdAndUpdate(req.user.id, { profileImage: imageUrl });
+    const fullImageUrl = `${protocol}://${host}${imageUrl}`;
+
+    // Update user profile with both relative and absolute URLs
+    await User.findByIdAndUpdate(req.user.id, { 
+      profileImage: imageUrl,
+      profileImageFull: fullImageUrl // Store full URL for redundancy
+    });
 
     res.json({
       success: true,
       message: 'Profile image uploaded successfully',
-      data: { imageUrl }
+      data: { 
+        imageUrl,
+        fullImageUrl 
+      }
     });
   } catch (error) {
     console.error('Profile image upload error:', error);
@@ -577,7 +621,7 @@ app.get('/api/gallery', authenticateToken, async (req, res) => {
     const result = await Gallery.paginate(filter, options);
 
     // FIXED: Use request host to construct URLs
-    const protocol = req.protocol;
+    const protocol = req.secure ? 'https' : 'http';
     const host = req.get('host');
     
     const imagesWithFullUrl = result.docs.map(image => {
@@ -734,9 +778,10 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
     // Set proper caching headers for images
     if (filePath.match(/\.(jpg|jpeg|png|gif|webp)$/)) {
       res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 day
-      res.setHeader('Access-Control-Allow-Origin', '*'); // Allow all origins to access images
+      res.setHeader('Access-Control-Allow-Origin', '*');
     }
-  }
+  },
+  fallthrough: true // Allow the request to continue to other middleware
 }));
 
 app.use('/uploads', (req, res, next) => {
@@ -745,15 +790,32 @@ app.use('/uploads', (req, res, next) => {
   if (!fs.existsSync(filePath)) {
     console.log(`File not found: ${filePath}`);
     
-    // Return a JSON response instead of trying to serve a placeholder image
-    res.status(404).json({
-      success: false,
-      message: 'Image not found',
-      path: req.path
-    });
-  } else {
-    next();
+    // For profile images, try to get from user record
+    if (req.path.includes('/profiles/')) {
+      const filename = path.basename(req.path);
+      const userId = filename.split('-')[1]; // Extract user ID from filename
+      
+      if (userId && mongoose.Types.ObjectId.isValid(userId)) {
+        return User.findById(userId)
+          .then(user => {
+            if (user && user.profileImageFull) {
+              // Redirect to the stored full URL
+              return res.redirect(user.profileImageFull);
+            }
+            // Return placeholder if no backup URL
+            return res.redirect('https://via.placeholder.com/400x400/e2e8f0/64748b?text=Profile+Image');
+          })
+          .catch(() => {
+            // Fallback to placeholder
+            return res.redirect('https://via.placeholder.com/400x400/e2e8f0/64748b?text=Profile+Image');
+          });
+      }
+    }
+    
+    // Return placeholder for other images
+    return res.redirect('https://via.placeholder.com/400x400/e2e8f0/64748b?text=Image+Not+Found');
   }
+  next();
 });
 
 app.post('/api/gallery/fix-urls', authenticateToken, async (req, res) => {
