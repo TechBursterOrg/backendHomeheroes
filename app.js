@@ -190,76 +190,34 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
   ? [
       'https://homeheroes.help',
       'https://www.homeheroes.help',
-      'https://backendhomeheroes.onrender.com', // Add your backend domain too
-      // Add other production domains as needed
+      'https://backendhomeheroes.onrender.com',
     ]
   : [
       'http://localhost:5173',
       'http://localhost:3000',
       'http://127.0.0.1:5173',
-      'http://localhost:4173', // Vite preview
-      'http://localhost:5174', // Common alternative port
+      'http://localhost:4173',
+      'http://localhost:5174',
       'http://127.0.0.1:3000',
       'http://localhost:3001'
     ];
 
 
+
 app.use(cors({
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl requests, Postman)
-    if (!origin) {
-      return callback(null, true);
-    }
-    
-    // Allow all origins in development
-    if (process.env.NODE_ENV !== 'production') {
-      return callback(null, true);
-    }
-    
-    // Check if the origin is allowed
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      return callback(null, true);
-    } else {
-      const msg = `The CORS policy for this site does not allow access from the specified Origin: ${origin}.`;
-      console.warn('CORS blocked:', origin);
-      return callback(new Error(msg), false);
-    }
-  },
+  origin: process.env.NODE_ENV === 'production' 
+    ? true // Allow all origins in production
+    : ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173'],
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH', 'HEAD'],
-  allowedHeaders: [
-    'Content-Type', 
-    'Authorization', 
-    'X-Requested-With', 
-    'Accept', 
-    'Origin',
-    'Access-Control-Request-Method',
-    'Access-Control-Request-Headers',
-    'X-CSRF-Token'
-  ],
-  exposedHeaders: [
-    'Content-Range',
-    'X-Content-Range',
-    'Content-Disposition'
-  ],
-  maxAge: 86400, // 24 hours
-  preflightContinue: false,
-  optionsSuccessStatus: 204
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
 }));
+
+app.options('*', cors());
 
 // Explicitly handle preflight requests for all routes
 app.options('*', cors());
 
-app.use((req, res, next) => {
-  if (req.method === 'OPTIONS') {
-    console.log('Preflight request detected:', {
-      origin: req.headers.origin,
-      'access-control-request-method': req.headers['access-control-request-method'],
-      'access-control-request-headers': req.headers['access-control-request-headers']
-    });
-  }
-  next();
-});
 
 // Handle preflight requests
 app.options('*', cors());
@@ -4006,16 +3964,66 @@ app.use((err, req, res, next) => {
 
 // Debug middleware for file uploads
 app.use((req, res, next) => {
-  if (req.originalUrl.includes('/api/gallery/upload')) {
-    console.log('=== GALLERY UPLOAD DEBUG ===');
-    console.log('Content-Type:', req.headers['content-type']);
-    console.log('Auth header present:', !!req.headers.authorization);
-    console.log('Body keys:', Object.keys(req.body));
-    next();
-  } else {
-    next();
+  const origin = req.headers.origin;
+  
+  // Check if origin is allowed
+  if (allowedOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+    
+    // Handle preflight requests
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Max-Age', '86400'); // 24 hours
+      return res.status(200).end();
+    }
   }
+  
+  next();
 });
+
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (process.env.NODE_ENV !== 'production') return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1) return callback(null, true);
+    
+    console.warn('CORS blocked origin:', origin);
+    return callback(new Error('Not allowed by CORS'), false);
+  },
+  credentials: true
+}));
+
+app.options('*', (req, res) => {
+  const origin = req.headers.origin;
+  
+  if (allowedOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+    res.setHeader('Access-Control-Max-Age', '86400');
+  }
+  
+  res.status(200).end();
+});
+
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  console.log('Origin:', req.headers.origin);
+  console.log('User-Agent:', req.headers['user-agent']);
+  
+  if (req.method === 'OPTIONS') {
+    console.log('OPTIONS Preflight Request Headers:', {
+      'access-control-request-method': req.headers['access-control-request-method'],
+      'access-control-request-headers': req.headers['access-control-request-headers']
+    });
+  }
+  
+  next();
+});
+
 
 // 404 handler for non-API routes
 app.use('*', (req, res) => {
