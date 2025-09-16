@@ -190,6 +190,7 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
   ? [
       'https://homeheroes.help',
       'https://www.homeheroes.help',
+      'https://backendhomeheroes.onrender.com', // Add your backend domain too
       // Add other production domains as needed
     ]
   : [
@@ -202,26 +203,63 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
       'http://localhost:3001'
     ];
 
+
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl requests)
-    if (!origin) return callback(null, true);
+    // Allow requests with no origin (like mobile apps, curl requests, Postman)
+    if (!origin) {
+      return callback(null, true);
+    }
     
     // Allow all origins in development
     if (process.env.NODE_ENV !== 'production') {
       return callback(null, true);
     }
     
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+    // Check if the origin is allowed
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      return callback(null, true);
+    } else {
+      const msg = `The CORS policy for this site does not allow access from the specified Origin: ${origin}.`;
+      console.warn('CORS blocked:', origin);
       return callback(new Error(msg), false);
     }
-    return callback(null, true);
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH', 'HEAD'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-Requested-With', 
+    'Accept', 
+    'Origin',
+    'Access-Control-Request-Method',
+    'Access-Control-Request-Headers',
+    'X-CSRF-Token'
+  ],
+  exposedHeaders: [
+    'Content-Range',
+    'X-Content-Range',
+    'Content-Disposition'
+  ],
+  maxAge: 86400, // 24 hours
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 }));
+
+// Explicitly handle preflight requests for all routes
+app.options('*', cors());
+
+app.use((req, res, next) => {
+  if (req.method === 'OPTIONS') {
+    console.log('Preflight request detected:', {
+      origin: req.headers.origin,
+      'access-control-request-method': req.headers['access-control-request-method'],
+      'access-control-request-headers': req.headers['access-control-request-headers']
+    });
+  }
+  next();
+});
 
 // Handle preflight requests
 app.options('*', cors());
