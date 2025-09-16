@@ -26,10 +26,52 @@ const userSchema = new mongoose.Schema({
     enum: ['customer', 'provider', 'both'],
     required: true
   },
-  country: {
+
+  isAvailableNow: {
+    type: Boolean,
+    default: false
+  },
+  responseTime: {
     type: String,
-    enum: ['UK', 'USA', 'CANADA', 'NIGERIA'],
-    required: true
+    default: 'within 1 hour'
+  },
+  reviewCount: {
+    type: Number,
+    default: 0
+  },
+  completedJobs: {
+    type: Number,
+    default: 0
+  },
+  isVerified: {
+    type: Boolean,
+    default: false
+  },
+  isTopRated: {
+    type: Boolean,
+    default: false
+  },
+  rating: {
+    type: Number,
+    default: 4.5,
+    min: 0,
+    max: 5
+  },
+  address: { type: String, trim: true },
+  city: { type: String, trim: true },      // Make sure these exist
+  state: { type: String, trim: true },     // in your schema
+  country: { type: String, trim: true },
+  locationData: {
+    type: {
+      type: String,
+      enum: ['Point'],
+      default: 'Point'
+    },
+    coordinates: {
+      type: [Number], // [longitude, latitude]
+      default: [0, 0]
+    },
+    formattedAddress: String
   },
   isActive: {
     type: Boolean,
@@ -97,9 +139,9 @@ const userSchema = new mongoose.Schema({
     default: ''
   },
   profileImageFull: {
-  type: String,
-  default: ''
-},
+    type: String,
+    default: ''
+  },
   experience: {
     type: String,
     default: null
@@ -192,10 +234,13 @@ const userSchema = new mongoose.Schema({
   timestamps: true
 });
 
+
 // Index for better query performance
 userSchema.index({ email: 1 });
 userSchema.index({ emailVerificationToken: 1 });
 userSchema.index({ passwordResetToken: 1 });
+// ADDED: Index for location fields
+userSchema.index({ city: 1, state: 1, country: 1 });
 
 const User = mongoose.model('User', userSchema);
 
