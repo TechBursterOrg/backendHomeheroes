@@ -14,6 +14,7 @@ import Gallery from './models/Gallery.js';
 import multer from 'multer'; // Added for error handling
 import { Message } from './models/Message.js';
 import { Conversation } from './models/Conversation.js';
+import ServiceRequest from './models/ServiceRequest.js';
 
 // Import models
 import User from './models/User.js';
@@ -195,13 +196,21 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
       'http://localhost:5173',
       'http://localhost:3000',
       'http://127.0.0.1:5173',
-      'http://localhost:4173' // Vite preview
+      'http://localhost:4173', // Vite preview
+      'http://localhost:5174', // Common alternative port
+      'http://127.0.0.1:3000',
+      'http://localhost:3001'
     ];
 
 app.use(cors({
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps, curl requests)
     if (!origin) return callback(null, true);
+    
+    // Allow all origins in development
+    if (process.env.NODE_ENV !== 'production') {
+      return callback(null, true);
+    }
     
     if (allowedOrigins.indexOf(origin) === -1) {
       const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
@@ -211,7 +220,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
 }));
 
 // Handle preflight requests
@@ -1198,6 +1207,7 @@ function calculateEndTime(startTime, duration) {
   }
 }
 
+
 // Users endpoint
 app.get('/api/users', authenticateToken, async (req, res) => {
   try {
@@ -1423,6 +1433,1374 @@ app.get('/api/earnings', authenticateToken, async (req, res) => {
     });
   }
 });
+app.get('/api/debug/all-users', async (req, res) => {
+  try {
+    const users = await User.find({}).select('name email userType services city state country isActive isEmailVerified');
+    console.log('📊 Total users in database:', users.length);
+    
+    res.json({
+      success: true,
+      total: users.length,
+      users: users.map(user => ({
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        userType: user.userType,
+        services: user.services,
+        location: `${user.city || 'No city'}, ${user.state || 'No state'}, ${user.country || 'No country'}`,
+        isActive: user.isActive,
+        isEmailVerified: user.isEmailVerified
+      }))
+    });
+  } catch (error) {
+    console.error('Debug all users error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+// Enhanced providers endpoint with better location handling
+// In your server.js file, update the /api/providers endpoint:
+app.post('/api/debug/create-test-providers', async (req, res) => {
+  try {
+    // Delete existing test users first
+    await User.deleteMany({ email: { $in: ['alex@example.com', 'sarah@test.com', 'mike@test.com', 'fatima@test.com'] } });
+    
+    const bcrypt = await import('bcryptjs');
+    const hashedPassword = await bcrypt.hash('Password123', 10);
+    
+    const testProviders = [
+      {
+        name: 'Alex Johnson',
+        email: 'alex@example.com',
+        password: hashedPassword,
+        userType: 'provider',
+        country: 'Nigeria',
+        state: 'Lagos',
+        city: 'Lagos',
+        address: 'Lagos, Lagos, Nigeria',
+        isEmailVerified: true,
+        emailVerificationToken: null,
+        emailVerificationExpires: null,
+        services: ['House Cleaning', 'Garden Maintenance'],
+        hourlyRate: 2500,
+        experience: '3 years',
+        profileImage: '',
+        isActive: true,
+        isAvailableNow: true,
+        averageRating: 4.8,
+        reviewCount: 127,
+        completedJobs: 234,
+        isVerified: true,
+        isTopRated: true,
+        responseTime: 'within 30 minutes'
+      },
+      {
+        name: 'Sarah Williams',
+        email: 'sarah@test.com',
+        password: hashedPassword,
+        userType: 'provider',
+        country: 'Nigeria',
+        state: 'Lagos',
+        city: 'Ikeja',
+        address: 'Ikeja, Lagos, Nigeria',
+        isEmailVerified: true,
+        services: ['Plumbing', 'Electrical Work'],
+        hourlyRate: 3500,
+        experience: '5 years',
+        isActive: true,
+        isAvailableNow: true,
+        averageRating: 4.6,
+        reviewCount: 89,
+        completedJobs: 156
+      },
+      {
+        name: 'Mike Adebayo',
+        email: 'mike@test.com',
+        password: hashedPassword,
+        userType: 'both', // This user is both customer and provider
+        country: 'Nigeria',
+        state: 'Abuja',
+        city: 'Abuja',
+        address: 'Abuja, Federal Capital Territory, Nigeria',
+        isEmailVerified: true,
+        services: ['Painting', 'Interior Design'],
+        hourlyRate: 3000,
+        experience: '4 years',
+        isActive: true,
+        isAvailableNow: false,
+        averageRating: 4.7,
+        reviewCount: 156
+      },
+      {
+        name: 'Fatima Ibrahim',
+        email: 'fatima@test.com',
+        password: hashedPassword,
+        userType: 'provider',
+        country: 'Nigeria',
+        state: 'Lagos',
+        city: 'Ikeja',
+        address: 'Ikeja, Lagos, Nigeria',
+        isEmailVerified: true,
+        services: ['Laundry', 'House Cleaning', 'Cooking'],
+        hourlyRate: 2000,
+        experience: '2 years',
+        isActive: true,
+        isAvailableNow: true,
+        averageRating: 4.9,
+        reviewCount: 203
+      }
+    ];
+    
+    const createdProviders = [];
+    for (const providerData of testProviders) {
+      const provider = new User(providerData);
+      const saved = await provider.save();
+      createdProviders.push(saved);
+      console.log(`✅ Created test provider: ${saved.name} (${saved.email}) in ${saved.city}, ${saved.state}`);
+    }
+    
+    res.json({
+      success: true,
+      message: `Created ${createdProviders.length} test providers`,
+      providers: createdProviders.map(p => ({
+        id: p._id,
+        name: p.name,
+        email: p.email,
+        userType: p.userType,
+        services: p.services,
+        location: `${p.city}, ${p.state}, ${p.country}`,
+        isAvailableNow: p.isAvailableNow
+      }))
+    });
+  } catch (error) {
+    console.error('Create test providers error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create test providers',
+      error: error.message
+    });
+  }
+});
+
+// In your server.js file, update the /api/providers endpoint:
+
+// app.get('/api/providers', async (req, res) => {
+//   try {
+//     const { 
+//       service, 
+//       location, 
+//       availableNow, // This will be 'true' for immediate service type
+//       page = 1,
+//       limit = 50
+//     } = req.query;
+    
+//     console.log('📥 Provider query params:', { service, location, availableNow });
+    
+//     // Base query - show all active providers by default
+//     let query = { 
+//       userType: { $in: ['provider', 'both'] },
+//       isActive: true 
+//     };
+    
+//     console.log('🔍 Base query before filters:', JSON.stringify(query));
+    
+//     let currentUserId = null;
+//     try {
+//       const authHeader = req.headers['authorization'];
+//       if (authHeader) {
+//         const token = authHeader.split(' ')[1];
+//         if (token) {
+//           const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production');
+//           currentUserId = decoded.id;
+//           console.log('👤 Current user ID:', currentUserId);
+          
+//           // Exclude current user from results
+//           query._id = { $ne: new mongoose.Types.ObjectId(currentUserId) };
+//           console.log('🚫 Excluding current user from provider results');
+//         }
+//       }
+//     } catch (tokenError) {
+//       console.log('🔐 No valid auth token or token error, not excluding any users');
+//     }
+    
+//     // Filter by service if provided and not empty
+//     if (service && service.trim() !== '' && service !== 'all') {
+//       query.services = { 
+//         $in: [new RegExp(service, 'i')] 
+//       };
+//       console.log('🔍 Added service filter:', service);
+//     } else {
+//       console.log('🔧 No service filter applied');
+//     }
+    
+//     // Filter by location if provided and not empty
+//     if (location && location.trim() !== '' && location !== 'all') {
+//       const locationLower = location.toLowerCase();
+//       query.$or = [
+//         { city: { $regex: locationLower, $options: 'i' } },
+//         { state: { $regex: locationLower, $options: 'i' } },
+//         { country: { $regex: locationLower, $options: 'i' } },
+//         { address: { $regex: locationLower, $options: 'i' } }
+//       ];
+//       console.log('🔍 Added location filter:', location);
+//     } else {
+//       console.log('🌍 No location filter applied');
+//     }
+    
+//     // CRITICAL FIX: Only filter by availability if explicitly requested
+//     // For immediate service type, availableNow will be 'true'
+//     if (availableNow === 'true') {
+//       // Include providers who are available now OR providers who don't have this field set
+//       query.$or = [
+//         { isAvailableNow: true },
+//         { isAvailableNow: { $exists: false } }, // Include providers without this field
+//         { isAvailableNow: null } // Include providers with null value
+//       ];
+//       console.log('🔍 Added availability filter: now (including providers without availability field)');
+//     } else {
+//       console.log('⏰ No availability filter applied - showing all providers');
+//       // Don't filter by availability at all - show all providers
+//     }
+    
+//     console.log('📋 Final MongoDB query:', JSON.stringify(query, null, 2));
+    
+//     const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+//     // Get providers with the query
+//     const providers = await User.find(query)
+//       .select('name email services hourlyRate averageRating city state country profileImage isAvailableNow experience phoneNumber address reviewCount completedJobs isVerified isTopRated responseTime rating _id')
+//       .skip(skip)
+//       .limit(parseInt(limit));
+    
+//     const totalProviders = await User.countDocuments(query);
+    
+//     console.log('✅ Providers found with query:', providers.length);
+//     console.log('📊 Providers details:', providers.map(p => ({
+//       name: p.name,
+//       email: p.email,
+//       services: p.services && p.services.length > 0 ? p.services : ['No services'],
+//       city: p.city || 'No city',
+//       state: p.state || 'No state', 
+//       country: p.country || 'No country',
+//       isAvailableNow: p.isAvailableNow
+//     })));
+    
+//     // Calculate match scores and sort providers
+//     const scoredProviders = providers.map((provider) => {
+//       let score = 50; // Base score for all providers
+      
+//       // Service match scoring
+//       if (service && service.trim() !== '') {
+//         const serviceLower = service.toLowerCase();
+//         const providerServices = Array.isArray(provider.services) ? provider.services : [];
+        
+//         if (providerServices.length === 0) {
+//           // Give some score even if no services specified
+//           score += 5;
+//         } else {
+//           // Exact match gets highest score
+//           if (providerServices.some(s => s.toLowerCase() === serviceLower)) {
+//             score += 100;
+//           }
+//           // Partial match gets medium score
+//           else if (providerServices.some(s => s.toLowerCase().includes(serviceLower))) {
+//             score += 50;
+//           }
+//           // Any service match gets base score
+//           else {
+//             score += 10;
+//           }
+//         }
+//       } else if (Array.isArray(provider.services) && provider.services.length > 0) {
+//         // Bonus for having services defined when no specific service filter
+//         score += 15;
+//       }
+      
+//       // Location match scoring
+//       if (location && location.trim() !== '') {
+//         const locationLower = location.toLowerCase().trim();
+//         const providerAddress = (provider.address || '').toLowerCase();
+//         const providerCity = (provider.city || '').toLowerCase();
+//         const providerState = (provider.state || '').toLowerCase();
+//         const providerCountry = (provider.country || '').toLowerCase();
+        
+//         // Check for exact matches
+//         if (providerCity === locationLower) score += 80;
+//         else if (providerState === locationLower) score += 70;
+//         else if (providerCountry === locationLower) score += 60;
+//         // Check for partial matches
+//         else if (providerCity.includes(locationLower)) score += 40;
+//         else if (providerState.includes(locationLower)) score += 30;
+//         else if (providerCountry.includes(locationLower)) score += 20;
+//         else if (providerAddress.includes(locationLower)) score += 50;
+//       }
+      
+//       // Availability scoring (for immediate service type)
+//       if (availableNow === 'true') {
+//         if (provider.isAvailableNow === true) {
+//           score += 60;
+//         } else if (provider.isAvailableNow === undefined || provider.isAvailableNow === null) {
+//           score += 20; // Some score for providers without availability info
+//         }
+//       }
+      
+//       // Rating scoring (higher ratings get better scores)
+//       const rating = provider.averageRating || provider.rating || 4.0;
+//       score += rating * 10;
+      
+//       // Verified providers get bonus
+//       if (provider.isVerified) {
+//         score += 25;
+//       }
+      
+//       // Top-rated providers get bonus
+//       if (provider.isTopRated) {
+//         score += 35;
+//       }
+      
+//       // More reviews indicate more experience
+//       const reviewCount = provider.reviewCount || 0;
+//       score += Math.min(reviewCount / 10, 20);
+      
+//       return {
+//         ...provider.toObject(),
+//         _matchScore: score
+//       };
+//     });
+    
+//     // Sort by match score (highest first), then by rating, then by review count
+//     scoredProviders.sort((a, b) => {
+//       if (b._matchScore !== a._matchScore) {
+//         return b._matchScore - a._matchScore;
+//       }
+      
+//       const ratingA = a.averageRating || a.rating || 4.0;
+//       const ratingB = b.averageRating || b.rating || 4.0;
+//       if (ratingB !== ratingA) {
+//         return ratingB - ratingA;
+//       }
+      
+//       const reviewsA = a.reviewCount || 0;
+//       const reviewsB = b.reviewCount || 0;
+//       return reviewsB - reviewsA;
+//     });
+    
+//     // Transform providers to ensure consistent format
+//     const transformedProviders = scoredProviders.map((provider) => {
+//       // Ensure services is always an array
+//       let services = [];
+//       if (Array.isArray(provider.services)) {
+//         services = provider.services;
+//       } else if (typeof provider.services === 'string') {
+//         services = [provider.services];
+//       }
+      
+//       return {
+//         ...provider,
+//         _matchScore: undefined, // Remove from final output
+//         services: services,
+//         averageRating: provider.averageRating || provider.rating || 4.0,
+//         reviewCount: provider.reviewCount || 0,
+//         completedJobs: provider.completedJobs || 0,
+//         isVerified: provider.isVerified !== undefined ? provider.isVerified : false,
+//         isTopRated: provider.isTopRated !== undefined ? provider.isTopRated : false,
+//         isAvailableNow: provider.isAvailableNow !== undefined ? provider.isAvailableNow : true,
+//         responseTime: provider.responseTime || 'within 1 hour',
+//         hourlyRate: provider.hourlyRate || 0
+//       };
+//     });
+    
+//     console.log('📍 Search location was:', location);
+//     console.log('🔧 Search service was:', service);
+//     console.log('⏰ Available now filter:', availableNow);
+//     console.log('🏆 All providers count:', transformedProviders.length);
+//     console.log('📋 All providers:', transformedProviders.map(p => p.name));
+    
+//     res.json({
+//       success: true,
+//       data: {
+//         providers: transformedProviders,
+//         pagination: {
+//           currentPage: parseInt(page),
+//           totalPages: Math.ceil(totalProviders / parseInt(limit)),
+//           totalProviders,
+//           hasNextPage: parseInt(page) < Math.ceil(totalProviders / parseInt(limit)),
+//           hasPrevPage: parseInt(page) > 1,
+//           limit: parseInt(limit)
+//         }
+//       }
+//     });
+    
+//   } catch (error) {
+//     console.error('❌ Error fetching providers:', error);
+//     res.status(500).json({
+//       success: false,
+//       message: 'Failed to fetch providers',
+//       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+//     });
+//   }
+// });
+
+// In your server.js file, update the location filtering part of the /api/providers endpoint:
+
+app.get('/api/providers', async (req, res) => {
+  try {
+    const { 
+      service, 
+      location, 
+      availableNow, 
+      page = 1,
+      limit = 50
+    } = req.query;
+    
+    console.log('📥 Provider query params:', { service, location, availableNow });
+    
+    let currentUserId = null;
+    try {
+      const authHeader = req.headers['authorization'];
+      if (authHeader) {
+        const token = authHeader.split(' ')[1];
+        if (token) {
+          const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production');
+          currentUserId = decoded.id;
+          console.log('👤 Current user ID:', currentUserId);
+        }
+      }
+    } catch (tokenError) {
+      console.log('🔐 No valid auth token or token error, not excluding any users');
+    }
+
+    // Build main query - FIXED SERVICE FILTER
+    const mainQuery = {
+      userType: { $in: ['provider', 'both'] },
+      isActive: true
+    };
+
+    // Exclude current user if authenticated
+    if (currentUserId) {
+  mainQuery._id = { $ne: new mongoose.Types.ObjectId(currentUserId) };
+}
+
+    // FIXED: Service filter - use regex instead of empty object
+    if (service && service.trim() !== '' && service !== 'all') {
+      mainQuery.services = { 
+        $in: [new RegExp(service, 'i')] 
+      };
+      console.log('🔍 Added service filter:', service);
+    } else {
+      console.log('🔧 No service filter applied');
+    }
+
+    // Build location filters if provided - FIXED: Use partial matches
+    const locationFilters = [];
+    if (location && location.trim() !== '' && location !== 'all') {
+      const locationLower = location.toLowerCase().trim();
+      const mainLocationTerm = locationLower.split(',')[0].trim();
+      
+      console.log('🔍 Location filter:', locationLower);
+      console.log('🔍 Main location term:', mainLocationTerm);
+      
+      // FIXED: Use partial matches instead of exact matches
+      locationFilters.push({
+        $or: [
+          { city: { $regex: mainLocationTerm, $options: 'i' } },
+          { state: { $regex: mainLocationTerm, $options: 'i' } },
+          { country: { $regex: mainLocationTerm, $options: 'i' } },
+          { address: { $regex: mainLocationTerm, $options: 'i' } }
+        ]
+      });
+    } else {
+      console.log('🌍 No location filter applied');
+    }
+
+    // Build availability filters if provided
+    const availabilityFilters = [];
+    if (availableNow === 'true') {
+      availabilityFilters.push({
+        $or: [
+          { isAvailableNow: true },
+          { isAvailableNow: { $exists: false } },
+          { isAvailableNow: null }
+        ]
+      });
+      console.log('🔍 Added availability filter: now');
+    } else {
+      console.log('⏰ No availability filter applied');
+    }
+
+    // Combine all filters
+    const allFilters = [...locationFilters, ...availabilityFilters];
+
+    if (allFilters.length > 0) {
+      if (allFilters.length === 1) {
+        // If only one filter type, add it directly to mainQuery
+        Object.assign(mainQuery, allFilters[0]);
+      } else {
+        // If multiple filter types, combine with $and
+        mainQuery.$and = allFilters;
+      }
+    }
+
+    console.log('📋 Final MongoDB query:', JSON.stringify(mainQuery, null, 2));
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    // Get providers with the query
+    const providers = await User.find(mainQuery)
+      .select('name email services hourlyRate averageRating city state country profileImage isAvailableNow experience phoneNumber address reviewCount completedJobs isVerified isTopRated responseTime rating _id')
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const totalProviders = await User.countDocuments(mainQuery);
+
+    console.log('✅ Providers found with query:', providers.length);
+    console.log('📊 Providers details:', providers.map(p => ({
+      name: p.name,
+      email: p.email,
+      services: p.services && p.services.length > 0 ? p.services : ['No services'],
+      city: p.city || 'No city',
+      state: p.state || 'No state', 
+      country: p.country || 'No country',
+      address: p.address || 'No address',
+      isAvailableNow: p.isAvailableNow
+    })));
+
+    // Calculate match scores and sort providers
+    const scoredProviders = providers.map((provider) => {
+      let score = 50; // Base score for all providers
+      
+      // Service match scoring
+      if (service && service.trim() !== '') {
+        const serviceLower = service.toLowerCase();
+        const providerServices = Array.isArray(provider.services) ? provider.services : [];
+        
+        if (providerServices.length === 0) {
+          score += 5;
+        } else {
+          if (providerServices.some(s => s.toLowerCase() === serviceLower)) {
+            score += 100;
+          }
+          else if (providerServices.some(s => s.toLowerCase().includes(serviceLower))) {
+            score += 50;
+          }
+          else {
+            score += 10;
+          }
+        }
+      } else if (Array.isArray(provider.services) && provider.services.length > 0) {
+        score += 15;
+      }
+      
+      // Location match scoring
+      if (location && location.trim() !== '') {
+        const locationLower = location.toLowerCase().trim();
+        const mainLocationTerm = locationLower.split(',')[0].trim();
+        
+        const providerAddress = (provider.address || '').toLowerCase();
+        const providerCity = (provider.city || '').toLowerCase();
+        const providerState = (provider.state || '').toLowerCase();
+        const providerCountry = (provider.country || '').toLowerCase();
+        
+        // Check for exact matches
+        if (providerCity === mainLocationTerm) score += 100;
+        else if (providerState === mainLocationTerm) score += 90;
+        else if (providerCountry === mainLocationTerm) score += 80;
+        // Check for partial matches
+        else if (providerCity.includes(mainLocationTerm)) score += 70;
+        else if (providerState.includes(mainLocationTerm)) score += 60;
+        else if (providerCountry.includes(mainLocationTerm)) score += 50;
+        else if (providerAddress.includes(mainLocationTerm)) score += 40;
+      }
+      
+      // Availability scoring
+      if (availableNow === 'true') {
+        if (provider.isAvailableNow === true) {
+          score += 60;
+        } else if (provider.isAvailableNow === undefined || provider.isAvailableNow === null) {
+          score += 20;
+        }
+      }
+      
+      // Rating scoring
+      const rating = provider.averageRating || provider.rating || 4.0;
+      score += rating * 10;
+      
+      // Verified providers get bonus
+      if (provider.isVerified) {
+        score += 25;
+      }
+      
+      // Top-rated providers get bonus
+      if (provider.isTopRated) {
+        score += 35;
+      }
+      
+      // More reviews indicate more experience
+      const reviewCount = provider.reviewCount || 0;
+      score += Math.min(reviewCount / 10, 20);
+      
+      return {
+        ...provider.toObject(),
+        _matchScore: score
+      };
+    });
+    
+    // Sort by match score (highest first), then by rating, then by review count
+    scoredProviders.sort((a, b) => {
+      if (b._matchScore !== a._matchScore) {
+        return b._matchScore - a._matchScore;
+      }
+      
+      const ratingA = a.averageRating || a.rating || 4.0;
+      const ratingB = b.averageRating || b.rating || 4.0;
+      if (ratingB !== ratingA) {
+        return ratingB - ratingA;
+      }
+      
+      const reviewsA = a.reviewCount || 0;
+      const reviewsB = b.reviewCount || 0;
+      return reviewsB - reviewsA;
+    });
+    
+    // Transform providers to ensure consistent format
+    const transformedProviders = scoredProviders.map((provider) => {
+      // Ensure services is always an array
+      let services = [];
+      if (Array.isArray(provider.services)) {
+        services = provider.services;
+      } else if (typeof provider.services === 'string') {
+        services = [provider.services];
+      }
+      
+      // Create a formatted location string for display
+      const locationParts = [
+        provider.city,
+        provider.state,
+        provider.country
+      ].filter(part => part && part.trim() !== '');
+      
+      const locationText = locationParts.join(', ') || 'Location not specified';
+      
+      return {
+        ...provider,
+        _matchScore: undefined, // Remove from final output
+        services: services,
+        location: locationText,
+        averageRating: provider.averageRating || provider.rating || 4.0,
+        reviewCount: provider.reviewCount || 0,
+        completedJobs: provider.completedJobs || 0,
+        isVerified: provider.isVerified !== undefined ? provider.isVerified : false,
+        isTopRated: provider.isTopRated !== undefined ? provider.isTopRated : false,
+        isAvailableNow: provider.isAvailableNow !== undefined ? provider.isAvailableNow : true,
+        responseTime: provider.responseTime || 'within 1 hour',
+        hourlyRate: provider.hourlyRate || 0
+      };
+    });
+    
+    console.log('📍 Search location was:', location);
+    console.log('🔧 Search service was:', service);
+    console.log('⏰ Available now filter:', availableNow);
+    console.log('🏆 All providers count:', transformedProviders.length);
+    
+    res.json({
+      success: true,
+      data: {
+        providers: transformedProviders,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(totalProviders / parseInt(limit)),
+          totalProviders,
+          hasNextPage: parseInt(page) < Math.ceil(totalProviders / parseInt(limit)),
+          hasPrevPage: parseInt(page) > 1,
+          limit: parseInt(limit)
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fetching providers:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch providers',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+app.get('/api/debug/providers-error', async (req, res) => {
+  try {
+    // Test the exact same logic but with proper error handling
+    const { service, location, availableNow } = req.query;
+    
+    console.log('Testing providers query with:', { service, location, availableNow });
+    
+    // Initialize query properly
+    let query = {
+      userType: { $in: ['provider', 'both'] },
+      isActive: true
+    };
+    
+    // Test service filter
+    if (service && service.trim() !== '' && service !== 'all') {
+      query.services = { 
+        $in: [new RegExp(service, 'i')] 
+      };
+      console.log('Service filter applied:', query.services);
+    }
+    
+    // Test location filter  
+    if (location && location.trim() !== '' && location !== 'all') {
+      const locationLower = location.toLowerCase().trim();
+      query.$or = [
+        { city: { $regex: locationLower, $options: 'i' } },
+        { state: { $regex: locationLower, $options: 'i' } },
+        { country: { $regex: locationLower, $options: 'i' } },
+        { address: { $regex: locationLower, $options: 'i' } }
+      ];
+      console.log('Location filter applied:', query.$or);
+    }
+    
+    // Test availability filter
+    if (availableNow === 'true') {
+      query.$or = query.$or || [];
+      query.$or.push({
+        $or: [
+          { isAvailableNow: true },
+          { isAvailableNow: { $exists: false } },
+          { isAvailableNow: null }
+        ]
+      });
+      console.log('Availability filter applied');
+    }
+    
+    console.log('Final query:', JSON.stringify(query, null, 2));
+    
+    const results = await User.find(query).limit(5);
+    
+    res.json({
+      success: true,
+      query: query,
+      results: results.map(r => ({
+        name: r.name,
+        services: r.services,
+        location: `${r.city}, ${r.state}, ${r.country}`,
+        isAvailableNow: r.isAvailableNow
+      }))
+    });
+    
+  } catch (error) {
+    console.error('Debug error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      stack: error.stack 
+    });
+  }
+});
+
+
+app.post('/api/debug/cleanup-bad-providers', async (req, res) => {
+  try {
+    // Delete providers with incomplete or incorrect location data
+    const result = await User.deleteMany({
+      $or: [
+        { name: { $in: ['Peter vjj', 'Suf', 'ogundiran tosin', 'Jamie Fabrinnzo', 'Rebecca popoola', 'rebecca popoola'] } },
+        { city: { $in: ['No city', '', null] } },
+        { state: { $in: ['No state', '', null] } },
+        { country: { $in: ['No country', '', null] } }
+      ]
+    });
+    
+    res.json({
+      success: true,
+      message: `Deleted ${result.deletedCount} providers with bad location data`
+    });
+  } catch (error) {
+    console.error('Cleanup bad providers error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to cleanup bad providers',
+      error: error.message
+    });
+  }
+});
+
+
+app.post('/api/debug/setup-test-data', async (req, res) => {
+  try {
+    console.log('🧹 Cleaning up existing test data...');
+    
+    // Delete all existing test users
+    await User.deleteMany({
+      $or: [
+        { email: { $in: ['alex@example.com', 'sarah@test.com', 'mike@test.com', 'fatima@test.com'] } },
+        { name: { $in: ['Alex Johnson', 'Sarah Williams', 'Mike Adebayo', 'Fatima Ibrahim'] } }
+      ]
+    });
+    
+    console.log('✅ Existing test data cleaned up');
+    
+    const bcrypt = await import('bcryptjs');
+    const hashedPassword = await bcrypt.hash('Password123', 10);
+    
+    // Create test providers with proper location data
+    const testProviders = [
+      {
+        name: 'Alex Johnson',
+        email: 'alex@example.com',
+        password: hashedPassword,
+        userType: 'provider',
+        country: 'Nigeria',
+        state: 'Lagos',
+        city: 'Lagos',
+        address: 'Victoria Island, Lagos, Nigeria',
+        isEmailVerified: true,
+        services: ['House Cleaning', 'Garden Maintenance'],
+        hourlyRate: 2500,
+        experience: '3 years',
+        isActive: true,
+        isAvailableNow: true,
+        averageRating: 4.8,
+        reviewCount: 127,
+        completedJobs: 234
+      },
+      {
+        name: 'Sarah Williams',
+        email: 'sarah@test.com',
+        password: hashedPassword,
+        userType: 'provider',
+        country: 'Nigeria',
+        state: 'Lagos',
+        city: 'Ikeja',
+        address: 'Ikeja, Lagos, Nigeria',
+        isEmailVerified: true,
+        services: ['Plumbing', 'Electrical Work'],
+        hourlyRate: 3500,
+        experience: '5 years',
+        isActive: true,
+        isAvailableNow: true,
+        averageRating: 4.6,
+        reviewCount: 89,
+        completedJobs: 156
+      },
+      {
+        name: 'Mike Adebayo',
+        email: 'mike@test.com',
+        password: hashedPassword,
+        userType: 'both',
+        country: 'Nigeria',
+        state: 'Abuja',
+        city: 'Abuja',
+        address: 'Garki, Abuja, Nigeria',
+        isEmailVerified: true,
+        services: ['Painting', 'Interior Design'],
+        hourlyRate: 3000,
+        experience: '4 years',
+        isActive: true,
+        isAvailableNow: true,
+        averageRating: 4.7,
+        reviewCount: 156,
+        completedJobs: 89
+      },
+      {
+        name: 'Fatima Ibrahim',
+        email: 'fatima@test.com',
+        password: hashedPassword,
+        userType: 'provider',
+        country: 'Nigeria',
+        state: 'Abuja',
+        city: 'Abuja',
+        address: 'Wuse, Abuja, Nigeria',
+        isEmailVerified: true,
+        services: ['Laundry', 'House Cleaning', 'Cooking'],
+        hourlyRate: 2000,
+        experience: '2 years',
+        isActive: true,
+        isAvailableNow: true,
+        averageRating: 4.9,
+        reviewCount: 203,
+        completedJobs: 145
+      }
+    ];
+    
+    const createdProviders = [];
+    for (const providerData of testProviders) {
+      const provider = new User(providerData);
+      const saved = await provider.save();
+      createdProviders.push(saved);
+      console.log(`✅ Created provider: ${saved.name} in ${saved.city}, ${saved.state}`);
+    }
+    
+    // Also clean up the problematic providers that don't have proper locations
+    await User.deleteMany({
+      name: { 
+        $in: [
+          'Peter vjj', 
+          'Suf', 
+          'ogundiran tosin', 
+          'Jamie Fabrinnzo', 
+          'Rebecca popoola',
+          'rebecca popoola'
+        ] 
+      }
+    });
+    
+    console.log('🧹 Cleaned up providers with incomplete location data');
+    
+    res.json({
+      success: true,
+      message: `Created ${createdProviders.length} test providers with proper location data`,
+      providers: createdProviders.map(p => ({
+        id: p._id,
+        name: p.name,
+        email: p.email,
+        location: `${p.city}, ${p.state}, ${p.country}`,
+        services: p.services,
+        isAvailableNow: p.isAvailableNow
+      }))
+    });
+    
+  } catch (error) {
+    console.error('Setup test data error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to setup test data',
+      error: error.message
+    });
+  }
+});
+
+
+app.post('/api/debug/fix-availability', async (req, res) => {
+  try {
+    // Update all providers to have isAvailableNow set to true
+    const result = await User.updateMany(
+      { 
+        userType: { $in: ['provider', 'both'] },
+        isActive: true 
+      },
+      { 
+        $set: { 
+          isAvailableNow: true,
+          responseTime: 'within 1 hour',
+          reviewCount: 0,
+          completedJobs: 0,
+          isVerified: false,
+          isTopRated: false,
+          rating: 4.0
+        }
+      }
+    );
+    
+    res.json({
+      success: true,
+      message: `Updated ${result.modifiedCount} providers with default availability settings`
+    });
+  } catch (error) {
+    console.error('Fix availability error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update provider availability',
+      error: error.message
+    });
+  }
+});
+
+// Simple test endpoint to fix availability from browser
+app.get('/api/debug/fix-availability-now', async (req, res) => {
+  try {
+    // Update all providers to have isAvailableNow set to true
+    const result = await User.updateMany(
+      { 
+        userType: { $in: ['provider', 'both'] },
+        isActive: true 
+      },
+      { 
+        $set: { 
+          isAvailableNow: true,
+          responseTime: 'within 1 hour',
+          reviewCount: 0,
+          completedJobs: 0,
+          isVerified: false,
+          isTopRated: false,
+          rating: 4.0
+        }
+      }
+    );
+    
+    res.json({
+      success: true,
+      message: `Updated ${result.modifiedCount} providers with default availability settings`
+    });
+  } catch (error) {
+    console.error('Fix availability error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update provider availability',
+      error: error.message
+    });
+  }
+});
+
+
+app.get('/api/debug/all-providers', async (req, res) => {
+  try {
+    const providers = await User.find({
+      userType: { $in: ['provider', 'both'] },
+      isActive: true
+    }).select('name services city state country isAvailableNow');
+    
+    res.json({
+      success: true,
+      count: providers.length,
+      providers: providers
+    });
+  } catch (error) {
+    console.error('Debug providers error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/debug/fix-location-data', async (req, res) => {
+  try {
+    // Update providers with missing location data
+    const updates = await User.updateMany(
+      {
+        userType: { $in: ['provider', 'both'] },
+        $or: [
+          { city: { $in: [null, '', 'No city'] } },
+          { state: { $in: [null, '', 'No state'] } },
+          { country: { $in: [null, '', 'No country'] } }
+        ]
+      },
+      {
+        $set: {
+          city: 'Lagos',
+          state: 'Lagos',
+          country: 'Nigeria'
+        }
+      }
+    );
+    
+    res.json({
+      success: true,
+      message: `Updated ${updates.modifiedCount} providers with location data`
+    });
+  } catch (error) {
+    console.error('Fix location data error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+app.get('/api/debug/all-providers-with-details', async (req, res) => {
+  try {
+    const allProviders = await User.find({
+      userType: { $in: ['provider', 'both'] },
+      isActive: true
+    }).select('name email userType services city state country isAvailableNow isActive');
+    
+    let currentUserId = null;
+    try {
+      const authHeader = req.headers['authorization'];
+      if (authHeader) {
+        const token = authHeader.split(' ')[1];
+        if (token) {
+          const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production');
+          currentUserId = decoded.id;
+        }
+      }
+    } catch (tokenError) {
+      console.log('No auth token for debug');
+    }
+    
+    res.json({
+      success: true,
+      currentUserId,
+      totalCount: allProviders.length,
+      providers: allProviders.map(p => ({
+        id: p._id,
+        name: p.name,
+        email: p.email,
+        userType: p.userType,
+        services: p.services,
+        location: `${p.city || 'No city'}, ${p.state || 'No state'}, ${p.country || 'No country'}`,
+        isAvailableNow: p.isAvailableNow,
+        isActive: p.isActive,
+        isCurrentUser: currentUserId ? p._id.toString() === currentUserId : false
+      }))
+    });
+  } catch (error) {
+    console.error('Debug all providers error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Debug endpoint to test the exact query
+app.get('/api/debug/test-no-filters', async (req, res) => {
+  try {
+    const query = {
+      userType: { $in: ['provider', 'both'] },
+      isActive: true,
+      _id: { $ne: new mongoose.Types.ObjectId('68af7817cf6c6c9eefd5476e') } // Your current user ID
+    };
+    
+    console.log('Testing query with no filters:', JSON.stringify(query, null, 2));
+    
+    const results = await User.find(query);
+    
+    res.json({
+      success: true,
+      query: query,
+      resultsCount: results.length,
+      results: results.map(r => ({
+        name: r.name,
+        email: r.email,
+        userType: r.userType,
+        services: r.services,
+        isAvailableNow: r.isAvailableNow,
+        isActive: r.isActive
+      }))
+    });
+  } catch (error) {
+    console.error('Test no filters error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
+app.get('/api/debug/current-user', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    
+    res.json({
+      success: true,
+      currentUser: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        userType: user.userType
+      },
+      allProviders: await User.find({ 
+        userType: { $in: ['provider', 'both'] },
+        isActive: true 
+      }).select('name email userType')
+    });
+  } catch (error) {
+    console.error('Debug current user error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/debug/providers-detailed', async (req, res) => {
+  try {
+    console.log('🔍 Debug: Fetching all providers with detailed info');
+    
+    const providers = await User.find({ 
+      userType: { $in: ['provider', 'both'] },
+      isActive: true 
+    }).select('name email userType services city state country isActive isAvailableNow');
+    
+    console.log('📊 MongoDB providers count:', providers.length);
+    console.log('📋 Providers:', providers.map(p => ({
+      name: p.name,
+      email: p.email,
+      userType: p.userType,
+      services: p.services,
+      servicesCount: p.services.length,
+      location: `${p.city}, ${p.state}, ${p.country}`,
+      isActive: p.isActive,
+      isAvailableNow: p.isAvailableNow
+    })));
+    
+    res.json({
+      success: true,
+      count: providers.length,
+      providers: providers
+    });
+  } catch (error) {
+    console.error('❌ Detailed debug error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+
+app.post('/api/debug/update-provider-fields', async (req, res) => {
+  try {
+    // Update all providers to have the required fields
+    const result = await User.updateMany(
+      { userType: { $in: ['provider', 'both'] } },
+      { 
+        $set: { 
+          isAvailableNow: true,
+          responseTime: 'within 1 hour',
+          reviewCount: { $ifNull: ['$reviewCount', Math.floor(Math.random() * 100) + 10] },
+          completedJobs: 0, // CHANGED: Set all completed jobs to 0
+          isVerified: { $ifNull: ['$isVerified', Math.random() > 0.3] },
+          isTopRated: { $ifNull: ['$isTopRated', Math.random() > 0.7] },
+          rating: { $ifNull: ['$rating', { $ifNull: ['$averageRating', 4 + Math.random()] }] }
+        }
+      }
+    );
+    
+    res.json({
+      success: true,
+      message: `Updated ${result.modifiedCount} providers with default fields`
+    });
+  } catch (error) {
+    console.error('Update provider fields error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update provider fields',
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/debug/providers', async (req, res) => {
+  try {
+    console.log('🔍 Debug: Fetching all providers from MongoDB');
+    
+    const providers = await User.find({ 
+      userType: { $in: ['provider', 'both'] },
+      isActive: true 
+    }).select('name email userType services city state country isActive');
+    
+    console.log('📊 MongoDB providers count:', providers.length);
+    console.log('📋 Providers:', providers.map(p => ({
+      name: p.name,
+      email: p.email,
+      userType: p.userType,
+      services: p.services,
+      location: `${p.city}, ${p.state}, ${p.country}`,
+      isActive: p.isActive
+    })));
+    
+    res.json({
+      success: true,
+      count: providers.length,
+      providers: providers
+    });
+  } catch (error) {
+    console.error('❌ Debug error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+
+
+
+app.get('/api/services', async (req, res) => {
+  try {
+    const { q } = req.query;
+    
+    // Get unique services from providers
+    const services = await User.aggregate([
+      { 
+        $match: { 
+          userType: { $in: ['provider', 'both'] },
+          services: { $exists: true, $ne: [] }
+        } 
+      },
+      { $unwind: '$services' },
+      { $group: { _id: '$services' } },
+      { $sort: { _id: 1 } }
+    ]);
+
+    const serviceNames = services.map(s => s._id);
+    
+    // Filter by search query if provided
+    let filteredServices = serviceNames;
+    if (q) {
+      filteredServices = serviceNames.filter(service => 
+        service.toLowerCase().includes(q.toLowerCase())
+      );
+    }
+
+    res.json({
+      success: true,
+      data: { services: filteredServices }
+    });
+  } catch (error) {
+    console.error('Error fetching services:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch services',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.get('/api/service-requests/search', async (req, res) => {
+  try {
+    const { location, radius, available } = req.query;
+    
+    let filter = { status: 'pending' };
+    
+    // Filter by location
+    if (location) {
+      filter.$or = [
+        { location: { $regex: location, $options: 'i' } },
+        { 'customerId.location': { $regex: location, $options: 'i' } }
+      ];
+    }
+    
+    // Filter by availability
+    if (available === 'true') {
+      filter.urgency = { $in: ['urgent', 'high'] };
+    }
+    
+    const requests = await ServiceRequest.find(filter)
+      .populate('customerId', 'name email phoneNumber location')
+      .sort({ createdAt: -1 })
+      .limit(20);
+
+    res.json({
+      success: true,
+      data: { requests }
+    });
+  } catch (error) {
+    console.error('Error searching service requests:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to search service requests',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+// Providers/search endpoint
+app.get('/api/service-requests', async (req, res) => {
+  const { q, location, radius, available } = req.query;
+  // Implement your provider search logic
+  res.json({ data: [] }); // Return your providers data
+});
+
+// Favorites endpoint
+app.get('/api/auth/favorites', authenticateToken, async (req, res) => {
+  try {
+    // For now, return empty array since favorites functionality isn't implemented yet
+    // You can implement this later by adding a favorites field to the User model
+    res.json({
+      success: true,
+      data: { favorites: [] }
+    });
+  } catch (error) {
+    console.error('Get favorites error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch favorites',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+
 
 //Messages end point
 
@@ -1586,6 +2964,475 @@ app.get('/api/messages/conversations', authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch conversations'
+    });
+  }
+});
+
+app.post('/api/service-requests', authenticateToken, async (req, res) => {
+  try {
+    const {
+      serviceType,
+      description,
+      location,
+      coordinates,
+      urgency,
+      timeframe,
+      budget,
+      contactInfo,
+      category
+    } = req.body;
+
+    // Validate required fields
+    if (!serviceType || !description || !location) {
+      return res.status(400).json({
+        success: false,
+        message: 'Service type, description, and location are required'
+      });
+    }
+
+    // Get customer information from authenticated user
+    const customer = await User.findById(req.user.id);
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Create new service request with proper status
+    const newRequest = new ServiceRequest({
+      serviceType,
+      description,
+      location,
+      coordinates: coordinates || { lat: 0, lng: 0 },
+      urgency: urgency || 'normal',
+      timeframe: timeframe || 'ASAP',
+      budget: budget || 'Not specified',
+      contactInfo: {
+        name: contactInfo?.name || customer.name,
+        phone: contactInfo?.phone || customer.phoneNumber || 'Not provided',
+        email: contactInfo?.email || customer.email
+      },
+      customerId: req.user.id,
+      category: category || 'general',
+      status: 'pending' // This ensures the job will be visible to providers
+    });
+
+    const savedRequest = await newRequest.save();
+    
+    // Populate customer info for immediate response
+    await savedRequest.populate('customerId', 'name email phoneNumber');
+
+    res.status(201).json({
+      success: true,
+      message: 'Service request created successfully',
+      data: savedRequest
+    });
+  } catch (error) {
+    console.error('Create service request error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create service request',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+// Get all service requests (for provider dashboard)
+app.get('/api/service-requests', authenticateToken, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const status = req.query.status;
+    const serviceType = req.query.serviceType;
+    const category = req.query.category;
+
+    // Default filter shows only pending requests to providers
+    let filter = { status: 'pending' };
+    
+    // Allow filtering by different statuses
+    if (status && status !== 'all') {
+      filter.status = status;
+    }
+    
+    // Filter by service type
+    if (serviceType && serviceType !== 'all') {
+      filter.serviceType = { $regex: serviceType, $options: 'i' };
+    }
+    
+    // Filter by category
+    if (category && category !== 'all') {
+      filter.category = category;
+    }
+
+    const options = {
+      page,
+      limit,
+      sort: { createdAt: -1 },
+      populate: { 
+        path: 'customerId', 
+        select: 'name email phoneNumber profileImage' 
+      }
+    };
+
+    // Use pagination
+    const result = await ServiceRequest.paginate(filter, options);
+
+    res.json({
+      success: true,
+      data: {
+        requests: result.docs,
+        totalDocs: result.totalDocs,
+        limit: result.limit,
+        totalPages: result.totalPages,
+        page: result.page,
+        pagingCounter: result.pagingCounter,
+        hasPrevPage: result.hasPrevPage,
+        hasNextPage: result.hasNextPage,
+        prevPage: result.prevPage,
+        nextPage: result.nextPage
+      }
+    });
+  } catch (error) {
+    console.error('Get service requests error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch service requests',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+app.get('/api/jobs/applied', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        appliedJobIds: user.appliedJobs || []
+      }
+    });
+  } catch (error) {
+    console.error('Get applied jobs error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch applied jobs'
+    });
+  }
+});
+
+
+app.post('/api/jobs/apply', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.body;
+    
+    if (!jobId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Job ID is required'
+      });
+    }
+    
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+    
+    // Add job to applied jobs if not already there
+    if (!user.appliedJobs) {
+      user.appliedJobs = [];
+    }
+    
+    if (!user.appliedJobs.includes(jobId)) {
+      user.appliedJobs.push(jobId);
+      await user.save();
+    }
+    
+    res.json({
+      success: true,
+      message: 'Application submitted successfully'
+    });
+  } catch (error) {
+    console.error('Job application error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to submit application'
+    });
+  }
+});
+
+
+// Get a single service request
+app.get('/api/service-requests/:id', authenticateToken, async (req, res) => {
+  try {
+    const request = await ServiceRequest.findById(req.params.id)
+      .populate('customerId', 'name email phoneNumber profileImage');
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service request not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: request
+    });
+  } catch (error) {
+    console.error('Get service request error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch service request'
+    });
+  }
+});
+
+
+// Update service request status (for providers to accept/reject)
+app.patch('/api/service-requests/:id/status', authenticateToken, async (req, res) => {
+  try {
+    const { status, providerId } = req.body;
+
+    if (!status || !['pending', 'accepted', 'rejected', 'completed', 'cancelled'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid status is required'
+      });
+    }
+
+    const request = await ServiceRequest.findById(req.params.id);
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service request not found'
+      });
+    }
+
+    // If accepting a request, assign the provider
+    if (status === 'accepted' && providerId) {
+      request.providerId = providerId;
+      request.acceptedAt = new Date();
+    }
+
+    request.status = status;
+    request.updatedAt = new Date();
+
+    const updatedRequest = await request.save();
+    await updatedRequest.populate('customerId', 'name email phoneNumber');
+    await updatedRequest.populate('providerId', 'name email phoneNumber');
+
+    res.json({
+      success: true,
+      message: `Service request ${status} successfully`,
+      data: updatedRequest
+    });
+  } catch (error) {
+    console.error('Update service request status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update service request status'
+    });
+  }
+});
+
+
+// Get service requests for a specific customer
+app.get('/api/service-requests/customer/:customerId', authenticateToken, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const status = req.query.status;
+
+    let filter = { customerId: req.params.customerId };
+    if (status && status !== 'all') {
+      filter.status = status;
+    }
+
+    const options = {
+      page,
+      limit,
+      sort: { createdAt: -1 }
+    };
+
+    const result = await ServiceRequest.paginate(filter, options);
+
+    res.json({
+      success: true,
+      data: {
+        requests: result.docs,
+        totalDocs: result.totalDocs,
+        limit: result.limit,
+        totalPages: result.totalPages,
+        page: result.page,
+        pagingCounter: result.pagingCounter,
+        hasPrevPage: result.hasPrevPage,
+        hasNextPage: result.hasNextPage,
+        prevPage: result.prevPage,
+        nextPage: result.nextPage
+      }
+    });
+  } catch (error) {
+    console.error('Get customer service requests error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch customer service requests'
+    });
+  }
+});
+
+// Get service requests for a specific provider
+app.get('/api/service-requests/provider/:providerId', authenticateToken, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const status = req.query.status;
+
+    let filter = { providerId: req.params.providerId };
+    if (status && status !== 'all') {
+      filter.status = status;
+    }
+
+    const options = {
+      page,
+      limit,
+      sort: { createdAt: -1 },
+      populate: { path: 'customerId', select: 'name email phoneNumber profileImage' }
+    };
+
+    const result = await ServiceRequest.paginate(filter, options);
+
+    res.json({
+      success: true,
+      data: {
+        requests: result.docs,
+        totalDocs: result.totalDocs,
+        limit: result.limit,
+        totalPages: result.totalPages,
+        page: result.page,
+        pagingCounter: result.pagingCounter,
+        hasPrevPage: result.hasPrevPage,
+        hasNextPage: result.hasNextPage,
+        prevPage: result.prevPage,
+        nextPage: result.nextPage
+      }
+    });
+  } catch (error) {
+    console.error('Get provider service requests error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch provider service requests'
+    });
+  }
+});
+
+app.get('/api/debug/fix-test-user', async (req, res) => {
+  try {
+    const user = await User.findOneAndUpdate(
+      { email: 'alex@example.com' },
+      { 
+        $set: {
+          isEmailVerified: true,
+          emailVerificationToken: null,
+          emailVerificationExpires: null
+        }
+      },
+      { new: true }
+    );
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'Test user not found. Creating new test user...'
+      });
+    }
+    
+    console.log('Fixed test user:', {
+      id: user._id,
+      email: user.email,
+      isEmailVerified: user.isEmailVerified,
+      hasVerificationToken: !!user.emailVerificationToken
+    });
+    
+    res.json({
+      success: true,
+      message: 'Test user verification status fixed',
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        isEmailVerified: user.isEmailVerified,
+        emailVerificationToken: user.emailVerificationToken,
+        emailVerificationExpires: user.emailVerificationExpires
+      }
+    });
+  } catch (error) {
+    console.error('Fix test user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fix test user',
+      error: error.message
+    });
+  }
+});
+
+// Also add this endpoint to create a fresh test user if needed
+app.post('/api/debug/create-test-user', async (req, res) => {
+  try {
+    // Delete existing test user
+    await User.deleteOne({ email: 'alex@example.com' });
+    
+    const bcrypt = await import('bcryptjs');
+    const hashedPassword = await bcrypt.hash('Password123', 10);
+    
+    const testUser = new User({
+      name: 'Alex Johnson',
+      email: 'alex@example.com',
+      password: hashedPassword,
+      userType: 'provider',
+      country: 'USA',
+      isEmailVerified: true,
+      emailVerificationToken: null,
+      emailVerificationExpires: null,
+      services: ['House Cleaning', 'Garden Maintenance'],
+      hourlyRate: 25,
+      experience: '3 years',
+      profileImage: '',
+      isActive: true
+    });
+    
+    const savedUser = await testUser.save();
+    
+    res.json({
+      success: true,
+      message: 'Fresh test user created and verified',
+      user: {
+        id: savedUser._id,
+        email: savedUser.email,
+        name: savedUser.name,
+        isEmailVerified: savedUser.isEmailVerified,
+        userType: savedUser.userType
+      }
+    });
+  } catch (error) {
+    console.error('Create test user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create test user',
+      error: error.message
     });
   }
 });
@@ -1771,14 +3618,66 @@ app.get('/api/auth/profile', authenticateToken, async (req, res) => {
   }
 });
 
+// Keep your existing PUT endpoint
 app.put('/api/auth/profile', authenticateToken, async (req, res) => {
+  console.log('Sending data to backend:', {
+  ...editForm,
+  city: editForm.city,
+  state: editForm.state,
+  country: editForm.country
+});
   try {
-    const { name, phoneNumber, address, services, hourlyRate, experience, profileImage } = req.body;
+    const { 
+      name, 
+      phoneNumber, 
+      address, 
+      city,        // Make sure these are included
+      state,       // in the destructuring
+      country,     // here
+      services, 
+      hourlyRate, 
+      experience, 
+      profileImage 
+    } = req.body;
     
     const updateData = {};
     if (name) updateData.name = name.trim();
     if (phoneNumber) updateData.phoneNumber = phoneNumber;
     if (address) updateData.address = address;
+    if (city) updateData.city = city;           // Make sure these are
+    if (state) updateData.state = state;        // being added to
+    if (country) updateData.country = country;  // updateData object
+    
+    // ... rest of the code
+  } catch (error) {
+    // error handling
+  }
+});
+
+
+// ADD THIS NEW POST ENDPOINT RIGHT AFTER THE PUT ENDPOINT
+app.post('/api/auth/profile', authenticateToken, async (req, res) => {
+  try {
+    const { 
+      name, 
+      phoneNumber, 
+      address, 
+      city, 
+      state, 
+      country, 
+      services, 
+      hourlyRate, 
+      experience, 
+      profileImage 
+    } = req.body;
+    
+    const updateData = {};
+    if (name) updateData.name = name.trim();
+    if (phoneNumber) updateData.phoneNumber = phoneNumber;
+    if (address) updateData.address = address;
+    if (city) updateData.city = city;
+    if (state) updateData.state = state;
+    if (country) updateData.country = country;
     if (services) updateData.services = services;
     if (hourlyRate !== undefined) updateData.hourlyRate = hourlyRate;
     if (experience) updateData.experience = experience;
@@ -1806,10 +3705,14 @@ app.put('/api/auth/profile', authenticateToken, async (req, res) => {
     console.error('Profile update error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to update profile'
+      message: 'Failed to update profile',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 });
+
+// Add this POST endpoint for updating profile - place it near your other profile endpoints
+
 
 // Availability endpoints
 app.post('/api/availability', authenticateToken, async (req, res) => {
