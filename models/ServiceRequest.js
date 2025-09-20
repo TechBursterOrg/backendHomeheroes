@@ -66,10 +66,35 @@ const serviceRequestSchema = new mongoose.Schema({
   },
   acceptedAt: {
     type: Date
+  },
+  // New fields for better job matching
+  skillsRequired: [{
+    type: String,
+    trim: true
+  }],
+  estimatedDuration: {
+    type: String,
+    default: 'Not specified'
+  },
+  preferredSchedule: {
+    type: String,
+    default: 'Flexible'
+  },
+  images: [{
+    type: String
+  }],
+  isPublic: {
+    type: Boolean,
+    default: true
   }
 }, {
   timestamps: true
 });
+
+serviceRequestSchema.index({ location: 'text', serviceType: 'text', description: 'text' });
+serviceRequestSchema.index({ status: 1, createdAt: -1 });
+serviceRequestSchema.index({ customerId: 1, createdAt: -1 });
+serviceRequestSchema.index({ providerId: 1, createdAt: -1 });
 
 serviceRequestSchema.plugin(mongoosePaginate);
 
