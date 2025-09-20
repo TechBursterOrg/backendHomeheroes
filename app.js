@@ -242,6 +242,7 @@ app.use(cookieParser());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Authentication middleware
+// In your auth middleware
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -253,15 +254,38 @@ function authenticateToken(req, res, next) {
     });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, JWT_SECRET, async (err, decoded) => {
     if (err) {
       return res.status(403).json({
         success: false,
         message: 'Invalid or expired token'
       });
     }
-    req.user = user;
-    next();
+    
+    // Add user info to request
+    try {
+      const user = await User.findById(decoded.id).select('-password');
+      if (!user) {
+        return res.status(403).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+      
+      req.user = {
+        id: user._id.toString(),
+        userType: user.userType,
+        email: user.email,
+        name: user.name
+      };
+      
+      next();
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: 'Error verifying user'
+      });
+    }
   });
 }
 
@@ -2775,6 +2799,270 @@ app.get('/api/service-requests', async (req, res) => {
   // Implement your provider search logic
   res.json({ data: [] }); // Return your providers data
 });
+
+app.get('/api/jobs', authenticateToken, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const status = req.query.status || 'pending';
+    const serviceType = req.query.serviceType;
+    const location = req.query.location;
+    const minBudget = req.query.minBudget;
+    const maxBudget = req.query.maxBudget;
+    const urgency = req.query.urgency;
+    const sortBy = req.query.sortBy || 'createdAt';
+    const sortOrder = req.query.sortOrder || 'desc';
+
+    // Build filter object - FIXED: Handle missing isPublic field
+    let filter = { 
+      status: status,
+      $or: [
+        { isPublic: true },
+        { isPublic: { $exists: false } } // Include documents without isPublic field
+      ]
+    };
+    
+    // Only show pending jobs to providers (unless they're viewing their own accepted jobs)
+    if (status === 'all') {
+      filter.status = { $in: ['pending', 'accepted', 'completed'] };
+    } else if (status === 'my-jobs') {
+      filter = {
+        providerId: req.user.id,
+        status: { $in: ['accepted', 'completed'] }
+      };
+    }
+    
+    // Filter by service type
+    if (serviceType && serviceType !== 'all') {
+      filter.serviceType = { $regex: serviceType, $options: 'i' };
+    }
+    
+    // Filter by location
+    if (location && location !== 'all') {
+      filter.location = { $regex: location, $options: 'i' };
+    }
+    
+    // Filter by urgency
+    if (urgency && urgency !== 'all') {
+      filter.urgency = urgency;
+    }
+
+    const options = {
+      page,
+      limit,
+      sort: { [sortBy]: sortOrder === 'desc' ? -1 : 1 },
+      populate: { 
+        path: 'customerId', 
+        select: 'name email phoneNumber profileImage rating reviewCount' 
+      }
+    };
+
+    console.log('📋 Jobs query filter:', JSON.stringify(filter, null, 2));
+    console.log('🔍 Querying jobs with status:', status);
+
+    const result = await ServiceRequest.paginate(filter, options);
+
+    console.log('✅ Found jobs:', result.docs.length, 'of', result.totalDocs);
+
+    res.json({
+      success: true,
+      data: {
+        jobs: result.docs,
+        totalDocs: result.totalDocs,
+        limit: result.limit,
+        totalPages: result.totalPages,
+        page: result.page,
+        pagingCounter: result.pagingCounter,
+        hasPrevPage: result.hasPrevPage,
+        hasNextPage: result.hasNextPage,
+        prevPage: result.prevPage,
+        nextPage: result.nextPage
+      }
+    });
+  } catch (error) {
+    console.error('Get jobs error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch jobs',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+
+// Get a single job details
+app.get('/api/jobs/:id', authenticateToken, async (req, res) => {
+  try {
+    const job = await ServiceRequest.findById(req.params.id)
+      .populate('customerId', 'name email phoneNumber profileImage rating reviewCount createdAt')
+      .populate('providerId', 'name email phoneNumber profileImage rating reviewCount');
+
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: 'Job not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: job
+    });
+  } catch (error) {
+    console.error('Get job error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch job details'
+    });
+  }
+});
+
+// Apply for a job (provider accepts a service request)
+app.post('/api/jobs/:id/apply', authenticateToken, async (req, res) => {
+  try {
+    const job = await ServiceRequest.findById(req.params.id);
+    
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: 'Job not found'
+      });
+    }
+    
+    if (job.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: 'Job is no longer available'
+      });
+    }
+    
+    // Update job status and assign provider
+    job.providerId = req.user.id;
+    job.status = 'accepted';
+    job.acceptedAt = new Date();
+    
+    await job.save();
+    
+    // Populate the updated job
+    await job.populate('customerId', 'name email phoneNumber');
+    await job.populate('providerId', 'name email phoneNumber profileImage');
+    
+    res.json({
+      success: true,
+      message: 'Successfully applied for the job',
+      data: job
+    });
+  } catch (error) {
+    console.error('Apply for job error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to apply for job'
+    });
+  }
+});
+
+// Update job status (complete, cancel, etc.)
+app.patch('/api/jobs/:id/status', authenticateToken, async (req, res) => {
+  try {
+    const { status } = req.body;
+    
+    if (!['accepted', 'completed', 'cancelled'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid status'
+      });
+    }
+    
+    const job = await ServiceRequest.findById(req.params.id);
+    
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: 'Job not found'
+      });
+    }
+    
+    // Check if user has permission to update this job
+    if (job.providerId.toString() !== req.user.id && job.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to update this job'
+      });
+    }
+    
+    job.status = status;
+    
+    if (status === 'completed') {
+      job.completedAt = new Date();
+    }
+    
+    await job.save();
+    
+    res.json({
+      success: true,
+      message: `Job status updated to ${status}`,
+      data: job
+    });
+  } catch (error) {
+    console.error('Update job status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update job status'
+    });
+  }
+});
+
+// Get stats for provider dashboard
+app.get('/api/jobs/stats/dashboard', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    const [
+      totalJobs,
+      pendingJobs,
+      acceptedJobs,
+      completedJobs,
+      totalEarnings
+    ] = await Promise.all([
+      ServiceRequest.countDocuments({ providerId: userId }),
+      ServiceRequest.countDocuments({ providerId: userId, status: 'pending' }),
+      ServiceRequest.countDocuments({ providerId: userId, status: 'accepted' }),
+      ServiceRequest.countDocuments({ providerId: userId, status: 'completed' }),
+      ServiceRequest.aggregate([
+        { $match: { providerId: new mongoose.Types.ObjectId(userId), status: 'completed' } },
+        { $group: { _id: null, total: { $sum: { $toDouble: '$budget' } } } }
+      ])
+    ]);
+    
+    // Recent jobs
+    const recentJobs = await ServiceRequest.find({ providerId: userId })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .populate('customerId', 'name profileImage');
+    
+    res.json({
+      success: true,
+      data: {
+        stats: {
+          total: totalJobs,
+          pending: pendingJobs,
+          accepted: acceptedJobs,
+          completed: completedJobs,
+          earnings: totalEarnings.length > 0 ? totalEarnings[0].total : 0
+        },
+        recentJobs
+      }
+    });
+  } catch (error) {
+    console.error('Get job stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch job statistics'
+    });
+  }
+});
+
 
 // Favorites endpoint
 app.get('/api/auth/favorites', authenticateToken, async (req, res) => {
