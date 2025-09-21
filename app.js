@@ -216,7 +216,28 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin','Cache-Control', 'Pragma']
+}));
+
+app.options('*', cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) === -1) {
+      return callback(new Error('Not allowed by CORS'), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-Requested-With', 
+    'Accept', 
+    'Origin',
+    'Cache-Control',
+    'Pragma'
+  ]
 }));
 
 // Handle preflight requests
@@ -250,6 +271,100 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Authentication middleware
 // In your auth middleware
+// function authenticateToken(req, res, next) {
+//   const authHeader = req.headers['authorization'];
+//   const token = authHeader && authHeader.split(' ')[1];
+
+//   if (!token) {
+//     return res.status(401).json({
+//       success: false,
+//       message: 'Access token required'
+//     });
+//   }
+
+//   jwt.verify(token, JWT_SECRET, async (err, decoded) => {
+//     if (err) {
+//       return res.status(403).json({
+//         success: false,
+//         message: 'Invalid or expired token'
+//       });
+//     }
+    
+//     // Add user info to request
+//     try {
+//       const user = await User.findById(decoded.id).select('-password');
+//       if (!user) {
+//         return res.status(403).json({
+//           success: false,
+//           message: 'User not found'
+//         });
+//       }
+      
+//       req.user = {
+//         id: user._id.toString(),
+//         userType: user.userType,
+//         email: user.email,
+//         name: user.name
+//       };
+      
+//       next();
+//     } catch (error) {
+//       return res.status(500).json({
+//         success: false,
+//         message: 'Error verifying user'
+//       });
+//     }
+//   });
+// }
+// function authenticateToken(req, res, next) {
+//   const authHeader = req.headers['authorization'];
+//   const token = authHeader && authHeader.split(' ')[1];
+
+//   if (!token) {
+//     return res.status(401).json({
+//       success: false,
+//       message: 'Access token required'
+//     });
+//   }
+
+//   jwt.verify(token, JWT_SECRET, async (err, decoded) => {
+//     if (err) {
+//       console.error('JWT verification error:', err);
+//       return res.status(403).json({
+//         success: false,
+//         message: 'Invalid or expired token'
+//       });
+//     }
+    
+//     // Add user info to request
+//     try {
+//       const user = await User.findById(decoded.id).select('-password');
+//       if (!user) {
+//         return res.status(403).json({
+//           success: false,
+//           message: 'User not found'
+//         });
+//       }
+      
+//       req.user = {
+//         id: user._id.toString(),
+//         userType: user.userType,
+//         email: user.email,
+//         name: user.name
+//       };
+      
+//       next();
+//     } catch (error) {
+//       console.error('Error verifying user:', error);
+//       return res.status(500).json({
+//         success: false,
+//         message: 'Error verifying user'
+//       });
+//     }
+//   });
+// }
+
+// Update the authenticateToken middleware to be more specific
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -263,13 +378,13 @@ function authenticateToken(req, res, next) {
 
   jwt.verify(token, JWT_SECRET, async (err, decoded) => {
     if (err) {
+      console.error('JWT verification error:', err);
       return res.status(403).json({
         success: false,
         message: 'Invalid or expired token'
       });
     }
     
-    // Add user info to request
     try {
       const user = await User.findById(decoded.id).select('-password');
       if (!user) {
@@ -288,6 +403,7 @@ function authenticateToken(req, res, next) {
       
       next();
     } catch (error) {
+      console.error('Error verifying user:', error);
       return res.status(500).json({
         success: false,
         message: 'Error verifying user'
@@ -376,6 +492,61 @@ const sendBookingNotification = async (bookingData, providerEmail) => {
 app.use('/api/auth', authRoutes);
 
 // Profile image upload endpoint - FIXED VERSION
+// app.post('/api/auth/profile/image', authenticateToken, async (req, res) => {
+//   try {
+//     if (!req.files || !req.files.profileImage) {
+//       return res.status(400).json({
+//         success: false,
+//         message: 'No image file provided'
+//       });
+//     }
+
+//     const profileImage = req.files.profileImage;
+    
+//     // Generate unique filename
+//     const fileExtension = path.extname(profileImage.name);
+//     const fileName = `profile-${req.user.id}-${Date.now()}${fileExtension}`;
+//     const uploadDir = path.join(__dirname, 'uploads', 'profiles');
+//     const uploadPath = path.join(uploadDir, fileName);
+
+//     // Create uploads directory if it doesn't exist
+//     if (!fs.existsSync(uploadDir)) {
+//       fs.mkdirSync(uploadDir, { recursive: true });
+//     }
+
+//     // Move the file to the upload directory
+//     await profileImage.mv(uploadPath);
+
+//     // FIXED: Use consistent URL construction
+//     const protocol = req.secure ? 'https' : 'http';
+//     const host = req.get('host');
+//     const imageUrl = `/uploads/profiles/${fileName}`;
+//     const fullImageUrl = `${protocol}://${host}${imageUrl}`;
+
+//     // Update user profile with both relative and absolute URLs
+//     await User.findByIdAndUpdate(req.user.id, { 
+//       profileImage: imageUrl,
+//       profileImageFull: fullImageUrl // Store full URL for redundancy
+//     });
+
+//     res.json({
+//       success: true,
+//       message: 'Profile image uploaded successfully',
+//       data: { 
+//         imageUrl,
+//         fullImageUrl 
+//       }
+//     });
+//   } catch (error) {
+//     console.error('Profile image upload error:', error);
+//     res.status(500).json({
+//       success: false,
+//       message: 'Failed to upload profile image',
+//       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+//     });
+//   }
+// });
+
 app.post('/api/auth/profile/image', authenticateToken, async (req, res) => {
   try {
     if (!req.files || !req.files.profileImage) {
@@ -395,30 +566,23 @@ app.post('/api/auth/profile/image', authenticateToken, async (req, res) => {
 
     // Create uploads directory if it doesn't exist
     if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
+      fs.mkdirSync(uploadDir, { recursive: true, mode: 0o755 });
     }
 
     // Move the file to the upload directory
     await profileImage.mv(uploadPath);
 
-    // FIXED: Use consistent URL construction
-    const protocol = req.secure ? 'https' : 'http';
-    const host = req.get('host');
+    // Update user profile with the new image
     const imageUrl = `/uploads/profiles/${fileName}`;
-    const fullImageUrl = `${protocol}://${host}${imageUrl}`;
-
-    // Update user profile with both relative and absolute URLs
     await User.findByIdAndUpdate(req.user.id, { 
-      profileImage: imageUrl,
-      profileImageFull: fullImageUrl // Store full URL for redundancy
+      profileImage: imageUrl
     });
 
     res.json({
       success: true,
       message: 'Profile image uploaded successfully',
       data: { 
-        imageUrl,
-        fullImageUrl 
+        imageUrl
       }
     });
   } catch (error) {
@@ -430,6 +594,7 @@ app.post('/api/auth/profile/image', authenticateToken, async (req, res) => {
     });
   }
 });
+
 
 // Health check endpoint
 app.get('/api/health', async (req, res) => {
@@ -931,46 +1096,87 @@ app.use('/uploads', (req, res, next) => {
   if (!fs.existsSync(filePath)) {
     console.log(`File not found: ${filePath}`);
     
-    // Handle profile images
+    // Handle profile images - use local placeholder instead of external URL
     if (req.path.includes('/profiles/')) {
-      const filename = path.basename(req.path);
-      const userId = filename.split('-')[1];
+      // Return a simple placeholder image response
+      const placeholderSvg = `<svg width="400" height="400" xmlns="http://www.w3.org/2000/svg">
+        <rect width="100%" height="100%" fill="#e2e8f0"/>
+        <text x="50%" y="50%" font-family="Arial" font-size="20" fill="#64748b" text-anchor="middle" dy=".3em">Profile Image</text>
+      </svg>`;
       
-      if (userId && mongoose.Types.ObjectId.isValid(userId)) {
-        return User.findById(userId)
-          .then(user => {
-            if (user && user.profileImageFull) {
-              return res.redirect(user.profileImageFull);
-            }
-            return res.redirect('https://via.placeholder.com/400x400/e2e8f0/64748b?text=Profile+Image');
-          })
-          .catch(() => {
-            return res.redirect('https://via.placeholder.com/400x400/e2e8f0/64748b?text=Profile+Image');
-          });
-      }
+      res.setHeader('Content-Type', 'image/svg+xml');
+      return res.send(placeholderSvg);
     }
     
-    // NEW: Handle gallery images
+    // Handle gallery images
     if (req.path.includes('/gallery/')) {
-      const filename = path.basename(req.path);
-      // Try to find the gallery image by filename
-      return Gallery.findOne({ imageUrl: `/uploads/gallery/${filename}` })
-        .then(image => {
-          if (image && image.fullImageUrl) {
-            return res.redirect(image.fullImageUrl);
-          }
-          return res.redirect('https://via.placeholder.com/600x400/e2e8f0/64748b?text=Gallery+Image');
-        })
-        .catch(() => {
-          return res.redirect('https://via.placeholder.com/600x400/e2e8f0/64748b?text=Gallery+Image');
-        });
+      const placeholderSvg = `<svg width="600" height="400" xmlns="http://www.w3.org/2000/svg">
+        <rect width="100%" height="100%" fill="#e2e8f0"/>
+        <text x="50%" y="50%" font-family="Arial" font-size="20" fill="#64748b" text-anchor="middle" dy=".3em">Gallery Image</text>
+      </svg>`;
+      
+      res.setHeader('Content-Type', 'image/svg+xml');
+      return res.send(placeholderSvg);
     }
     
-    // Return placeholder for other images
-    return res.redirect('https://via.placeholder.com/400x400/e2e8f0/64748b?text=Image+Not+Found');
+    // Return SVG placeholder for other images
+    const placeholderSvg = `<svg width="400" height="400" xmlns="http://www.w3.org/2000/svg">
+      <rect width="100%" height="100%" fill="#e2e8f0"/>
+      <text x="50%" y="50%" font-family="Arial" font-size="20" fill="#64748b" text-anchor="middle" dy=".3em">Image Not Found</text>
+    </svg>`;
+    
+    res.setHeader('Content-Type', 'image/svg+xml');
+    return res.send(placeholderSvg);
   }
   next();
 });
+
+// app.use('/uploads', (req, res, next) => {
+//   const filePath = path.join(__dirname, 'uploads', req.path);
+  
+//   if (!fs.existsSync(filePath)) {
+//     console.log(`File not found: ${filePath}`);
+    
+//     // Handle profile images
+//     if (req.path.includes('/profiles/')) {
+//       const filename = path.basename(req.path);
+//       const userId = filename.split('-')[1];
+      
+//       if (userId && mongoose.Types.ObjectId.isValid(userId)) {
+//         return User.findById(userId)
+//           .then(user => {
+//             if (user && user.profileImageFull) {
+//               return res.redirect(user.profileImageFull);
+//             }
+//             return res.redirect('https://via.placeholder.com/400x400/e2e8f0/64748b?text=Profile+Image');
+//           })
+//           .catch(() => {
+//             return res.redirect('https://via.placeholder.com/400x400/e2e8f0/64748b?text=Profile+Image');
+//           });
+//       }
+//     }
+    
+//     // NEW: Handle gallery images
+//     if (req.path.includes('/gallery/')) {
+//       const filename = path.basename(req.path);
+//       // Try to find the gallery image by filename
+//       return Gallery.findOne({ imageUrl: `/uploads/gallery/${filename}` })
+//         .then(image => {
+//           if (image && image.fullImageUrl) {
+//             return res.redirect(image.fullImageUrl);
+//           }
+//           return res.redirect('https://via.placeholder.com/600x400/e2e8f0/64748b?text=Gallery+Image');
+//         })
+//         .catch(() => {
+//           return res.redirect('https://via.placeholder.com/600x400/e2e8f0/64748b?text=Gallery+Image');
+//         });
+//     }
+    
+//     // Return placeholder for other images
+//     return res.redirect('https://via.placeholder.com/400x400/e2e8f0/64748b?text=Image+Not+Found');
+//   }
+//   next();
+// });
 
 
 app.post('/api/gallery/fix-urls', authenticateToken, async (req, res) => {
@@ -3350,6 +3556,8 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
 });
 
 
+
+
 app.get('/api/jobs', authenticateToken, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -3613,8 +3821,192 @@ app.get('/api/jobs/stats/dashboard', authenticateToken, async (req, res) => {
   }
 });
 
+app.get('/api/jobs/customer', authenticateToken, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const status = req.query.status;
+
+    let filter = { customerId: req.user.id };
+    
+    if (status && status !== 'all') {
+      filter.status = status;
+    }
+
+    const options = {
+      page,
+      limit,
+      sort: { createdAt: -1 }
+    };
+
+    // Using ServiceRequest model to fetch jobs (adjust if you have a different model)
+    const result = await ServiceRequest.paginate(filter, options);
+
+    res.json({
+      success: true,
+      data: {
+        jobs: result.docs,
+        totalDocs: result.totalDocs,
+        limit: result.limit,
+        totalPages: result.totalPages,
+        page: result.page,
+        pagingCounter: result.pagingCounter,
+        hasPrevPage: result.hasPrevPage,
+        hasNextPage: result.hasNextPage,
+        prevPage: result.prevPage,
+        nextPage: result.nextPage
+      }
+    });
+  } catch (error) {
+    console.error('Get customer jobs error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch customer jobs',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+app.post('/api/jobs', authenticateToken, async (req, res) => {
+  try {
+    const {
+      title,
+      description,
+      budget,
+      category,
+      location,
+      deadline,
+      requirements
+    } = req.body;
+
+    // Validate required fields
+    if (!title || !description || !category || !location) {
+      return res.status(400).json({
+        success: false,
+        message: 'Title, description, category, and location are required'
+      });
+    }
+
+    // Create new job post
+    const newJob = new ServiceRequest({
+      title,
+      description,
+      budget: budget || 0,
+      category,
+      location,
+      deadline: deadline || null,
+      requirements: requirements || [],
+      customerId: req.user.id,
+      status: 'active'
+    });
+
+    const savedJob = await newJob.save();
+    
+    // Populate customer info
+    await savedJob.populate('customerId', 'name email');
+
+    res.status(201).json({
+      success: true,
+      message: 'Job posted successfully',
+      data: savedJob
+    });
+  } catch (error) {
+    console.error('Create job error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create job post',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+
+
+
 
 // Favorites endpoint
+app.post('/api/favorites/:providerId', authenticateToken, async (req, res) => {
+  try {
+    const { providerId } = req.params;
+    
+    // Check if provider exists
+    const provider = await User.findById(providerId);
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider not found'
+      });
+    }
+    
+    // Check if already favorited
+    const user = await User.findById(req.user.id);
+    if (user.favorites.includes(providerId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Provider already in favorites'
+      });
+    }
+    
+    // Add to favorites
+    user.favorites.push(providerId);
+    await user.save();
+    
+    res.json({
+      success: true,
+      message: 'Provider added to favorites',
+      data: { favorites: user.favorites }
+    });
+  } catch (error) {
+    console.error('Add favorite error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to add to favorites'
+    });
+  }
+});
+
+app.delete('/api/favorites/:providerId', authenticateToken, async (req, res) => {
+  try {
+    const { providerId } = req.params;
+    
+    const user = await User.findById(req.user.id);
+    user.favorites = user.favorites.filter(id => id.toString() !== providerId);
+    await user.save();
+    
+    res.json({
+      success: true,
+      message: 'Provider removed from favorites',
+      data: { favorites: user.favorites }
+    });
+  } catch (error) {
+    console.error('Remove favorite error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to remove from favorites'
+    });
+  }
+});
+
+app.get('/api/favorites', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id)
+      .populate('favorites', 'name email services hourlyRate averageRating city state country profileImage isAvailableNow experience phoneNumber address reviewCount completedJobs isVerified isTopRated responseTime rating');
+    
+    res.json({
+      success: true,
+      data: { favorites: user.favorites || [] }
+    });
+  } catch (error) {
+    console.error('Get favorites error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch favorites'
+    });
+  }
+});
+
 app.get('/api/auth/favorites', authenticateToken, async (req, res) => {
   try {
     // For now, return empty array since favorites functionality isn't implemented yet
@@ -3871,6 +4263,62 @@ app.post('/api/service-requests', authenticateToken, async (req, res) => {
     });
   }
 });
+
+app.get('/api/service-requests/customer', authenticateToken, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const status = req.query.status;
+
+    let filter = { customerId: req.user.id };
+    
+    if (status && status !== 'all') {
+      filter.status = status;
+    }
+
+    const options = {
+      page,
+      limit,
+      sort: { createdAt: -1 },
+      populate: { 
+        path: 'customerId', 
+        select: 'name email phoneNumber profileImage' 
+      }
+    };
+
+    // Use ServiceRequest model to fetch jobs
+    const result = await ServiceRequest.paginate(filter, options);
+
+    // Add cache control headers to prevent 304 responses
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
+    res.json({
+      success: true,
+      data: {
+        jobs: result.docs,
+        totalDocs: result.totalDocs,
+        limit: result.limit,
+        totalPages: result.totalPages,
+        page: result.page,
+        pagingCounter: result.pagingCounter,
+        hasPrevPage: result.hasPrevPage,
+        hasNextPage: result.hasNextPage,
+        prevPage: result.prevPage,
+        nextPage: result.nextPage
+      }
+    });
+  } catch (error) {
+    console.error('Get customer service requests error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch customer service requests',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
 
 
 // Get all service requests (for provider dashboard)

@@ -27,6 +27,11 @@ const userSchema = new mongoose.Schema({
     required: true
   },
 
+  favorites: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
+
   isAvailableNow: {
     type: Boolean,
     default: false
