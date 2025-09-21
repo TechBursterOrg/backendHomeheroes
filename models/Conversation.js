@@ -20,7 +20,10 @@ const ConversationSchema = new mongoose.Schema({
   }
 });
 
-// Add text index for search
-ConversationSchema.index({ 'participants.name': 'text' });
+// Update the updatedAt field before saving
+ConversationSchema.pre('save', function(next) {
+  this.updatedAt = Date.now();
+  next();
+});
 
 export const Conversation = mongoose.model('Conversation', ConversationSchema);

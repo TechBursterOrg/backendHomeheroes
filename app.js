@@ -15,6 +15,8 @@ import multer from 'multer'; // Added for error handling
 import { Message } from './models/Message.js';
 import { Conversation } from './models/Conversation.js';
 import ServiceRequest from './models/ServiceRequest.js';
+import Booking from './models/Booking.js';
+import nodemailer from 'nodemailer';
 
 // Import models
 import User from './models/User.js';
@@ -288,6 +290,80 @@ function authenticateToken(req, res, next) {
     }
   });
 }
+
+
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASSWORD
+  }
+});
+
+const sendBookingNotification = async (bookingData, providerEmail) => {
+  try {
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: providerEmail,
+      subject: 'New Booking Request - HomeHero',
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; color: white; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .booking-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }
+            .button { display: inline-block; padding: 12px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0; }
+            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 12px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>📅 New Booking Request</h1>
+              <p>You have a new service request on HomeHero</p>
+            </div>
+            <div class="content">
+              <p>Hello Provider,</p>
+              <p>You've received a new booking request from <strong>${bookingData.contactInfo.name}</strong>.</p>
+              
+              <div class="booking-details">
+                <h3>Booking Details:</h3>
+                <p><strong>Service:</strong> ${bookingData.serviceType}</p>
+                <p><strong>Location:</strong> ${bookingData.location}</p>
+                <p><strong>Timeframe:</strong> ${bookingData.timeframe}</p>
+                <p><strong>Budget:</strong> ${bookingData.budget}</p>
+                <p><strong>Description:</strong> ${bookingData.description || 'No description provided'}</p>
+                ${bookingData.specialRequests ? `<p><strong>Special Requests:</strong> ${bookingData.specialRequests}</p>` : ''}
+              </div>
+
+              <p>Please log in to your HomeHero account to accept or reject this booking request.</p>
+              
+              <a href="https://homeheroes.help/provider/dashboard" class="button">View Dashboard</a>
+              
+              <p>If you have any questions, please contact our support team.</p>
+              
+              <div class="footer">
+                <p>This is an automated message. Please do not reply to this email.</p>
+                <p>© 2024 HomeHero. All rights reserved.</p>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `
+    };
+
+    await transporter.sendMail(mailOptions);
+    console.log('Booking notification email sent to provider:', providerEmail);
+  } catch (emailError) {
+    console.error('Failed to send booking notification email:', emailError);
+    // Don't fail the booking if email fails
+  }
+};
 
 // ==================== API ROUTES ====================
 
@@ -1082,6 +1158,12 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
     .limit(2)
     .populate('clientId', 'name');
     
+    // NEW: Fetch recent bookings for the provider
+    const bookings = await Booking.find({ providerId: userId })
+      .sort({ requestedAt: -1 })
+      .limit(5)
+      .populate('customerId', 'name email phoneNumber');
+    
     // Calculate stats
     const completedJobs = await Job.countDocuments({ 
       providerId: userId, 
@@ -1110,7 +1192,7 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
         email: user.email,
         id: user._id,
         country: user.country,
-        profileImage: user.profilePicture || '' // Use profilePicture field
+        profileImage: user.profilePicture || ''
       },
       availabilitySlots,
       recentJobs: recentJobs.map(job => ({
@@ -1133,6 +1215,29 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
         priority: task.priority || 'medium',
         category: task.category || 'other'
       })),
+      // NEW: Include bookings in the response
+      bookings: bookings.map(booking => ({
+        _id: booking._id,
+        providerId: booking.providerId,
+        providerName: booking.providerName,
+        providerEmail: booking.providerEmail,
+        customerId: booking.customerId?._id,
+        customerName: booking.customerId?.name || booking.customerName,
+        customerEmail: booking.customerId?.email || booking.customerEmail,
+        customerPhone: booking.customerId?.phoneNumber || booking.customerPhone,
+        serviceType: booking.serviceType,
+        description: booking.description,
+        location: booking.location,
+        timeframe: booking.timeframe,
+        budget: booking.budget,
+        specialRequests: booking.specialRequests,
+        bookingType: booking.bookingType,
+        status: booking.status,
+        requestedAt: booking.requestedAt,
+        acceptedAt: booking.acceptedAt,
+        completedAt: booking.completedAt,
+        updatedAt: booking.updatedAt
+      })),
       stats: {
         totalEarnings: totalEarnings.length > 0 ? totalEarnings[0].total : 0,
         jobsCompleted: completedJobs,
@@ -1146,6 +1251,204 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
       success: false,
       message: 'Failed to fetch dashboard data',
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+// ==================== MESSAGING ENDPOINTS ====================
+
+// Get or create conversation between two users
+app.post('/api/messages/conversation', authenticateToken, async (req, res) => {
+  try {
+    const { participantId } = req.body;
+    
+    if (!participantId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Participant ID is required'
+      });
+    }
+
+    // Check if conversation already exists between these two users
+    let conversation = await Conversation.findOne({
+      participants: { $all: [req.user.id, participantId], $size: 2 }
+    }).populate('participants', 'name email profileImage');
+
+    // If not, create a new conversation
+    if (!conversation) {
+      conversation = new Conversation({
+        participants: [req.user.id, participantId]
+      });
+      await conversation.save();
+      await conversation.populate('participants', 'name email profileImage');
+    }
+
+    res.json({
+      success: true,
+      data: { conversation }
+    });
+  } catch (error) {
+    console.error('Get conversation error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get or create conversation'
+    });
+  }
+});
+
+// Send message
+app.post('/api/messages/send', authenticateToken, async (req, res) => {
+  try {
+    const { conversationId, content, messageType = 'text' } = req.body;
+
+    if (!conversationId || !content) {
+      return res.status(400).json({
+        success: false,
+        message: 'Conversation ID and content are required'
+      });
+    }
+
+    // Verify user is part of conversation
+    const conversation = await Conversation.findById(conversationId);
+    if (!conversation || !conversation.participants.includes(req.user.id)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized for this conversation'
+      });
+    }
+
+    const message = new Message({
+      conversationId,
+      senderId: req.user.id,
+      content,
+      messageType
+    });
+
+    await message.save();
+    
+    // Update conversation last message and timestamp
+    conversation.lastMessage = message._id;
+    conversation.updatedAt = new Date();
+    await conversation.save();
+
+    // Populate sender info
+    await message.populate('senderId', 'name profileImage');
+
+    res.status(201).json({
+      success: true,
+      message: 'Message sent successfully',
+      data: { message }
+    });
+  } catch (error) {
+    console.error('Send message error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send message'
+    });
+  }
+});
+
+// Get messages for conversation
+app.get('/api/messages/conversation/:conversationId', authenticateToken, async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+
+    // Verify user is part of conversation
+    const conversation = await Conversation.findById(conversationId);
+    if (!conversation || !conversation.participants.includes(req.user.id)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized for this conversation'
+      });
+    }
+
+    const messages = await Message.find({ conversationId })
+      .populate('senderId', 'name profileImage')
+      .sort({ timestamp: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit);
+
+    // Mark messages as read if they're from other participants
+    await Message.updateMany(
+      {
+        conversationId,
+        senderId: { $ne: req.user.id },
+        status: { $ne: 'read' }
+      },
+      { status: 'read' }
+    );
+
+    res.json({
+      success: true,
+      data: {
+        messages: messages.reverse(), // Return in chronological order
+        pagination: {
+          currentPage: page,
+          limit,
+          totalPages: Math.ceil(await Message.countDocuments({ conversationId }) / limit)
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get messages error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch messages'
+    });
+  }
+});
+
+// Get user conversations
+app.get('/api/messages/conversations', authenticateToken, async (req, res) => {
+  try {
+    const conversations = await Conversation.find({
+      participants: req.user.id
+    })
+    .populate('participants', 'name email profileImage')
+    .populate('lastMessage')
+    .sort({ updatedAt: -1 });
+
+    res.json({
+      success: true,
+      data: { conversations }
+    });
+  } catch (error) {
+    console.error('Get conversations error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch conversations'
+    });
+  }
+});
+
+// Get unread message count
+app.get('/api/messages/unread-count', authenticateToken, async (req, res) => {
+  try {
+    // Get all conversations for the user
+    const conversations = await Conversation.find({
+      participants: req.user.id
+    });
+    
+    const conversationIds = conversations.map(c => c._id);
+    
+    // Count unread messages (messages not from current user with status 'sent')
+    const unreadCount = await Message.countDocuments({
+      conversationId: { $in: conversationIds },
+      senderId: { $ne: req.user.id },
+      status: 'sent'
+    });
+
+    res.json({
+      success: true,
+      data: { unreadCount }
+    });
+  } catch (error) {
+    console.error('Get unread count error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch unread count'
     });
   }
 });
@@ -2799,6 +3102,248 @@ app.get('/api/service-requests', async (req, res) => {
   // Implement your provider search logic
   res.json({ data: [] }); // Return your providers data
 });
+
+
+// Booking endpoint
+app.post('/api/bookings', authenticateToken, async (req, res) => {
+  try {
+    const {
+      providerId,
+      providerName,
+      providerEmail,
+      serviceType,
+      description,
+      location,
+      timeframe,
+      budget,
+      contactInfo,
+      specialRequests,
+      bookingType
+    } = req.body;
+
+    // Validate required fields
+    if (!providerId || !serviceType || !location || !contactInfo) {
+      return res.status(400).json({
+        success: false,
+        message: 'Provider ID, service type, location, and contact info are required'
+      });
+    }
+
+    // Create new booking
+    const newBooking = new Booking({
+      providerId,
+      providerName: providerName || 'Unknown Provider',
+      providerEmail: providerEmail || '',
+      customerId: req.user.id,
+      customerName: contactInfo.name || 'Unknown Customer',
+      customerEmail: contactInfo.email || '',
+      customerPhone: contactInfo.phone || '',
+      serviceType,
+      description: description || '',
+      location,
+      timeframe: timeframe || 'Flexible',
+      budget: budget || 'Not specified',
+      specialRequests: specialRequests || '',
+      bookingType: bookingType || 'immediate',
+      status: 'pending',
+      requestedAt: new Date()
+    });
+
+    const savedBooking = await newBooking.save();
+
+    // Populate customer and provider info
+    await savedBooking.populate('customerId', 'name email phoneNumber');
+    await savedBooking.populate('providerId', 'name email phoneNumber');
+
+    // Send notification to provider (you can implement email/notification service here)
+    console.log(`New booking created for provider: ${providerId}`);
+    if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
+      try {
+        const providerUser = await User.findById(providerId);
+        if (providerUser && providerUser.email) {
+          await sendBookingNotification({
+            serviceType,
+            description,
+            location,
+            timeframe,
+            budget,
+            contactInfo,
+            specialRequests
+          }, providerUser.email);
+        }
+      } catch (emailError) {
+        console.error('Failed to send booking notification email:', emailError);
+        // Don't fail the booking if email fails
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Booking request sent successfully',
+      data: savedBooking
+    });
+  } catch (error) {
+    console.error('Create booking error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create booking',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+// Get bookings for a provider
+app.get('/api/bookings/provider', authenticateToken, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const status = req.query.status;
+
+    let filter = { providerId: req.user.id };
+    if (status && status !== 'all') {
+      filter.status = status;
+    }
+
+    const options = {
+      page,
+      limit,
+      sort: { requestedAt: -1 },
+      populate: { path: 'customerId', select: 'name email phoneNumber profileImage' }
+    };
+
+    const result = await Booking.paginate(filter, options);
+
+    res.json({
+      success: true,
+      data: {
+        bookings: result.docs,
+        totalDocs: result.totalDocs,
+        limit: result.limit,
+        totalPages: result.totalPages,
+        page: result.page,
+        pagingCounter: result.pagingCounter,
+        hasPrevPage: result.hasPrevPage,
+        hasNextPage: result.hasNextPage,
+        prevPage: result.prevPage,
+        nextPage: result.nextPage
+      }
+    });
+  } catch (error) {
+    console.error('Get provider bookings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch bookings'
+    });
+  }
+});
+
+
+// Get bookings for a customer
+app.get('/api/bookings/customer', authenticateToken, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const status = req.query.status;
+
+    let filter = { customerId: req.user.id };
+    if (status && status !== 'all') {
+      filter.status = status;
+    }
+
+    const options = {
+      page,
+      limit,
+      sort: { requestedAt: -1 },
+      populate: { 
+        path: 'providerId', 
+        select: 'name email phoneNumber profileImage' 
+      }
+    };
+
+    const result = await Booking.paginate(filter, options);
+
+    res.json({
+      success: true,
+      data: {
+        bookings: result.docs,
+        totalDocs: result.totalDocs,
+        limit: result.limit,
+        totalPages: result.totalPages,
+        page: result.page,
+        pagingCounter: result.pagingCounter,
+        hasPrevPage: result.hasPrevPage,
+        hasNextPage: result.hasNextPage,
+        prevPage: result.prevPage,
+        nextPage: result.nextPage
+      }
+    });
+  } catch (error) {
+    console.error('Get customer bookings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch bookings'
+    });
+  }
+});
+
+
+// Update booking status
+app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
+  try {
+    const { status } = req.body;
+    const bookingId = req.params.id;
+
+    if (!['pending', 'confirmed', 'completed', 'cancelled'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid status'
+      });
+    }
+
+    const booking = await Booking.findById(bookingId);
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Check if user has permission to update this booking
+    if (booking.providerId.toString() !== req.user.id && booking.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to update this booking'
+      });
+    }
+
+    booking.status = status;
+    booking.updatedAt = new Date();
+
+    if (status === 'accepted') {
+      booking.acceptedAt = new Date();
+    } else if (status === 'completed') {
+      booking.completedAt = new Date();
+    }
+
+    const updatedBooking = await booking.save();
+    await updatedBooking.populate('customerId', 'name email phoneNumber');
+    await updatedBooking.populate('providerId', 'name email phoneNumber');
+
+    res.json({
+      success: true,
+      message: `Booking ${status} successfully`,
+      data: updatedBooking
+    });
+  } catch (error) {
+    console.error('Update booking status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update booking status'
+    });
+  }
+});
+
 
 app.get('/api/jobs', authenticateToken, async (req, res) => {
   try {
