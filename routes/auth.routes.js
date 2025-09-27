@@ -96,7 +96,7 @@ router.post('/signup', signupValidation, async (req, res) => {
 
     const { name, email, password, userType, country } = req.body;
 
-    // Check for existing user with better error handling
+    // Check for existing user
     const existingUser = await User.findOne({ email: email.toLowerCase() }).catch(dbError => {
       console.error('❌ Database error checking existing user:', dbError);
       throw new Error('Database connection error');
@@ -110,7 +110,7 @@ router.post('/signup', signupValidation, async (req, res) => {
       });
     }
 
-    // Hash password with error handling
+    // Hash password
     let hashedPassword;
     try {
       const saltRounds = 10;
@@ -135,30 +135,42 @@ router.post('/signup', signupValidation, async (req, res) => {
       emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
     });
 
-    // Save user with error handling
+    // Save user
     const savedUser = await newUser.save().catch(saveError => {
       console.error('❌ User save error:', saveError);
-      
-      // Handle duplicate key error (race condition)
       if (saveError.code === 11000) {
         return res.status(409).json({
           success: false,
           message: 'An account with this email already exists.'
         });
       }
-      
       throw new Error('Failed to create user account');
     });
 
     console.log('✅ User created successfully:', savedUser._id);
 
-    // Attempt to send verification email (but don't fail signup if email fails)
+    // ✅ CORRECT PLACEMENT: Email sending code should be HERE
     try {
-      await sendVerificationEmail(savedUser, verificationToken);
-      console.log('📧 Verification email sent to:', savedUser.email);
+      console.log('📧 Attempting to send verification email...');
+      console.log('🔧 Email config:', {
+        from: process.env.EMAIL_USER,
+        to: savedUser.email,
+        frontendUrl: process.env.FRONTEND_URL,
+        token: verificationToken
+      });
+
+      const emailResult = await sendVerificationEmail(savedUser, verificationToken);
+      console.log('✅ Email sending result:', emailResult);
+
+      if (emailResult.simulated) {
+        console.log('⚠️ Email simulation mode - no actual email sent');
+        console.log('🔗 Verification URL would be:', `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`);
+      } else {
+        console.log('📨 Actual email sent with ID:', emailResult.messageId);
+      }
     } catch (emailError) {
-      console.error('⚠️ Email sending failed (non-critical):', emailError);
-      // Continue with success response even if email fails
+      console.error('❌ Email sending failed:', emailError);
+      // Don't fail the signup if email fails
     }
 
     res.status(201).json({
@@ -181,14 +193,13 @@ router.post('/signup', signupValidation, async (req, res) => {
   } catch (error) {
     console.error('💥 SIGNUP CRITICAL ERROR:', error);
     console.error('Error stack:', error.stack);
-    
-    // Generic error response to avoid exposing internal details
     res.status(500).json({
       success: false,
       message: 'Internal server error. Please try again later.'
     });
   }
 });
+
 
 router.post('/login', loginValidation, async (req, res) => {
   try {
@@ -340,6 +351,7 @@ router.post('/login', loginValidation, async (req, res) => {
 });
 
 router.post('/verify-email', async (req, res) => {
+  
   try {
     const { token } = req.body;
 

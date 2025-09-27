@@ -473,6 +473,71 @@ app.get('/api/debug/email-config', (req, res) => {
   });
 });
 
+// Add this test endpoint to your server.js
+app.post('/api/debug/send-test-email', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email address is required'
+      });
+    }
+
+    console.log('📧 Attempting to send test email to:', email);
+    console.log('🔧 Email transporter status:', emailTransporter ? 'Ready' : 'Not ready');
+    console.log('👤 Sending from:', process.env.EMAIL_USER);
+
+    if (!emailTransporter) {
+      return res.json({
+        success: false,
+        message: 'Email transporter not initialized',
+        details: {
+          emailUser: process.env.EMAIL_USER ? 'Set' : 'Not set',
+          environment: process.env.NODE_ENV
+        }
+      });
+    }
+
+    const testMailOptions = {
+      from: {
+        name: 'HomeHero Test',
+        address: process.env.EMAIL_USER
+      },
+      to: email,
+      subject: 'HomeHero Test Email - Production',
+      text: `This is a test email from HomeHero production server sent at ${new Date().toISOString()}`,
+      html: `
+        <h1>HomeHero Test Email</h1>
+        <p>This is a test email from production server.</p>
+        <p><strong>Sent:</strong> ${new Date().toISOString()}</p>
+        <p><strong>From:</strong> ${process.env.EMAIL_USER}</p>
+        <p><strong>To:</strong> ${email}</p>
+      `
+    };
+
+    const result = await emailTransporter.sendMail(testMailOptions);
+    
+    console.log('✅ Test email sent successfully:', result.messageId);
+    
+    res.json({
+      success: true,
+      message: 'Test email sent successfully',
+      messageId: result.messageId,
+      previewUrl: `https://mail.google.com/mail/u/0/#search/${encodeURIComponent('HomeHero Test Email - Production')}`
+    });
+  } catch (error) {
+    console.error('❌ Test email error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send test email',
+      error: error.message,
+      response: error.response
+    });
+  }
+});
+
 const sendBookingNotification = async (bookingData, providerEmail) => {
   try {
     const mailOptions = {
