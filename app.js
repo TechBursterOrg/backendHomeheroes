@@ -33,16 +33,27 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load the appropriate .env file based on environment
-const envFile = process.env.NODE_ENV === 'production' 
-  ? '.env.production' 
-  : '.env';
+const envPath = process.env.NODE_ENV === 'production' 
+  ? path.resolve(__dirname, '.env.production')
+  : path.resolve(__dirname, '.env');
 
-dotenv.config({ path: path.resolve(__dirname, envFile) });
-process.setMaxListeners(0);
-// Debug: Check which file is being loaded
-console.log(`📁 Loading environment from: ${envFile}`);
-console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL}`);
-console.log(`🏭 Environment: ${process.env.NODE_ENV || 'development'}`);
+console.log(`📁 Loading environment from: ${envPath}`);
+console.log(`📁 File exists: ${fs.existsSync(envPath)}`);
+
+// Load environment with fallback
+if (fs.existsSync(envPath)) {
+  dotenv.config({ path: envPath });
+} else {
+  console.log('⚠️  Environment file not found, using process.env');
+  dotenv.config(); // Load from process.env
+}
+
+// Debug email configuration
+console.log('📧 Email Configuration:', {
+  user: process.env.EMAIL_USER ? 'Set' : 'Missing',
+  pass: process.env.EMAIL_PASSWORD ? 'Set' : 'Missing',
+  service: 'gmail'
+});
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -493,60 +504,7 @@ const sendBookingNotification = async (bookingData, providerEmail) => {
 app.use('/api/auth', authRoutes);
 
 // Profile image upload endpoint - FIXED VERSION
-// app.post('/api/auth/profile/image', authenticateToken, async (req, res) => {
-//   try {
-//     if (!req.files || !req.files.profileImage) {
-//       return res.status(400).json({
-//         success: false,
-//         message: 'No image file provided'
-//       });
-//     }
 
-//     const profileImage = req.files.profileImage;
-    
-//     // Generate unique filename
-//     const fileExtension = path.extname(profileImage.name);
-//     const fileName = `profile-${req.user.id}-${Date.now()}${fileExtension}`;
-//     const uploadDir = path.join(__dirname, 'uploads', 'profiles');
-//     const uploadPath = path.join(uploadDir, fileName);
-
-//     // Create uploads directory if it doesn't exist
-//     if (!fs.existsSync(uploadDir)) {
-//       fs.mkdirSync(uploadDir, { recursive: true });
-//     }
-
-//     // Move the file to the upload directory
-//     await profileImage.mv(uploadPath);
-
-//     // FIXED: Use consistent URL construction
-//     const protocol = req.secure ? 'https' : 'http';
-//     const host = req.get('host');
-//     const imageUrl = `/uploads/profiles/${fileName}`;
-//     const fullImageUrl = `${protocol}://${host}${imageUrl}`;
-
-//     // Update user profile with both relative and absolute URLs
-//     await User.findByIdAndUpdate(req.user.id, { 
-//       profileImage: imageUrl,
-//       profileImageFull: fullImageUrl // Store full URL for redundancy
-//     });
-
-//     res.json({
-//       success: true,
-//       message: 'Profile image uploaded successfully',
-//       data: { 
-//         imageUrl,
-//         fullImageUrl 
-//       }
-//     });
-//   } catch (error) {
-//     console.error('Profile image upload error:', error);
-//     res.status(500).json({
-//       success: false,
-//       message: 'Failed to upload profile image',
-//       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
-//     });
-//   }
-// });
 
 app.post('/api/auth/profile/image', authenticateToken, async (req, res) => {
   try {
@@ -2400,266 +2358,7 @@ app.post('/api/debug/create-test-providers', async (req, res) => {
   }
 });
 
-// In your server.js file, update the /api/providers endpoint:
 
-// app.get('/api/providers', async (req, res) => {
-//   try {
-//     const { 
-//       service, 
-//       location, 
-//       availableNow, // This will be 'true' for immediate service type
-//       page = 1,
-//       limit = 50
-//     } = req.query;
-    
-//     console.log('📥 Provider query params:', { service, location, availableNow });
-    
-//     // Base query - show all active providers by default
-//     let query = { 
-//       userType: { $in: ['provider', 'both'] },
-//       isActive: true 
-//     };
-    
-//     console.log('🔍 Base query before filters:', JSON.stringify(query));
-    
-//     let currentUserId = null;
-//     try {
-//       const authHeader = req.headers['authorization'];
-//       if (authHeader) {
-//         const token = authHeader.split(' ')[1];
-//         if (token) {
-//           const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production');
-//           currentUserId = decoded.id;
-//           console.log('👤 Current user ID:', currentUserId);
-          
-//           // Exclude current user from results
-//           query._id = { $ne: new mongoose.Types.ObjectId(currentUserId) };
-//           console.log('🚫 Excluding current user from provider results');
-//         }
-//       }
-//     } catch (tokenError) {
-//       console.log('🔐 No valid auth token or token error, not excluding any users');
-//     }
-    
-//     // Filter by service if provided and not empty
-//     if (service && service.trim() !== '' && service !== 'all') {
-//       query.services = { 
-//         $in: [new RegExp(service, 'i')] 
-//       };
-//       console.log('🔍 Added service filter:', service);
-//     } else {
-//       console.log('🔧 No service filter applied');
-//     }
-    
-//     // Filter by location if provided and not empty
-//     if (location && location.trim() !== '' && location !== 'all') {
-//       const locationLower = location.toLowerCase();
-//       query.$or = [
-//         { city: { $regex: locationLower, $options: 'i' } },
-//         { state: { $regex: locationLower, $options: 'i' } },
-//         { country: { $regex: locationLower, $options: 'i' } },
-//         { address: { $regex: locationLower, $options: 'i' } }
-//       ];
-//       console.log('🔍 Added location filter:', location);
-//     } else {
-//       console.log('🌍 No location filter applied');
-//     }
-    
-//     // CRITICAL FIX: Only filter by availability if explicitly requested
-//     // For immediate service type, availableNow will be 'true'
-//     if (availableNow === 'true') {
-//       // Include providers who are available now OR providers who don't have this field set
-//       query.$or = [
-//         { isAvailableNow: true },
-//         { isAvailableNow: { $exists: false } }, // Include providers without this field
-//         { isAvailableNow: null } // Include providers with null value
-//       ];
-//       console.log('🔍 Added availability filter: now (including providers without availability field)');
-//     } else {
-//       console.log('⏰ No availability filter applied - showing all providers');
-//       // Don't filter by availability at all - show all providers
-//     }
-    
-//     console.log('📋 Final MongoDB query:', JSON.stringify(query, null, 2));
-    
-//     const skip = (parseInt(page) - 1) * parseInt(limit);
-    
-//     // Get providers with the query
-//     const providers = await User.find(query)
-//       .select('name email services hourlyRate averageRating city state country profileImage isAvailableNow experience phoneNumber address reviewCount completedJobs isVerified isTopRated responseTime rating _id')
-//       .skip(skip)
-//       .limit(parseInt(limit));
-    
-//     const totalProviders = await User.countDocuments(query);
-    
-//     console.log('✅ Providers found with query:', providers.length);
-//     console.log('📊 Providers details:', providers.map(p => ({
-//       name: p.name,
-//       email: p.email,
-//       services: p.services && p.services.length > 0 ? p.services : ['No services'],
-//       city: p.city || 'No city',
-//       state: p.state || 'No state', 
-//       country: p.country || 'No country',
-//       isAvailableNow: p.isAvailableNow
-//     })));
-    
-//     // Calculate match scores and sort providers
-//     const scoredProviders = providers.map((provider) => {
-//       let score = 50; // Base score for all providers
-      
-//       // Service match scoring
-//       if (service && service.trim() !== '') {
-//         const serviceLower = service.toLowerCase();
-//         const providerServices = Array.isArray(provider.services) ? provider.services : [];
-        
-//         if (providerServices.length === 0) {
-//           // Give some score even if no services specified
-//           score += 5;
-//         } else {
-//           // Exact match gets highest score
-//           if (providerServices.some(s => s.toLowerCase() === serviceLower)) {
-//             score += 100;
-//           }
-//           // Partial match gets medium score
-//           else if (providerServices.some(s => s.toLowerCase().includes(serviceLower))) {
-//             score += 50;
-//           }
-//           // Any service match gets base score
-//           else {
-//             score += 10;
-//           }
-//         }
-//       } else if (Array.isArray(provider.services) && provider.services.length > 0) {
-//         // Bonus for having services defined when no specific service filter
-//         score += 15;
-//       }
-      
-//       // Location match scoring
-//       if (location && location.trim() !== '') {
-//         const locationLower = location.toLowerCase().trim();
-//         const providerAddress = (provider.address || '').toLowerCase();
-//         const providerCity = (provider.city || '').toLowerCase();
-//         const providerState = (provider.state || '').toLowerCase();
-//         const providerCountry = (provider.country || '').toLowerCase();
-        
-//         // Check for exact matches
-//         if (providerCity === locationLower) score += 80;
-//         else if (providerState === locationLower) score += 70;
-//         else if (providerCountry === locationLower) score += 60;
-//         // Check for partial matches
-//         else if (providerCity.includes(locationLower)) score += 40;
-//         else if (providerState.includes(locationLower)) score += 30;
-//         else if (providerCountry.includes(locationLower)) score += 20;
-//         else if (providerAddress.includes(locationLower)) score += 50;
-//       }
-      
-//       // Availability scoring (for immediate service type)
-//       if (availableNow === 'true') {
-//         if (provider.isAvailableNow === true) {
-//           score += 60;
-//         } else if (provider.isAvailableNow === undefined || provider.isAvailableNow === null) {
-//           score += 20; // Some score for providers without availability info
-//         }
-//       }
-      
-//       // Rating scoring (higher ratings get better scores)
-//       const rating = provider.averageRating || provider.rating || 4.0;
-//       score += rating * 10;
-      
-//       // Verified providers get bonus
-//       if (provider.isVerified) {
-//         score += 25;
-//       }
-      
-//       // Top-rated providers get bonus
-//       if (provider.isTopRated) {
-//         score += 35;
-//       }
-      
-//       // More reviews indicate more experience
-//       const reviewCount = provider.reviewCount || 0;
-//       score += Math.min(reviewCount / 10, 20);
-      
-//       return {
-//         ...provider.toObject(),
-//         _matchScore: score
-//       };
-//     });
-    
-//     // Sort by match score (highest first), then by rating, then by review count
-//     scoredProviders.sort((a, b) => {
-//       if (b._matchScore !== a._matchScore) {
-//         return b._matchScore - a._matchScore;
-//       }
-      
-//       const ratingA = a.averageRating || a.rating || 4.0;
-//       const ratingB = b.averageRating || b.rating || 4.0;
-//       if (ratingB !== ratingA) {
-//         return ratingB - ratingA;
-//       }
-      
-//       const reviewsA = a.reviewCount || 0;
-//       const reviewsB = b.reviewCount || 0;
-//       return reviewsB - reviewsA;
-//     });
-    
-//     // Transform providers to ensure consistent format
-//     const transformedProviders = scoredProviders.map((provider) => {
-//       // Ensure services is always an array
-//       let services = [];
-//       if (Array.isArray(provider.services)) {
-//         services = provider.services;
-//       } else if (typeof provider.services === 'string') {
-//         services = [provider.services];
-//       }
-      
-//       return {
-//         ...provider,
-//         _matchScore: undefined, // Remove from final output
-//         services: services,
-//         averageRating: provider.averageRating || provider.rating || 4.0,
-//         reviewCount: provider.reviewCount || 0,
-//         completedJobs: provider.completedJobs || 0,
-//         isVerified: provider.isVerified !== undefined ? provider.isVerified : false,
-//         isTopRated: provider.isTopRated !== undefined ? provider.isTopRated : false,
-//         isAvailableNow: provider.isAvailableNow !== undefined ? provider.isAvailableNow : true,
-//         responseTime: provider.responseTime || 'within 1 hour',
-//         hourlyRate: provider.hourlyRate || 0
-//       };
-//     });
-    
-//     console.log('📍 Search location was:', location);
-//     console.log('🔧 Search service was:', service);
-//     console.log('⏰ Available now filter:', availableNow);
-//     console.log('🏆 All providers count:', transformedProviders.length);
-//     console.log('📋 All providers:', transformedProviders.map(p => p.name));
-    
-//     res.json({
-//       success: true,
-//       data: {
-//         providers: transformedProviders,
-//         pagination: {
-//           currentPage: parseInt(page),
-//           totalPages: Math.ceil(totalProviders / parseInt(limit)),
-//           totalProviders,
-//           hasNextPage: parseInt(page) < Math.ceil(totalProviders / parseInt(limit)),
-//           hasPrevPage: parseInt(page) > 1,
-//           limit: parseInt(limit)
-//         }
-//       }
-//     });
-    
-//   } catch (error) {
-//     console.error('❌ Error fetching providers:', error);
-//     res.status(500).json({
-//       success: false,
-//       message: 'Failed to fetch providers',
-//       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
-//     });
-//   }
-// });
-
-// In your server.js file, update the location filtering part of the /api/providers endpoint:
 
 app.get('/api/providers', async (req, res) => {
   try {
@@ -4357,48 +4056,7 @@ app.get('/api/jobs/:id', authenticateToken, async (req, res) => {
 });
 
 // Apply for a job (provider accepts a service request)
-// app.post('/api/jobs/:id/apply', authenticateToken, async (req, res) => {
-//   try {
-//     const job = await ServiceRequest.findById(req.params.id);
-    
-//     if (!job) {
-//       return res.status(404).json({
-//         success: false,
-//         message: 'Job not found'
-//       });
-//     }
-    
-//     if (job.status !== 'pending') {
-//       return res.status(400).json({
-//         success: false,
-//         message: 'Job is no longer available'
-//       });
-//     }
-    
-//     // Update job status and assign provider
-//     job.providerId = req.user.id;
-//     job.status = 'accepted';
-//     job.acceptedAt = new Date();
-    
-//     await job.save();
-    
-//     // Populate the updated job
-//     await job.populate('customerId', 'name email phoneNumber');
-//     await job.populate('providerId', 'name email phoneNumber profileImage');
-    
-//     res.json({
-//       success: true,
-//       message: 'Successfully applied for the job',
-//       data: job
-//     });
-//   } catch (error) {
-//     console.error('Apply for job error:', error);
-//     res.status(500).json({
-//       success: false,
-//       message: 'Failed to apply for job'
-//     });
-//   }
-// });
+
 
 app.post('/api/jobs/:id/apply', authenticateToken, async (req, res) => {
   try {
