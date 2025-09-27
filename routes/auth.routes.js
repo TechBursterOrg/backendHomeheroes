@@ -5,7 +5,7 @@ import { body, validationResult } from 'express-validator';
 import crypto from 'crypto';
 import path from 'path';
 import User from '../models/User.js';
-import { sendVerificationEmail, generateVerificationToken } from '../utils/emailService.js';
+import { sendVerificationEmail } from '../utils/emailService.js';
 
 const router = express.Router();
 
@@ -473,6 +473,91 @@ router.post('/resend-verification', async (req, res) => {
     });
   }
 });
+
+router.post('/signup', async (req, res) => {
+  try {
+    const { name, email, password, userType, country } = req.body;
+
+    // Check if user exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: 'User already exists with this email'
+      });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 12);
+
+    // Generate verification token
+    const emailVerificationToken = generateVerificationToken();
+    const emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+    // Create user
+    const user = new User({
+      name,
+      email,
+      password: hashedPassword,
+      userType,
+      country,
+      emailVerificationToken,
+      emailVerificationExpires,
+      isEmailVerified: false
+    });
+
+    await user.save();
+
+    // Send verification email
+    console.log('📧 Attempting to send verification email to:', email);
+    const emailResult = await sendVerificationEmail(user, emailVerificationToken);
+
+    if (!emailResult.success) {
+      console.error('❌ Email sending failed, but user created:', emailResult.error);
+      
+      // User is created but email failed - they can request a new verification email
+      return res.status(201).json({
+        success: true,
+        message: 'Account created but verification email failed. Please try logging in to resend.',
+        data: {
+          user: {
+            id: user._id,
+            name: user.name,
+            email: user.email,
+            userType: user.userType
+          },
+          requiresVerification: true,
+          emailSent: false
+        }
+      });
+    }
+
+    // Success case
+    res.status(201).json({
+      success: true,
+      message: 'Account created successfully! Please check your email for verification.',
+      data: {
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          userType: user.userType
+        },
+        requiresVerification: true,
+        emailSent: true
+      }
+    });
+
+  } catch (error) {
+    console.error('Signup error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error creating account',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
 
 router.post('/forgot-password', async (req, res) => {
   try {

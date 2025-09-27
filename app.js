@@ -544,6 +544,30 @@ app.post('/api/debug/test-email', async (req, res) => {
   }
 });
 
+app.post('/api/test-email-simple', async (req, res) => {
+  const transporter = nodemailer.createTransporter({
+    service: 'gmail',
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASSWORD
+    }
+  });
+  
+  try {
+    await transporter.verify();
+    const result = await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: process.env.EMAIL_USER, // Send to yourself
+      subject: 'Test from Production',
+      text: 'This is a test email from production'
+    });
+    
+    res.json({ success: true, messageId: result.messageId });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
 app.post('/api/debug/email-full-test', async (req, res) => {
   try {
     const { email } = req.body;
@@ -638,6 +662,60 @@ app.post('/api/debug/email-full-test', async (req, res) => {
     });
   }
 });
+
+app.get('/api/debug/email-config-detailed', async (req, res) => {
+  try {
+    const { initializeEmailTransporter, getEmailTransporter } = await import('./utils/emailService.js');
+    
+    // Test transporter initialization
+    const initResult = await initializeEmailTransporter();
+    const transporter = getEmailTransporter();
+    
+    // Test credentials
+    const testTransporter = nodemailer.createTransporter({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASSWORD
+      },
+      logger: true,
+      debug: true
+    });
+    
+    let verifyResult;
+    try {
+      verifyResult = await testTransporter.verify();
+    } catch (verifyError) {
+      verifyResult = { error: verifyError.message };
+    }
+    
+    res.json({
+      environment: {
+        NODE_ENV: process.env.NODE_ENV,
+        FRONTEND_URL: process.env.FRONTEND_URL,
+        DOMAIN: process.env.DOMAIN
+      },
+      email: {
+        EMAIL_USER: process.env.EMAIL_USER ? 'Set' : 'Not set',
+        EMAIL_PASSWORD: process.env.EMAIL_PASSWORD ? `Set (length: ${process.env.EMAIL_PASSWORD.length})` : 'Not set',
+        userValue: process.env.EMAIL_USER ? process.env.EMAIL_USER.substring(0, 3) + '...' : 'Not set'
+      },
+      transporter: {
+        initialized: !!transporter,
+        initResult: initResult,
+        verifyResult: verifyResult
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
+
 
 app.get('/api/debug/email-config', (req, res) => {
   res.json({
