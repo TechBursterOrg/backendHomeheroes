@@ -33,27 +33,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Load the appropriate .env file based on environment
-const envPath = process.env.NODE_ENV === 'production' 
-  ? path.resolve(__dirname, '.env.production')
-  : path.resolve(__dirname, '.env');
+const envFile = process.env.NODE_ENV === 'production' 
+  ? 'env.production'  // Match your actual file name
+  : '.env';
 
-console.log(`📁 Loading environment from: ${envPath}`);
-console.log(`📁 File exists: ${fs.existsSync(envPath)}`);
+console.log(`Loading environment from: ${envFile}`);
+console.log(`File exists: ${fs.existsSync(path.resolve(__dirname, envFile))}`);
 
-// Load environment with fallback
-if (fs.existsSync(envPath)) {
-  dotenv.config({ path: envPath });
-} else {
-  console.log('⚠️  Environment file not found, using process.env');
-  dotenv.config(); // Load from process.env
-}
-
-// Debug email configuration
-console.log('📧 Email Configuration:', {
-  user: process.env.EMAIL_USER ? 'Set' : 'Missing',
-  pass: process.env.EMAIL_PASSWORD ? 'Set' : 'Missing',
-  service: 'gmail'
-});
+dotenv.config({ path: path.resolve(__dirname, envFile) });
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -425,12 +412,65 @@ function authenticateToken(req, res, next) {
 }
 
 
+
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASSWORD
   }
+});
+
+app.post('/api/debug/test-email', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!emailTransporter) {
+      return res.json({
+        success: false,
+        message: 'Email transporter not initialized',
+        details: {
+          emailUser: process.env.EMAIL_USER ? 'Set' : 'Not set',
+          emailPassword: process.env.EMAIL_PASSWORD ? 'Set' : 'Not set',
+          environment: process.env.NODE_ENV
+        }
+      });
+    }
+
+    const testMailOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: 'HomeHero Test Email',
+      text: 'This is a test email from HomeHero production server.',
+      html: '<h1>HomeHero Test Email</h1><p>This is a test email from production.</p>'
+    };
+
+    const result = await emailTransporter.sendMail(testMailOptions);
+    
+    res.json({
+      success: true,
+      message: 'Test email sent successfully',
+      messageId: result.messageId
+    });
+  } catch (error) {
+    console.error('Test email error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send test email',
+      error: error.message,
+      details: error
+    });
+  }
+});
+
+app.get('/api/debug/email-config', (req, res) => {
+  res.json({
+    environment: process.env.NODE_ENV,
+    emailConfigured: !!(process.env.EMAIL_USER && process.env.EMAIL_PASSWORD),
+    emailUser: process.env.EMAIL_USER ? 'Set' : 'Not set',
+    frontendUrl: process.env.FRONTEND_URL,
+    transporterReady: !!emailTransporter
+  });
 });
 
 const sendBookingNotification = async (bookingData, providerEmail) => {

@@ -112,6 +112,17 @@ router.post('/signup', signupValidation, async (req, res) => {
     });
 
     const savedUser = await newUser.save();
+    console.log('📧 Attempting to send verification email to:', savedUser.email);
+    console.log('🔧 Email transporter status:', emailTransporter ? 'Initialized' : 'Not initialized');
+    console.log('🌐 Frontend URL:', process.env.FRONTEND_URL);
+
+    try {
+      const emailResult = await sendVerificationEmail(savedUser, verificationToken);
+      console.log('✅ Email sending result:', emailResult);
+    } catch (emailError) {
+      console.error('❌ Email sending failed:', emailError);
+      // Don't fail the signup if email fails
+    }
 
     try {
       await sendVerificationEmail(savedUser, verificationToken);

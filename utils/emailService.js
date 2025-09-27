@@ -17,6 +17,10 @@ const EMAIL_CONFIG = {
 let emailTransporter = null;
 
 export const initializeEmailTransporter = () => {
+  console.log('🔧 Initializing email transporter...');
+  console.log('📧 Email user exists:', !!process.env.EMAIL_USER);
+  console.log('🔑 Email password exists:', !!process.env.EMAIL_PASSWORD);
+  
   if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
     try {
       emailTransporter = nodemailer.createTransport({
@@ -27,22 +31,29 @@ export const initializeEmailTransporter = () => {
         },
       });
       
-      // Verify connection configuration
-      emailTransporter.verify(function (error, success) {
+      // Test the connection
+      emailTransporter.verify((error, success) => {
         if (error) {
-          console.error('❌ Email transporter verification failed:', error.message);
-          console.log('⚠️ Email sending will be simulated');
-          emailTransporter = null; // Fall back to simulation mode
+          console.error('❌ Email transporter verification failed:', error);
+          console.log('🔧 Error details:', {
+            code: error.code,
+            command: error.command,
+            response: error.response
+          });
+          emailTransporter = null;
         } else {
           console.log('✅ Email transporter is ready to send messages');
+          console.log('📧 Configured to send from:', process.env.EMAIL_USER);
         }
       });
     } catch (error) {
-      console.error('❌ Failed to initialize email transporter:', error.message);
-      emailTransporter = null; // Fall back to simulation mode
+      console.error('❌ Failed to initialize email transporter:', error);
+      emailTransporter = null;
     }
   } else {
-    console.warn('⚠️ Email credentials not configured. Email verification will be simulated.');
+    console.warn('⚠️ Email credentials not configured');
+    console.log('🔍 EMAIL_USER:', process.env.EMAIL_USER ? 'Set' : 'Not set');
+    console.log('🔍 EMAIL_PASSWORD:', process.env.EMAIL_PASSWORD ? 'Set' : 'Not set');
   }
 };
 
