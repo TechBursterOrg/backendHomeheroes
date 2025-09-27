@@ -1,59 +1,98 @@
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
 
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://homeheroes.help';
 
-const EMAIL_CONFIG = {
-  service: 'gmail',
-  host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.EMAIL_PORT) || 587,
-  secure: false,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASSWORD,
-  },
+// Enhanced email configuration with better error handling
+const getEmailConfig = () => {
+  const config = {
+    service: 'gmail',
+    host: process.env.EMAIL_HOST || 'smtp.gmail.com',
+    port: parseInt(process.env.EMAIL_PORT) || 587,
+    secure: false,
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASSWORD,
+    },
+    // Add connection timeout and better error handling
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 10000,
+    logger: process.env.NODE_ENV === 'development',
+    debug: process.env.NODE_ENV === 'development'
+  };
+
+  console.log('🔧 Email Configuration:', {
+    user: process.env.EMAIL_USER ? 'Set' : 'Not set',
+    password: process.env.EMAIL_PASSWORD ? 'Set' : 'Not set',
+    host: config.host,
+    port: config.port,
+    environment: process.env.NODE_ENV
+  });
+
+  return config;
 };
 
 let emailTransporter = null;
+let isTransporterInitialized = false;
 
-export const initializeEmailTransporter = () => {
-  console.log('🔧 Initializing email transporter...');
-  console.log('📧 Email user exists:', !!process.env.EMAIL_USER);
-  console.log('🔑 Email password exists:', !!process.env.EMAIL_PASSWORD);
+export const initializeEmailTransporter = async () => {
+  console.log('🚀 Initializing email transporter for production...');
   
-  if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
-    try {
-      emailTransporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: {
-          user: process.env.EMAIL_USER,
-          pass: process.env.EMAIL_PASSWORD,
-        },
-      });
-      
-      // Test the connection
-      emailTransporter.verify((error, success) => {
-        if (error) {
-          console.error('❌ Email transporter verification failed:', error);
-          console.log('🔧 Error details:', {
-            code: error.code,
-            command: error.command,
-            response: error.response
-          });
-          emailTransporter = null;
-        } else {
-          console.log('✅ Email transporter is ready to send messages');
-          console.log('📧 Configured to send from:', process.env.EMAIL_USER);
-        }
-      });
-    } catch (error) {
-      console.error('❌ Failed to initialize email transporter:', error);
-      emailTransporter = null;
-    }
-  } else {
-    console.warn('⚠️ Email credentials not configured');
-    console.log('🔍 EMAIL_USER:', process.env.EMAIL_USER ? 'Set' : 'Not set');
-    console.log('🔍 EMAIL_PASSWORD:', process.env.EMAIL_PASSWORD ? 'Set' : 'Not set');
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
+    console.error('❌ Email credentials missing:', {
+      EMAIL_USER: process.env.EMAIL_USER ? 'Set' : 'Not set',
+      EMAIL_PASSWORD: process.env.EMAIL_PASSWORD ? 'Set' : 'Not set'
+    });
+    return false;
+  }
+
+  try {
+    // Create test configuration first
+    const testTransporter = nodemailer.createTransporter(getEmailConfig());
+    
+    // Verify connection
+    await testTransporter.verify();
+    console.log('✅ SMTP connection verified successfully');
+    
+    emailTransporter = testTransporter;
+    isTransporterInitialized = true;
+    
+    // Test email sending capability
+    await sendTestEmail();
+    return true;
+  } catch (error) {
+    console.error('❌ Email transporter initialization failed:', error);
+    console.error('🔧 Error details:', {
+      code: error.code,
+      command: error.command,
+      response: error.response
+    });
+    
+    emailTransporter = null;
+    isTransporterInitialized = false;
+    return false;
+  }
+};
+
+const sendTestEmail = async () => {
+  if (!emailTransporter) return;
+  
+  try {
+    const testMailOptions = {
+      from: process.env.EMAIL_USER,
+      to: process.env.EMAIL_USER, // Send to yourself for testing
+      subject: 'HomeHero Production Email Test',
+      text: `This is a test email from HomeHero production server sent at ${new Date().toISOString()}`,
+      html: `<p>HomeHero production email test - ${new Date().toISOString()}</p>`
+    };
+
+    const result = await emailTransporter.sendMail(testMailOptions);
+    console.log('✅ Production email test successful:', result.messageId);
+    return true;
+  } catch (error) {
+    console.error('❌ Production email test failed:', error);
+    return false;
   }
 };
 
@@ -73,71 +112,70 @@ const getVerificationEmailTemplate = (name, verificationUrl) => {
         <title>Verify Your Email - HomeHero</title>
       </head>
       <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, #3B82F6 0%, #10B981 100%); border-radius: 10px; margin-bottom: 30px;">
-          <h1 style="color: white; margin: 0; font-size: 28px;">Welcome to HomeHero!</h1>
+        <div style="background: linear-gradient(135deg, #3B82F6 0%, #10B981 100%); padding: 30px; text-align: center; color: white; border-radius: 10px 10px 0 0;">
+          <h1 style="color: white; margin: 0; font-size: 28px;">Verify Your HomeHero Account</h1>
         </div>
         
-        <div style="background: #f8f9fa; padding: 30px; border-radius: 10px; border: 1px solid #e9ecef;">
+        <div style="background: #f8f9fa; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #e9ecef;">
           <h2 style="color: #2c3e50; margin-top: 0;">Hi ${name},</h2>
           
           <p style="font-size: 16px; margin-bottom: 25px;">
-            Thank you for joining HomeHero! We're excited to have you as part of our community of homeowners and service providers.
-          </p>
-          
-          <p style="font-size: 16px; margin-bottom: 30px;">
-            To complete your registration and start using all features, please verify your email address by clicking the button below:
+            Thank you for joining HomeHero! Please verify your email address to activate your account.
           </p>
           
           <div style="text-align: center; margin: 35px 0;">
             <a href="${verificationUrl}" 
-               style="display: inline-block; background: linear-gradient(135deg, #3B82F6 0%, #10B981 100%); color: white; text-decoration: none; padding: 15px 40px; border-radius: 8px; font-weight: bold; font-size: 16px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
-              Verify My Email
+               style="display: inline-block; background: linear-gradient(135deg, #3B82F6 0%, #10B981 100%); color: white; text-decoration: none; padding: 15px 40px; border-radius: 8px; font-weight: bold; font-size: 16px;">
+              Verify Email Address
             </a>
           </div>
           
-          <p style="font-size: 14px; color: #6c757d; margin-top: 30px; padding-top: 20px; border-top: 1px solid #dee2e6;">
-            If the button doesn't work, you can copy and paste this link into your browser:<br>
+          <p style="font-size: 14px; color: #6c757d;">
+            Or copy this link into your browser:<br>
             <span style="word-break: break-all; color: #3B82F6;">${verificationUrl}</span>
           </p>
           
           <p style="font-size: 14px; color: #6c757d; margin-bottom: 0;">
-            This verification link will expire in 24 hours. If you didn't create this account, please ignore this email.
-          </p>
-        </div>
-        
-        <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e9ecef;">
-          <p style="color: #6c757d; font-size: 14px; margin: 0;">
-            Questions? Contact us at <a href="mailto:support@homehero.com" style="color: #3B82F6;">support@homehero.com</a>
+            This link expires in 24 hours.
           </p>
         </div>
       </body>
       </html>
     `,
-    text: `
-      Hi ${name},
-      
-      Welcome to HomeHero! Thank you for joining our community.
-      
-      To complete your registration, please verify your email address by visiting this link:
-      ${verificationUrl}
-      
-      This link will expire in 24 hours.
-      
-      If you didn't create this account, please ignore this email.
-      
-      Questions? Contact us at support@homehero.com
-      
-      Best regards,
-      The HomeHero Team
-    `
+    text: `Verify your HomeHero account: ${verificationUrl}`
   };
 };
 
 export const sendVerificationEmail = async (user, verificationToken) => {
-  if (!emailTransporter) {
-    console.log('📧 Simulated verification email sent to:', user.email);
-    console.log('🔗 Verification URL:', `${FRONTEND_URL}/verify-email?token=${verificationToken}`);
-    return { success: true, simulated: true };
+  console.log('📧 Sending verification email in production environment...');
+  console.log('🔧 Environment:', process.env.NODE_ENV);
+  console.log('👤 Recipient:', user.email);
+
+  try {
+  console.log('📧 Attempting to send verification email...');
+  
+  const emailResult = await sendVerificationEmail(savedUser, verificationToken);
+  
+  if (emailResult.success) {
+    console.log('✅ Email sent successfully:', emailResult.messageId);
+  } else {
+    console.warn('⚠️ Email sending failed, but user was created:', emailResult.error);
+    // Don't fail the signup process - just log the error
+  }
+} catch (emailError) {
+  console.error('❌ Email sending critical error:', emailError);
+  // Still don't fail the signup process
+}
+  
+  if (!emailTransporter || !isTransporterInitialized) {
+    console.error('❌ Email transporter not initialized. Attempting to initialize...');
+    const initialized = await initializeEmailTransporter();
+    
+    if (!initialized) {
+      console.log('📧 SIMULATION MODE: Email transporter not available');
+      console.log('🔗 Verification URL would be:', `${FRONTEND_URL}/verify-email?token=${verificationToken}`);
+      return { success: true, simulated: true, message: 'Email simulation mode' };
+    }
   }
 
   try {
@@ -146,20 +184,61 @@ export const sendVerificationEmail = async (user, verificationToken) => {
 
     const mailOptions = {
       from: {
-        name: 'HomeHero Team',
+        name: 'HomeHero',
         address: process.env.EMAIL_USER
       },
       to: user.email,
       subject: emailTemplate.subject,
       html: emailTemplate.html,
-      text: emailTemplate.text
+      text: emailTemplate.text,
+      // Add headers for better deliverability
+      headers: {
+        'X-Priority': '1',
+        'X-Mailer': 'HomeHero'
+      }
     };
 
+    console.log('📤 Sending email with options:', {
+      from: mailOptions.from,
+      to: mailOptions.to,
+      subject: mailOptions.subject
+    });
+
     const result = await emailTransporter.sendMail(mailOptions);
-    console.log('📧 Verification email sent successfully to:', user.email);
-    return { success: true, messageId: result.messageId };
+    
+    console.log('✅ Verification email sent successfully:', {
+      messageId: result.messageId,
+      response: result.response
+    });
+    
+    return { 
+      success: true, 
+      messageId: result.messageId,
+      response: result.response 
+    };
   } catch (error) {
     console.error('❌ Failed to send verification email:', error);
-    throw error;
+    console.error('🔧 Full error details:', {
+      name: error.name,
+      message: error.message,
+      code: error.code,
+      command: error.command,
+      response: error.response
+    });
+    
+    // Don't throw error - just log it and continue
+    return { 
+      success: false, 
+      error: error.message,
+      simulated: true 
+    };
   }
 };
+
+// Export transporter for debugging
+export const getEmailTransporter = () => emailTransporter;
+export const getTransporterStatus = () => ({
+  initialized: isTransporterInitialized,
+  hasCredentials: !!(process.env.EMAIL_USER && process.env.EMAIL_PASSWORD),
+  environment: process.env.NODE_ENV
+});

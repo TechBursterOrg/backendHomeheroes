@@ -48,7 +48,16 @@ const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/homehe
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
 
 // Initialize email transporter
-initializeEmailTransporter();
+console.log('🚀 Starting email service initialization...');
+initializeEmailTransporter().then(success => {
+  if (success) {
+    console.log('✅ Email service initialized successfully');
+  } else {
+    console.log('⚠️ Email service running in simulation mode');
+  }
+});
+
+
 
 // ==================== UPLOAD DIRECTORY SETUP ====================
 
@@ -418,6 +427,78 @@ const transporter = nodemailer.createTransport({
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASSWORD
+  }
+});
+
+app.get('/api/debug/email-status',async (req, res) => {
+  const { getTransporterStatus } = await import('./utils/emailService.js');
+  const status = getTransporterStatus();
+  
+  res.json({
+    success: true,
+    data: {
+      ...status,
+      frontendUrl: process.env.FRONTEND_URL,
+      nodeEnv: process.env.NODE_ENV,
+      emailUser: process.env.EMAIL_USER ? 'Set' : 'Not set',
+      timestamp: new Date().toISOString()
+    }
+  });
+});
+
+app.post('/api/debug/send-test-email', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email address is required'
+      });
+    }
+
+    const { initializeEmailTransporter, getEmailTransporter } = await import('./utils/emailService.js');
+    
+    console.log('🧪 Testing email sending to:', email);
+    
+    // Ensure transporter is initialized
+    await initializeEmailTransporter();
+    const transporter = getEmailTransporter();
+    
+    if (!transporter) {
+      return res.status(500).json({
+        success: false,
+        message: 'Email transporter not available'
+      });
+    }
+
+    const testMailOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: 'HomeHero Production Email Test',
+      text: `This is a test email sent from HomeHero production server at ${new Date().toISOString()}`,
+      html: `
+        <h1>HomeHero Production Test</h1>
+        <p>This email was sent from your production server.</p>
+        <p><strong>Time:</strong> ${new Date().toISOString()}</p>
+        <p><strong>Environment:</strong> ${process.env.NODE_ENV}</p>
+      `
+    };
+
+    const result = await transporter.sendMail(testMailOptions);
+    
+    res.json({
+      success: true,
+      message: 'Test email sent successfully',
+      messageId: result.messageId
+    });
+  } catch (error) {
+    console.error('Test email error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send test email',
+      error: error.message
+    });
   }
 });
 
