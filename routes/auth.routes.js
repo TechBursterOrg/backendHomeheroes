@@ -78,8 +78,15 @@ const signupValidation = [
 // Auth routes
 router.post('/signup', signupValidation, async (req, res) => {
   try {
+    console.log('🔧 Signup request received:', {
+      email: req.body.email,
+      userType: req.body.userType,
+      timestamp: new Date().toISOString()
+    });
+
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('❌ Validation errors:', errors.array());
       return res.status(400).json({
         success: false,
         message: 'Validation failed',
@@ -89,16 +96,33 @@ router.post('/signup', signupValidation, async (req, res) => {
 
     const { name, email, password, userType, country } = req.body;
 
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    // Check for existing user with better error handling
+    const existingUser = await User.findOne({ email: email.toLowerCase() }).catch(dbError => {
+      console.error('❌ Database error checking existing user:', dbError);
+      throw new Error('Database connection error');
+    });
+
     if (existingUser) {
+      console.log('⚠️ User already exists:', email);
       return res.status(409).json({
         success: false,
         message: 'An account with this email already exists.'
       });
     }
 
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
+    // Hash password with error handling
+    let hashedPassword;
+    try {
+      const saltRounds = 10;
+      hashedPassword = await bcrypt.hash(password, saltRounds);
+    } catch (hashError) {
+      console.error('❌ Password hashing error:', hashError);
+      return res.status(500).json({
+        success: false,
+        message: 'Error processing password'
+      });
+    }
+
     const verificationToken = generateVerificationToken();
 
     const newUser = new User({
@@ -108,26 +132,33 @@ router.post('/signup', signupValidation, async (req, res) => {
       userType,
       country,
       emailVerificationToken: verificationToken,
-      emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 hours
+      emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000)
     });
 
-    const savedUser = await newUser.save();
-    console.log('📧 Attempting to send verification email to:', savedUser.email);
-    console.log('🔧 Email transporter status:', emailTransporter ? 'Initialized' : 'Not initialized');
-    console.log('🌐 Frontend URL:', process.env.FRONTEND_URL);
+    // Save user with error handling
+    const savedUser = await newUser.save().catch(saveError => {
+      console.error('❌ User save error:', saveError);
+      
+      // Handle duplicate key error (race condition)
+      if (saveError.code === 11000) {
+        return res.status(409).json({
+          success: false,
+          message: 'An account with this email already exists.'
+        });
+      }
+      
+      throw new Error('Failed to create user account');
+    });
 
-    try {
-      const emailResult = await sendVerificationEmail(savedUser, verificationToken);
-      console.log('✅ Email sending result:', emailResult);
-    } catch (emailError) {
-      console.error('❌ Email sending failed:', emailError);
-      // Don't fail the signup if email fails
-    }
+    console.log('✅ User created successfully:', savedUser._id);
 
+    // Attempt to send verification email (but don't fail signup if email fails)
     try {
       await sendVerificationEmail(savedUser, verificationToken);
+      console.log('📧 Verification email sent to:', savedUser.email);
     } catch (emailError) {
-      console.error('Email sending failed:', emailError);
+      console.error('⚠️ Email sending failed (non-critical):', emailError);
+      // Continue with success response even if email fails
     }
 
     res.status(201).json({
@@ -143,21 +174,15 @@ router.post('/signup', signupValidation, async (req, res) => {
           isEmailVerified: savedUser.isEmailVerified,
           createdAt: savedUser.createdAt
         },
-        requiresVerification: true,
-        redirectTo: '/verify-email'
+        requiresVerification: true
       }
     });
 
   } catch (error) {
-    console.error('Signup error:', error);
+    console.error('💥 SIGNUP CRITICAL ERROR:', error);
+    console.error('Error stack:', error.stack);
     
-    if (error.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        message: 'An account with this email already exists.'
-      });
-    }
-    
+    // Generic error response to avoid exposing internal details
     res.status(500).json({
       success: false,
       message: 'Internal server error. Please try again later.'
