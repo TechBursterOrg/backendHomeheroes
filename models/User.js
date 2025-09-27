@@ -36,6 +36,45 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  identityVerification: {
+    nin: {
+      type: String,
+      trim: true,
+      sparse: true // Allows null values but ensures uniqueness for non-null values
+    },
+    nepaBillUrl: {
+      type: String,
+      trim: true
+    },
+    isNinVerified: {
+      type: Boolean,
+      default: false
+    },
+    isNepaVerified: {
+      type: Boolean,
+      default: false
+    },
+    verificationStatus: {
+      type: String,
+      enum: ['unverified', 'pending', 'verified', 'rejected'],
+      default: 'unverified'
+    },
+    verificationSubmittedAt: {
+      type: Date
+    },
+    verificationReviewedAt: {
+      type: Date
+    },
+    verificationNotes: {
+      type: String
+    }
+  },
+  
+  // Track if user has submitted verification before
+  hasSubmittedVerification: {
+    type: Boolean,
+    default: false
+  },
   responseTime: {
     type: String,
     default: 'within 1 hour'
@@ -240,12 +279,18 @@ const userSchema = new mongoose.Schema({
 });
 
 
+
+
 // Index for better query performance
 userSchema.index({ email: 1 });
 userSchema.index({ emailVerificationToken: 1 });
 userSchema.index({ passwordResetToken: 1 });
 // ADDED: Index for location fields
 userSchema.index({ city: 1, state: 1, country: 1 });
+userSchema.index({ 'identityVerification.nin': 1 }, { 
+  unique: true, 
+  sparse: true 
+});
 
 const User = mongoose.model('User', userSchema);
 

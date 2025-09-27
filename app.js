@@ -17,6 +17,7 @@ import { Conversation } from './models/Conversation.js';
 import ServiceRequest from './models/ServiceRequest.js';
 import Booking from './models/Booking.js';
 import nodemailer from 'nodemailer';
+import messageRoutes from './routes/messages.routes.js';
 
 // Import models
 import User from './models/User.js';
@@ -702,6 +703,10 @@ app.get('/api/health/upload', async (req, res) => {
   }
 });
 
+// Messages routes
+app.use('/api/messages', messageRoutes);
+
+
 // Gallery 
 // ==================== GALLERY UPLOAD ENDPOINT ====================
 
@@ -887,6 +892,286 @@ app.post('/api/test-upload', async (req, res) => {
   }
 });
 
+// Get verification status
+app.get('/api/auth/verification-status', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('identityVerification hasSubmittedVerification');
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        isNinVerified: user.identityVerification?.isNinVerified || false,
+        isNepaVerified: user.identityVerification?.isNepaVerified || false,
+        verificationStatus: user.identityVerification?.verificationStatus || 'unverified',
+        hasSubmittedVerification: user.hasSubmittedVerification || false
+      }
+    });
+  } catch (error) {
+    console.error('Get verification status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch verification status'
+    });
+  }
+});
+
+// Submit identity verification
+app.post('/api/auth/verify-identity', authenticateToken, async (req, res) => {
+  try {
+    const { nin } = req.body;
+    const nepaBill = req.files?.nepaBill;
+
+    // Server-side NIN validation
+    if (!nin) {
+      return res.status(400).json({
+        success: false,
+        message: 'NIN is required'
+      });
+    }
+
+    // Clean and validate NIN
+    const cleanNIN = nin.replace(/\D/g, '');
+    
+    if (cleanNIN.length !== 11) {
+      return res.status(400).json({
+        success: false,
+        message: 'NIN must be exactly 11 digits'
+      });
+    }
+
+    if (!/^\d+$/.test(cleanNIN)) {
+      return res.status(400).json({
+        success: false,
+        message: 'NIN must contain only numbers'
+      });
+    }
+
+    // Enhanced server-side validation
+    const validationError = validateNINOnServer(cleanNIN);
+    if (validationError) {
+      return res.status(400).json({
+        success: false,
+        message: validationError
+      });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Check if NIN is already used by another user
+    const existingUser = await User.findOne({ 
+      'identityVerification.nin': cleanNIN,
+      _id: { $ne: req.user.id }
+    });
+
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: 'This NIN is already registered with another account. Please contact support if this is an error.'
+      });
+    }
+
+    // Check if user has recently attempted verification (rate limiting)
+    const lastAttempt = user.identityVerification?.verificationSubmittedAt;
+    if (lastAttempt && Date.now() - new Date(lastAttempt).getTime() < 24 * 60 * 60 * 1000) {
+      return res.status(429).json({
+        success: false,
+        message: 'Verification attempt limit exceeded. Please try again in 24 hours.'
+      });
+    }
+
+    // Handle file upload for NEPA bill
+    let nepaBillUrl = '';
+    if (nepaBill) {
+      const uploadDir = path.join(__dirname, 'uploads', 'verification');
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+
+      const fileName = `nepa-bill-${req.user.id}-${Date.now()}${path.extname(nepaBill.name)}`;
+      const filePath = path.join(uploadDir, fileName);
+      
+      await nepaBill.mv(filePath);
+      nepaBillUrl = `/uploads/verification/${fileName}`;
+    }
+
+    // Update user verification data
+    user.identityVerification = {
+      nin: cleanNIN,
+      nepaBillUrl: nepaBillUrl,
+      isNinVerified: false, // Will be verified against external service
+      isNepaVerified: false,
+      verificationStatus: 'pending',
+      verificationSubmittedAt: new Date(),
+      verificationNotes: ''
+    };
+
+    user.hasSubmittedVerification = true;
+
+    await user.save();
+
+    // In production, integrate with real NIMC API here
+    await verifyWithExternalService(cleanNIN, user._id);
+
+    res.json({
+      success: true,
+      message: 'Identity verification submitted successfully. It will be reviewed by our team.',
+      data: {
+        isNinVerified: false,
+        isNepaVerified: false,
+        verificationStatus: 'pending',
+        hasSubmittedVerification: true
+      }
+    });
+
+  } catch (error) {
+    console.error('Identity verification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to submit identity verification'
+    });
+  }
+});
+
+// Server-side NIN validation function
+function validateNINOnServer(nin) {
+  const stateCodes = {
+    '01': 'Lagos', '02': 'Ogun', '03': 'Oyo', '04': 'Ondo', '05': 'Osun',
+    // ... include all state codes
+  };
+
+  const stateCode = nin.substring(0, 2);
+  if (!stateCodes[stateCode]) {
+    return 'Invalid state code in NIN';
+  }
+
+  // Check for obvious fake patterns
+  if (/^(\d)\1+$/.test(nin)) {
+    return 'Invalid NIN pattern detected';
+  }
+
+  // Check sequential numbers
+  let sequential = true;
+  for (let i = 1; i < nin.length; i++) {
+    if (parseInt(nin[i]) !== parseInt(nin[i-1]) + 1) {
+      sequential = false;
+      break;
+    }
+  }
+  if (sequential) return 'Invalid sequential NIN detected';
+
+  return null;
+}
+
+// Mock external verification (replace with real API integration)
+async function verifyWithExternalService(nin, userId) {
+  try {
+    // In production, integrate with:
+    // 1. NIMC API
+    // 2. Third-party verification services
+    // 3. Government databases
+    
+    // Simulate API call
+    console.log(`Verifying NIN ${nin} for user ${userId} with external service`);
+    
+    // This would be the real implementation:
+    // const response = await fetch('https://api.nimc.gov.ng/verify', {
+    //   method: 'POST',
+    //   headers: { 'Authorization': `Bearer ${process.env.NIMC_API_KEY}` },
+    //   body: JSON.stringify({ nin: nin })
+    // });
+    
+    // For now, simulate success after delay
+    setTimeout(async () => {
+      try {
+        // Update verification status based on external service response
+        await User.findByIdAndUpdate(userId, {
+          'identityVerification.isNinVerified': true,
+          'identityVerification.verificationStatus': 'verified',
+          'identityVerification.verificationReviewedAt': new Date()
+        });
+        
+        console.log(`NIN ${nin} verified successfully for user ${userId}`);
+      } catch (error) {
+        console.error('Error updating verification status:', error);
+      }
+    }, 5000);
+    
+  } catch (error) {
+    console.error('External verification service error:', error);
+  }
+}
+
+
+// Admin endpoint to verify identities (optional - for admin panel)
+app.patch('/api/admin/verify-identity/:userId', authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    const { approveNIN, approveNepa, notes } = req.body;
+    const userId = req.params.userId;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (!user.identityVerification) {
+      return res.status(400).json({
+        success: false,
+        message: 'User has not submitted verification'
+      });
+    }
+
+    // Update verification status
+    user.identityVerification.isNinVerified = approveNIN || false;
+    user.identityVerification.isNepaVerified = approveNepa || false;
+    user.identityVerification.verificationStatus = 
+      (approveNIN && approveNepa) ? 'verified' : 
+      approveNIN ? 'verified' : 'rejected';
+    user.identityVerification.verificationReviewedAt = new Date();
+    user.identityVerification.verificationNotes = notes || '';
+
+    await user.save();
+
+    // Send notification to user about verification status
+    // You can implement email notification here
+
+    res.json({
+      success: true,
+      message: 'Verification status updated successfully',
+      data: user.identityVerification
+    });
+
+  } catch (error) {
+    console.error('Admin verification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update verification status'
+    });
+  }
+});
 // Gallery GET endpoint (for retrieving images)
 // Gallery GET endpoint (for retrieving images)
 // Gallery GET endpoint (for retrieving images) - MODIFIED
@@ -3448,6 +3733,28 @@ app.get('/api/bookings/provider', authenticateToken, async (req, res) => {
   }
 });
 
+app.post('/api/schedule', authenticateToken, async (req, res) => {
+  try {
+    const scheduleData = req.body;
+    
+    // Save to your database (adjust based on your schema)
+    const newScheduleEntry = new Schedule(scheduleData);
+    await newScheduleEntry.save();
+    
+    res.json({
+      success: true,
+      message: 'Booking added to schedule successfully',
+      data: newScheduleEntry
+    });
+  } catch (error) {
+    console.error('Add to schedule error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to add booking to schedule'
+    });
+  }
+});
+
 
 // Get bookings for a customer
 app.get('/api/bookings/customer', authenticateToken, async (req, res) => {
@@ -3499,20 +3806,40 @@ app.get('/api/bookings/customer', authenticateToken, async (req, res) => {
 
 
 // Update booking status
+// Update booking status and add to schedule when confirmed
 app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
   try {
-    const { status } = req.body;
+    let { status } = req.body;
     const bookingId = req.params.id;
 
-    if (!['pending', 'confirmed', 'completed', 'cancelled'].includes(status)) {
+    console.log('🔧 Updating booking status:', { 
+      bookingId, 
+      status, 
+      userId: req.user.id 
+    });
+
+    // STATUS MAPPING: Map frontend status values to backend values
+    const statusMapping = {
+      'pending': 'pending',
+      'accepted': 'confirmed',    // Map 'accepted' to 'confirmed'
+      'confirmed': 'confirmed',   // Also handle 'confirmed' if frontend sends it
+      'completed': 'completed',
+      'cancelled': 'cancelled'
+    };
+
+    const backendStatus = statusMapping[status];
+    
+    if (!backendStatus) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid status'
+        message: `Invalid status: ${status}. Must be: pending, accepted, completed, or cancelled`
       });
     }
 
-    const booking = await Booking.findById(bookingId);
+    console.log('🔄 Status mapping:', { frontend: status, backend: backendStatus });
 
+    // Find the booking
+    const booking = await Booking.findById(bookingId);
     if (!booking) {
       return res.status(404).json({
         success: false,
@@ -3520,37 +3847,390 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
       });
     }
 
+    console.log('📋 Found booking:', {
+      bookingId: booking._id,
+      providerId: booking.providerId,
+      customerId: booking.customerId,
+      currentStatus: booking.status
+    });
+
     // Check if user has permission to update this booking
-    if (booking.providerId.toString() !== req.user.id && booking.customerId.toString() !== req.user.id) {
+    if (booking.providerId.toString() !== req.user.id) {
       return res.status(403).json({
         success: false,
         message: 'Not authorized to update this booking'
       });
     }
 
-    booking.status = status;
+    // Store old status for notification
+    const oldStatus = booking.status;
+    
+    // Update booking with mapped status
+    booking.status = backendStatus;
     booking.updatedAt = new Date();
 
-    if (status === 'accepted') {
+    // Set timestamps based on status changes
+    if (backendStatus === 'confirmed' && oldStatus !== 'confirmed') {
       booking.acceptedAt = new Date();
-    } else if (status === 'completed') {
+      console.log('✅ Booking accepted at:', booking.acceptedAt);
+    } else if (backendStatus === 'completed' && oldStatus !== 'completed') {
       booking.completedAt = new Date();
+      console.log('✅ Booking completed at:', booking.completedAt);
     }
 
+    // Save the booking
     const updatedBooking = await booking.save();
+    console.log('💾 Booking saved successfully with status:', updatedBooking.status);
+
+    // Populate customer and provider info for response
     await updatedBooking.populate('customerId', 'name email phoneNumber');
     await updatedBooking.populate('providerId', 'name email phoneNumber');
 
+    // Only create schedule entry if status is 'confirmed'
+    if (backendStatus === 'confirmed') {
+      try {
+        await addBookingToSchedule(updatedBooking);
+        console.log('📅 Schedule entry created for booking');
+      } catch (scheduleError) {
+        console.error('⚠️ Schedule creation failed (non-critical):', scheduleError);
+        // Don't fail the booking update if schedule creation fails
+      }
+    }
+
+    // Map the response status back to frontend format
+    const responseStatusMapping = {
+      'pending': 'pending',
+      'confirmed': 'accepted',  // Map 'confirmed' back to 'accepted' for frontend
+      'completed': 'completed',
+      'cancelled': 'cancelled'
+    };
+
+    const frontendStatus = responseStatusMapping[updatedBooking.status] || updatedBooking.status;
+
     res.json({
       success: true,
-      message: `Booking ${status} successfully`,
-      data: updatedBooking
+      message: `Booking ${frontendStatus} successfully`,
+      data: {
+        ...updatedBooking.toObject(),
+        status: frontendStatus  // Return frontend-friendly status
+      }
     });
+
   } catch (error) {
-    console.error('Update booking status error:', error);
+    console.error('❌ Update booking status error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to update booking status'
+      message: 'Failed to update booking status',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.patch('/api/debug/test-booking-status/:id', authenticateToken, async (req, res) => {
+  try {
+    const { status } = req.body;
+    const bookingId = req.params.id;
+
+    console.log('🧪 Testing booking status:', { bookingId, status });
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+
+    // Test different status values
+    const testStatuses = ['pending', 'confirmed', 'accepted', 'completed', 'cancelled'];
+    
+    const results = [];
+    for (const testStatus of testStatuses) {
+      try {
+        booking.status = testStatus;
+        await booking.save();
+        results.push({ status: testStatus, success: true });
+        console.log(`✅ ${testStatus}: SUCCESS`);
+      } catch (error) {
+        results.push({ status: testStatus, success: false, error: error.message });
+        console.log(`❌ ${testStatus}: FAILED - ${error.message}`);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Status test completed',
+      results
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+
+
+async function addBookingToSchedule(booking) {
+  try {
+    const Schedule = mongoose.model('Schedule');
+    
+    // Calculate end time
+    const calculateEndTime = (startTime, serviceType) => {
+      const [time, modifier] = startTime.split(' ');
+      let [hours, minutes] = time.split(':').map(Number);
+      
+      if (modifier === 'PM' && hours !== 12) hours += 12;
+      if (modifier === 'AM' && hours === 12) hours = 0;
+      
+      let durationHours = 2; // default
+      if (serviceType.includes('Cleaning')) durationHours = 3;
+      if (serviceType.includes('Maintenance')) durationHours = 4;
+      
+      const totalMinutes = hours * 60 + minutes + durationHours * 60;
+      let endHours = Math.floor(totalMinutes / 60) % 24;
+      const endMinutes = totalMinutes % 60;
+      
+      const endModifier = endHours >= 12 ? 'PM' : 'AM';
+      if (endHours > 12) endHours -= 12;
+      if (endHours === 0) endHours = 12;
+      
+      return `${endHours}:${endMinutes.toString().padStart(2, '0')} ${endModifier}`;
+    };
+
+    // Parse timeframe to get date
+    let scheduleDate = new Date();
+    let scheduleTime = '10:00 AM';
+    
+    if (booking.timeframe.toLowerCase().includes('tomorrow')) {
+      scheduleDate.setDate(scheduleDate.getDate() + 1);
+    } else if (booking.timeframe.toLowerCase().includes('next week')) {
+      scheduleDate.setDate(scheduleDate.getDate() + 7);
+    }
+
+    const scheduleData = {
+      title: booking.serviceType,
+      client: booking.customerName,
+      phone: booking.customerPhone,
+      location: booking.location,
+      date: scheduleDate.toISOString().split('T')[0],
+      time: scheduleTime,
+      endTime: calculateEndTime(scheduleTime, booking.serviceType),
+      duration: '2 hours',
+      payment: booking.budget,
+      status: 'confirmed',
+      notes: booking.specialRequests || booking.description,
+      category: booking.serviceType.toLowerCase().includes('clean') ? 'cleaning' : 'handyman',
+      priority: 'medium',
+      providerId: booking.providerId,
+      customerId: booking.customerId,
+      bookingId: booking._id
+    };
+
+    const newSchedule = new Schedule(scheduleData);
+    await newSchedule.save();
+    
+    return newSchedule;
+  } catch (error) {
+    console.error('Error in addBookingToSchedule:', error);
+    throw error;
+  }
+}
+
+// Test endpoint - add to server.js
+app.get('/api/test-booking-update', authenticateToken, async (req, res) => {
+  try {
+    // Create a test booking
+    const testBooking = new Booking({
+      providerId: req.user.id,
+      providerName: 'Test Provider',
+      providerEmail: 'test@example.com',
+      customerId: new mongoose.Types.ObjectId(), // dummy ID
+      customerName: 'Test Customer',
+      customerEmail: 'customer@example.com',
+      serviceType: 'Test Service',
+      location: 'Test Location',
+      timeframe: 'ASAP',
+      budget: '₦10,000',
+      status: 'pending'
+    });
+
+    await testBooking.save();
+
+    res.json({
+      success: true,
+      message: 'Test booking created',
+      bookingId: testBooking._id,
+      testUrl: `PATCH /api/bookings/${testBooking._id}/status`
+    });
+  } catch (error) {
+    console.error('Test booking error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Test failed',
+      error: error.message
+    });
+  }
+});
+
+
+app.get('/api/debug/booking/:id', authenticateToken, async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: {
+        booking,
+        isProvider: booking.providerId.toString() === req.user.id
+      }
+    });
+  } catch (error) {
+    console.error('Debug booking error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching booking',
+      error: error.message
+    });
+  }
+});
+
+async function sendBookingConfirmationEmail(booking, customerEmail) {
+  try {
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: customerEmail,
+      subject: 'Booking Confirmed - HomeHero',
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 30px; text-align: center; color: white; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .booking-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }
+            .button { display: inline-block; padding: 12px 30px; background: #10b981; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0; }
+            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 12px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>✅ Booking Confirmed!</h1>
+              <p>Your service request has been accepted</p>
+            </div>
+            <div class="content">
+              <p>Hello ${booking.customerName},</p>
+              <p>Great news! <strong>${booking.providerName}</strong> has accepted your booking request.</p>
+              
+              <div class="booking-details">
+                <h3>Booking Details:</h3>
+                <p><strong>Service:</strong> ${booking.serviceType}</p>
+                <p><strong>Provider:</strong> ${booking.providerName}</p>
+                <p><strong>Location:</strong> ${booking.location}</p>
+                <p><strong>Budget:</strong> ${booking.budget}</p>
+                <p><strong>Status:</strong> <span style="color: #10b981; font-weight: bold;">Confirmed</span></p>
+                ${booking.specialRequests ? `<p><strong>Special Requests:</strong> ${booking.specialRequests}</p>` : ''}
+              </div>
+
+              <p>The provider will contact you shortly to confirm the exact time and date.</p>
+              
+              <a href="https://homeheroes.help/dashboard" class="button">View Booking Details</a>
+              
+              <p>If you have any questions, please contact our support team.</p>
+              
+              <div class="footer">
+                <p>This is an automated message. Please do not reply to this email.</p>
+                <p>© 2024 HomeHero. All rights reserved.</p>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `
+    };
+
+    await transporter.sendMail(mailOptions);
+    console.log('Booking confirmation email sent to:', customerEmail);
+  } catch (error) {
+    console.error('Failed to send booking confirmation email:', error);
+    throw error;
+  }
+}
+
+// Get user notifications
+app.get('/api/notifications', authenticateToken, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+
+    const options = {
+      page,
+      limit,
+      sort: { createdAt: -1 },
+      where: { userId: req.user.id }
+    };
+
+    const result = await Notification.paginate({ userId: req.user.id }, options);
+    const unreadCount = await Notification.countDocuments({ 
+      userId: req.user.id, 
+      read: false 
+    });
+
+    res.json({
+      success: true,
+      data: {
+        notifications: result.docs,
+        unreadCount,
+        totalDocs: result.totalDocs,
+        totalPages: result.totalPages,
+        currentPage: result.page
+      }
+    });
+  } catch (error) {
+    console.error('Get notifications error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch notifications'
+    });
+  }
+});
+
+// Mark notification as read
+app.patch('/api/notifications/:id/read', authenticateToken, async (req, res) => {
+  try {
+    const notification = await Notification.findOne({
+      _id: req.params.id,
+      userId: req.user.id
+    });
+
+    if (!notification) {
+      return res.status(404).json({
+        success: false,
+        message: 'Notification not found'
+      });
+    }
+
+    notification.read = true;
+    notification.readAt = new Date();
+    await notification.save();
+
+    res.json({
+      success: true,
+      message: 'Notification marked as read'
+    });
+  } catch (error) {
+    console.error('Mark notification as read error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to mark notification as read'
     });
   }
 });
@@ -3677,6 +4357,49 @@ app.get('/api/jobs/:id', authenticateToken, async (req, res) => {
 });
 
 // Apply for a job (provider accepts a service request)
+// app.post('/api/jobs/:id/apply', authenticateToken, async (req, res) => {
+//   try {
+//     const job = await ServiceRequest.findById(req.params.id);
+    
+//     if (!job) {
+//       return res.status(404).json({
+//         success: false,
+//         message: 'Job not found'
+//       });
+//     }
+    
+//     if (job.status !== 'pending') {
+//       return res.status(400).json({
+//         success: false,
+//         message: 'Job is no longer available'
+//       });
+//     }
+    
+//     // Update job status and assign provider
+//     job.providerId = req.user.id;
+//     job.status = 'accepted';
+//     job.acceptedAt = new Date();
+    
+//     await job.save();
+    
+//     // Populate the updated job
+//     await job.populate('customerId', 'name email phoneNumber');
+//     await job.populate('providerId', 'name email phoneNumber profileImage');
+    
+//     res.json({
+//       success: true,
+//       message: 'Successfully applied for the job',
+//       data: job
+//     });
+//   } catch (error) {
+//     console.error('Apply for job error:', error);
+//     res.status(500).json({
+//       success: false,
+//       message: 'Failed to apply for job'
+//     });
+//   }
+// });
+
 app.post('/api/jobs/:id/apply', authenticateToken, async (req, res) => {
   try {
     const job = await ServiceRequest.findById(req.params.id);
@@ -3694,8 +4417,30 @@ app.post('/api/jobs/:id/apply', authenticateToken, async (req, res) => {
         message: 'Job is no longer available'
       });
     }
-    
-    // Update job status and assign provider
+
+    // Check if user has verified their identity
+    const user = await User.findById(req.user.id);
+    if (!user.identityVerification?.isNinVerified) {
+      return res.status(403).json({
+        success: false,
+        message: 'Identity verification required before applying for jobs. Please verify your NIN first.'
+      });
+    }
+
+    // Check if user has already applied for this job
+    const existingApplication = await ServiceRequest.findOne({
+      _id: job._id,
+      'applications.providerId': req.user.id
+    });
+
+    if (existingApplication) {
+      return res.status(400).json({
+        success: false,
+        message: 'You have already applied for this job'
+      });
+    }
+
+    // Add application to job (or update job status based on your business logic)
     job.providerId = req.user.id;
     job.status = 'accepted';
     job.acceptedAt = new Date();
