@@ -147,39 +147,37 @@ const getVerificationEmailTemplate = (name, verificationUrl) => {
 };
 
 export const sendVerificationEmail = async (user, verificationToken) => {
-  console.log('📧 Sending verification email in production environment...');
-  console.log('🔧 Environment:', process.env.NODE_ENV);
-  console.log('👤 Recipient:', user.email);
+  console.log('🔍 [EMAIL DEBUG] Starting sendVerificationEmail');
+  console.log('🔍 [EMAIL DEBUG] Environment:', process.env.NODE_ENV);
+  console.log('🔍 [EMAIL DEBUG] User email:', user.email);
+  console.log('🔍 [EMAIL DEBUG] FRONTEND_URL:', process.env.FRONTEND_URL);
+  console.log('🔍 [EMAIL DEBUG] EMAIL_USER exists:', !!process.env.EMAIL_USER);
+  console.log('🔍 [EMAIL DEBUG] EMAIL_PASSWORD exists:', !!process.env.EMAIL_PASSWORD);
 
-  try {
-  console.log('📧 Attempting to send verification email...');
-  
-  const emailResult = await sendVerificationEmail(savedUser, verificationToken);
-  
-  if (emailResult.success) {
-    console.log('✅ Email sent successfully:', emailResult.messageId);
-  } else {
-    console.warn('⚠️ Email sending failed, but user was created:', emailResult.error);
-    // Don't fail the signup process - just log the error
+  // Check if we have basic requirements
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
+    console.error('❌ [EMAIL DEBUG] Missing email credentials');
+    console.log('🔍 [EMAIL DEBUG] EMAIL_USER:', process.env.EMAIL_USER);
+    console.log('🔍 [EMAIL DEBUG] EMAIL_PASSWORD length:', process.env.EMAIL_PASSWORD ? process.env.EMAIL_PASSWORD.length : 'Not set');
+    return { success: false, error: 'Email credentials not configured', simulated: true };
   }
-} catch (emailError) {
-  console.error('❌ Email sending critical error:', emailError);
-  // Still don't fail the signup process
-}
-  
+
   if (!emailTransporter || !isTransporterInitialized) {
-    console.error('❌ Email transporter not initialized. Attempting to initialize...');
+    console.log('🔍 [EMAIL DEBUG] Transporter not initialized. Initializing...');
     const initialized = await initializeEmailTransporter();
     
     if (!initialized) {
-      console.log('📧 SIMULATION MODE: Email transporter not available');
-      console.log('🔗 Verification URL would be:', `${FRONTEND_URL}/verify-email?token=${verificationToken}`);
+      console.error('❌ [EMAIL DEBUG] Transporter initialization failed');
+      const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
+      console.log('🔍 [EMAIL DEBUG] Simulation mode - URL would be:', verificationUrl);
       return { success: true, simulated: true, message: 'Email simulation mode' };
     }
   }
 
   try {
-    const verificationUrl = `${FRONTEND_URL}/verify-email?token=${verificationToken}`;
+    const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
+    console.log('🔍 [EMAIL DEBUG] Verification URL:', verificationUrl);
+
     const emailTemplate = getVerificationEmailTemplate(user.name, verificationUrl);
 
     const mailOptions = {
@@ -191,24 +189,22 @@ export const sendVerificationEmail = async (user, verificationToken) => {
       subject: emailTemplate.subject,
       html: emailTemplate.html,
       text: emailTemplate.text,
-      // Add headers for better deliverability
-      headers: {
-        'X-Priority': '1',
-        'X-Mailer': 'HomeHero'
-      }
     };
 
-    console.log('📤 Sending email with options:', {
+    console.log('🔍 [EMAIL DEBUG] Mail options prepared:', {
       from: mailOptions.from,
       to: mailOptions.to,
       subject: mailOptions.subject
     });
 
+    console.log('🔍 [EMAIL DEBUG] Attempting to send email...');
     const result = await emailTransporter.sendMail(mailOptions);
     
-    console.log('✅ Verification email sent successfully:', {
+    console.log('✅ [EMAIL DEBUG] Email sent successfully!', {
       messageId: result.messageId,
-      response: result.response
+      response: result.response,
+      accepted: result.accepted,
+      rejected: result.rejected
     });
     
     return { 
@@ -217,16 +213,15 @@ export const sendVerificationEmail = async (user, verificationToken) => {
       response: result.response 
     };
   } catch (error) {
-    console.error('❌ Failed to send verification email:', error);
-    console.error('🔧 Full error details:', {
+    console.error('❌ [EMAIL DEBUG] Email sending failed:', {
       name: error.name,
       message: error.message,
       code: error.code,
       command: error.command,
-      response: error.response
+      response: error.response,
+      stack: error.stack
     });
     
-    // Don't throw error - just log it and continue
     return { 
       success: false, 
       error: error.message,

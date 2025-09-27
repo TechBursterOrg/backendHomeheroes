@@ -544,6 +544,101 @@ app.post('/api/debug/test-email', async (req, res) => {
   }
 });
 
+app.post('/api/debug/email-full-test', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email address is required'
+      });
+    }
+
+    console.log('🧪 FULL EMAIL TEST STARTED for:', email);
+    
+    // Test 1: Check environment variables
+    console.log('🔍 Checking environment variables...');
+    const envCheck = {
+      NODE_ENV: process.env.NODE_ENV,
+      EMAIL_USER: process.env.EMAIL_USER ? 'Set' : 'Not set',
+      EMAIL_PASSWORD: process.env.EMAIL_PASSWORD ? 'Set' : 'Not set',
+      FRONTEND_URL: process.env.FRONTEND_URL,
+      EMAIL_USER_VALUE: process.env.EMAIL_USER ? process.env.EMAIL_USER.substring(0, 3) + '...' : 'Not set',
+      EMAIL_PASSWORD_LENGTH: process.env.EMAIL_PASSWORD ? process.env.EMAIL_PASSWORD.length : 'Not set'
+    };
+    
+    console.log('🔍 Environment check:', envCheck);
+
+    // Test 2: Initialize transporter
+    const { initializeEmailTransporter, getEmailTransporter } = await import('./utils/emailService.js');
+    console.log('🔍 Initializing email transporter...');
+    
+    const initResult = await initializeEmailTransporter();
+    console.log('🔍 Transporter initialization result:', initResult);
+    
+    const transporter = getEmailTransporter();
+    console.log('🔍 Transporter available:', !!transporter);
+
+    if (!transporter) {
+      return res.json({
+        success: false,
+        message: 'Email transporter not available',
+        debug: envCheck
+      });
+    }
+
+    // Test 3: Send test email
+    console.log('🔍 Sending test email...');
+    const testMailOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: `HomeHero Production Test - ${Date.now()}`,
+      text: `Test email sent at: ${new Date().toISOString()}\nEnvironment: ${process.env.NODE_ENV}\nFrom: ${process.env.EMAIL_USER}`,
+      html: `
+        <h1>HomeHero Production Email Test</h1>
+        <p><strong>Time:</strong> ${new Date().toISOString()}</p>
+        <p><strong>Environment:</strong> ${process.env.NODE_ENV}</p>
+        <p><strong>From:</strong> ${process.env.EMAIL_USER}</p>
+        <p><strong>To:</strong> ${email}</p>
+        <p><strong>Frontend URL:</strong> ${process.env.FRONTEND_URL}</p>
+      `
+    };
+
+    const result = await transporter.sendMail(testMailOptions);
+    
+    console.log('✅ Test email sent successfully:', result.messageId);
+
+    res.json({
+      success: true,
+      message: 'Test email sent successfully',
+      data: {
+        messageId: result.messageId,
+        response: result.response,
+        environment: envCheck
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Full email test failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Email test failed',
+      error: {
+        name: error.name,
+        message: error.message,
+        code: error.code,
+        stack: error.stack
+      },
+      environment: {
+        NODE_ENV: process.env.NODE_ENV,
+        EMAIL_USER_SET: !!process.env.EMAIL_USER,
+        FRONTEND_URL: process.env.FRONTEND_URL
+      }
+    });
+  }
+});
+
 app.get('/api/debug/email-config', (req, res) => {
   res.json({
     environment: process.env.NODE_ENV,
