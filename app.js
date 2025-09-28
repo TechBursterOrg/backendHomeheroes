@@ -5881,6 +5881,21 @@ app.post('/api/debug/test-nigerian-numbers', async (req, res) => {
   }
 });
 
+app.get('/api/debug/twilio-number', (req, res) => {
+  const fromNumber = process.env.TWILIO_PHONE_NUMBER;
+  const isValid = fromNumber && fromNumber.startsWith('+');
+  
+  res.json({
+    success: true,
+    data: {
+      twilioNumber: fromNumber,
+      isValid: isValid,
+      expectedFormat: 'Must start with + (E.164 format)',
+      currentFormat: isValid ? '✅ Valid' : '❌ Invalid'
+    }
+  });
+});
+
 // Add this POST endpoint for updating profile - place it near your other profile endpoints
 
 

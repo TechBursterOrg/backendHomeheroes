@@ -30,34 +30,31 @@ class SMSService {
   try {
     console.log('🔧 Attempting to send SMS to:', phoneNumber);
 
-    // Enhanced validation
-    if (!this.isValidPhoneNumber(phoneNumber)) {
-      throw new Error('Invalid phone number format');
+    // Validate FROM number format
+    const fromNumber = process.env.TWILIO_PHONE_NUMBER;
+    if (!fromNumber || !fromNumber.startsWith('+')) {
+      throw new Error(`Invalid Twilio phone number format: ${fromNumber}. Must start with +`);
     }
 
-    // Additional validation for Nigerian numbers
-    if (phoneNumber.startsWith('+234')) {
-      const digitsAfterCode = phoneNumber.replace('+234', '');
-      if (digitsAfterCode.length !== 10) {
-        throw new Error(`Nigerian numbers must have 10 digits after +234. Got: ${digitsAfterCode.length}`);
-      }
-      if (!/^[0-9]{10}$/.test(digitsAfterCode)) {
-        throw new Error('Nigerian number contains invalid characters');
-      }
+    console.log('📱 Using Twilio number:', fromNumber);
+
+    // Enhanced validation for TO number
+    if (!this.isValidPhoneNumber(phoneNumber)) {
+      throw new Error('Invalid phone number format');
     }
 
     // In production, use Twilio
     if (this.client && process.env.NODE_ENV === 'production') {
       try {
-        console.log('📱 Sending via Twilio to:', phoneNumber);
+        console.log('📱 Sending via Twilio:', { to: phoneNumber, from: fromNumber });
         
         const message = await this.client.messages.create({
           body: `Your HomeHero verification code is: ${token}. This code expires in 5 minutes.`,
-          from: process.env.TWILIO_PHONE_NUMBER,
+          from: fromNumber,
           to: phoneNumber
         });
         
-        console.log(`✅ Twilio SMS sent successfully to ${phoneNumber}`);
+        console.log(`✅ Twilio SMS sent successfully`);
         console.log(`✅ Message SID: ${message.sid}`);
         
         return { 
@@ -70,10 +67,10 @@ class SMSService {
           code: twilioError.code,
           message: twilioError.message,
           moreInfo: twilioError.moreInfo,
-          phoneNumber: phoneNumber
+          fromNumber: fromNumber,
+          toNumber: phoneNumber
         });
         
-        // Don't fall back to simulation in production
         throw new Error(`SMS delivery failed: ${twilioError.message}`);
       }
     }
@@ -93,7 +90,7 @@ class SMSService {
     
   } catch (error) {
     console.error('❌ SMS sending error:', error);
-    throw error; // Re-throw to let caller handle it
+    throw error;
   }
 }
 
