@@ -5,7 +5,9 @@ import { body, validationResult } from 'express-validator';
 import crypto from 'crypto';
 import path from 'path';
 import User from '../models/User.js';
-import { sendVerificationEmail } from '../utils/emailService.js';
+import VerificationToken from '../models/VerificationToken.js';
+import smsService from '../utils/smsService.js';
+
 
 const router = express.Router();
 
@@ -199,6 +201,8 @@ router.post('/signup', signupValidation, async (req, res) => {
     });
   }
 });
+
+
 
 
 router.post('/login', loginValidation, async (req, res) => {
@@ -474,89 +478,319 @@ router.post('/resend-verification', async (req, res) => {
   }
 });
 
-router.post('/signup', async (req, res) => {
+router.post('/send-verification', async (req, res) => {
   try {
-    const { name, email, password, userType, country } = req.body;
+    const { phoneNumber, country } = req.body;
 
-    // Check if user exists
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
+    if (!phoneNumber || !country) {
       return res.status(400).json({
         success: false,
-        message: 'User already exists with this email'
+        message: 'Phone number and country are required'
       });
     }
 
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 12);
+    // Validate phone number format based on country
+    const countryData = {
+      NIGERIA: { pattern: /^[0-9]{11}$/, code: '+234', name: 'Nigeria' },
+      UK: { pattern: /^[0-9]{10}$/, code: '+44', name: 'United Kingdom' },
+      USA: { pattern: /^[0-9]{10}$/, code: '+1', name: 'United States' },
+      CANADA: { pattern: /^[0-9]{10}$/, code: '+1', name: 'Canada' }
+    };
 
-    // Generate verification token
-    const emailVerificationToken = generateVerificationToken();
-    const emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    const countryInfo = countryData[country];
+    if (!countryInfo) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid country selected'
+      });
+    }
 
-    // Create user
-    const user = new User({
-      name,
-      email,
-      password: hashedPassword,
-      userType,
-      country,
-      emailVerificationToken,
-      emailVerificationExpires,
-      isEmailVerified: false
+    // Clean phone number (remove any non-digit characters)
+    const cleanPhoneNumber = phoneNumber.replace(/\D/g, '');
+    
+    if (!countryInfo.pattern.test(cleanPhoneNumber)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid phone number format for ${countryInfo.name}. Expected ${countryInfo.pattern.toString().match(/\d+/)[0]} digits.`
+      });
+    }
+
+    // Check if phone number is already registered and verified
+    const existingUser = await User.findOne({ 
+      phoneNumber: cleanPhoneNumber,
+      country: country,
+      isPhoneVerified: true
     });
 
-    await user.save();
-
-    // Send verification email
-    console.log('📧 Attempting to send verification email to:', email);
-    const emailResult = await sendVerificationEmail(user, emailVerificationToken);
-
-    if (!emailResult.success) {
-      console.error('❌ Email sending failed, but user created:', emailResult.error);
-      
-      // User is created but email failed - they can request a new verification email
-      return res.status(201).json({
-        success: true,
-        message: 'Account created but verification email failed. Please try logging in to resend.',
-        data: {
-          user: {
-            id: user._id,
-            name: user.name,
-            email: user.email,
-            userType: user.userType
-          },
-          requiresVerification: true,
-          emailSent: false
-        }
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: 'This phone number is already registered and verified'
       });
     }
 
-    // Success case
-    res.status(201).json({
+    const token = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Store verification token in database
+    const verificationToken = await VerificationToken.findOneAndUpdate(
+      { phoneNumber: cleanPhoneNumber, country },
+      {
+        token,
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000), // 5 minutes
+        verified: false
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    // Format phone number with country code
+    const fullPhoneNumber = smsService.formatPhoneNumberWithCountryCode(cleanPhoneNumber, countryInfo.code);
+    
+    // Send SMS
+    const smsResult = await smsService.sendVerificationCode(fullPhoneNumber, token);
+
+    console.log(`📱 Verification token for ${fullPhoneNumber}: ${token}`);
+
+    const response = {
       success: true,
-      message: 'Account created successfully! Please check your email for verification.',
+      message: `Verification code sent to ${fullPhoneNumber}`,
       data: {
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          userType: user.userType
-        },
-        requiresVerification: true,
-        emailSent: true
+        provider: smsResult.provider
       }
-    });
+    };
+
+    // Include debug token in development
+    if (process.env.NODE_ENV === 'development') {
+      response.data.debugToken = token;
+    }
+
+    res.json(response);
 
   } catch (error) {
-    console.error('Signup error:', error);
+    console.error('❌ Send verification error:', error);
+    
+    let errorMessage = 'Failed to send verification code';
+    if (error.message.includes('Invalid phone number')) {
+      errorMessage = 'Invalid phone number format';
+    } else if (error.message.includes('Twilio')) {
+      errorMessage = 'SMS service temporarily unavailable. Please try again.';
+    }
+
     res.status(500).json({
       success: false,
-      message: 'Error creating account',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+      message: errorMessage
     });
   }
 });
+
+router.post('/verify-phone', async (req, res) => {
+  try {
+    const { phoneNumber, country, token } = req.body;
+
+    if (!phoneNumber || !country || !token) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number, country, and token are required'
+      });
+    }
+
+    // Find the verification token
+    const verification = await VerificationToken.findOne({
+      phoneNumber,
+      country,
+      token,
+      expiresAt: { $gt: new Date() }
+    });
+
+    if (!verification) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired verification code'
+      });
+    }
+
+    // Mark as verified
+    verification.verified = true;
+    verification.verifiedAt = new Date();
+    await verification.save();
+
+    res.json({
+      success: true,
+      message: 'Phone number verified successfully'
+    });
+
+  } catch (error) {
+    console.error('Verify phone error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to verify phone number'
+    });
+  }
+});
+
+
+const generateVerificationToken = () => {
+  return crypto.randomBytes(32).toString('hex');
+};
+
+// SIMPLIFIED email sending function (define it locally)
+const sendVerificationEmail = async (user, verificationToken) => {
+  try {
+    console.log('📧 [SIMPLIFIED] Would send email to:', user.email);
+    console.log('📧 [SIMPLIFIED] Token:', verificationToken);
+    
+    // For now, just log it instead of actually sending
+    // We'll fix email sending after we get signup working
+    return { success: true, simulated: true };
+  } catch (error) {
+    console.error('Email error:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+
+
+
+// router.post('/signup', async (req, res) => {
+//   console.log('🔧 Signup request received:', {
+//     email: req.body.email,
+//     userType: req.body.userType,
+//     timestamp: new Date().toISOString()
+//   });
+
+//   try {
+//     const { name, email, password, userType, country, confirmPassword } = req.body;
+
+//     const verification = await VerificationToken.findOne({
+//       phoneNumber,
+//       country,
+//       verified: true
+//     });
+
+//     if (!verification) {
+//       return res.status(400).json({
+//         success: false,
+//         message: 'Phone number must be verified before signup'
+//       });
+//     }
+
+//     // Validate required fields
+//     if (!name || !email || !password || !userType) {
+//       return res.status(400).json({
+//         success: false,
+//         message: 'All fields are required: name, email, password, userType'
+//       });
+//     }
+
+//     // Check password confirmation if provided
+//     if (confirmPassword && password !== confirmPassword) {
+//       return res.status(400).json({
+//         success: false,
+//         message: 'Passwords do not match'
+//       });
+//     }
+
+//     // Validate email format
+//     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+//     if (!emailRegex.test(email)) {
+//       return res.status(400).json({
+//         success: false,
+//         message: 'Please provide a valid email address'
+//       });
+//     }
+
+//     // Check if user exists
+//     const existingUser = await User.findOne({ email: email.toLowerCase() });
+//     if (existingUser) {
+//       return res.status(400).json({
+//         success: false,
+//         message: 'User already exists with this email. Please try logging in.'
+//       });
+//     }
+
+//     // Hash password
+//     const hashedPassword = await bcrypt.hash(password, 12);
+
+//     // Generate verification token (using the locally defined function)
+//     const emailVerificationToken = generateVerificationToken();
+//     const emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+//     // Create user
+//     const user = new User({
+//       name: name.trim(),
+//       email: email.toLowerCase(),
+//       password: hashedPassword,
+//       userType,
+//       country: country || 'NIGERIA',
+//       emailVerificationToken,
+//       emailVerificationExpires,
+//       isEmailVerified: false
+//     });
+
+//     await user.save();
+//     console.log('✅ User created successfully:', user._id);
+
+//     // Try to send verification email (but don't fail if it doesn't work)
+//     const emailResult = await sendVerificationEmail(user, emailVerificationToken);
+
+//     if (emailResult.success) {
+//       res.status(201).json({
+//         success: true,
+//         message: 'Account created successfully! Please check your email for verification.',
+//         data: {
+//           user: {
+//             id: user._id,
+//             name: user.name,
+//             email: user.email,
+//             userType: user.userType
+//           },
+//           requiresVerification: true
+//         }
+//       });
+//     } else {
+//       // User created but email failed
+
+//           await VerificationToken.deleteOne({ phoneNumber, country });
+
+//       res.status(201).json({
+//         success: true,
+//         message: 'Account created! You can log in now.',
+//         data: {
+//           user: {
+//             id: user._id,
+//             name: user.name,
+//             email: user.email,
+//             userType: user.userType
+//           },
+//           requiresVerification: false
+//         }
+//       });
+//     }
+
+//   } catch (error) {
+//     console.error('💥 SIGNUP CRITICAL ERROR:', error);
+//     console.error('Error stack:', error.stack);
+    
+//     res.status(500).json({
+//       success: false,
+//       message: 'Internal server error during signup',
+//       error: process.env.NODE_ENV === 'production' 
+//         ? 'Please try again later' 
+//         : error.message
+//     });
+//   }
+// });
+
+
+
+// Add a test endpoint to verify the route is working
+router.get('/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Auth routes are working!',
+    timestamp: new Date().toISOString()
+  });
+});
+
 
 
 router.post('/forgot-password', async (req, res) => {

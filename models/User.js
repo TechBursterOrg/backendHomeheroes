@@ -21,6 +21,15 @@ const userSchema = new mongoose.Schema({
     required: true,
     minLength: 6
   },
+  phoneNumber: {
+  type: String,
+  trim: true,
+  sparse: true // Allows null values but ensures uniqueness for non-null values
+},
+isPhoneVerified: {
+  type: Boolean,
+  default: false
+},
   userType: {
     type: String,
     enum: ['customer', 'provider', 'both'],

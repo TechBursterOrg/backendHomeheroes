@@ -26,31 +26,37 @@ const getEmailConfig = () => {
 let emailTransporter = null;
 
 export const initializeEmailTransporter = async () => {
-  console.log('🔧 Initializing email transporter for:', process.env.NODE_ENV);
-  
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
-    console.error('❌ Email credentials missing in production');
-    return false;
-  }
-
   try {
-    emailTransporter = nodemailer.createTransporter(getEmailConfig());
-    
-    // Test connection
-    await emailTransporter.verify();
-    console.log('✅ SMTP connection verified successfully');
-    
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
+      console.log('⚠️ Email credentials not found - running in simulation mode');
+      return false;
+    }
+
+    const transporter = nodemailer.createTransporter({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASSWORD,
+      },
+      // Production-specific settings
+      pool: true,
+      maxConnections: 5,
+      maxMessages: 100,
+      rateDelta: 1000,
+      rateLimit: 5
+    });
+
+    await transporter.verify();
+    console.log('✅ Email transporter verified and ready for production');
+    emailTransporter = transporter;
     return true;
   } catch (error) {
     console.error('❌ Email transporter initialization failed:', error);
     
-    // More detailed error logging
-    if (error.code === 'EAUTH') {
-      console.error('🔐 Authentication failed - check email credentials');
-    } else if (error.code === 'ECONNECTION') {
-      console.error('🌐 Connection failed - check network/SMTP settings');
-    } else {
-      console.error('🔧 Other error:', error);
+    // In production, you might want to use a fallback service
+    if (process.env.NODE_ENV === 'production') {
+      console.log('🔄 Attempting to use SendGrid as fallback...');
+      // Add SendGrid fallback here if needed
     }
     
     return false;

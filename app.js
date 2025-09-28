@@ -18,6 +18,7 @@ import ServiceRequest from './models/ServiceRequest.js';
 import Booking from './models/Booking.js';
 import nodemailer from 'nodemailer';
 import messageRoutes from './routes/messages.routes.js';
+// Add to your imports in server.js
 
 // Import models
 import User from './models/User.js';
@@ -202,6 +203,7 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
   ? [
       'https://homeheroes.help',
       'https://www.homeheroes.help',
+      'https://backendhomeheroes.onrender.com'
     ]
   : [
       'http://localhost:5173',
@@ -218,6 +220,7 @@ app.use(cors({
     
     if (allowedOrigins.indexOf(origin) === -1) {
       const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      console.log('CORS blocked origin:', origin);
       return callback(new Error(msg), false);
     }
     return callback(null, true);
@@ -371,6 +374,12 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 //     }
 //   });
 // }
+
+
+// ==================== API ROUTES ====================
+
+// Auth routes
+app.use('/api/auth', authRoutes);
 
 // Update the authenticateToken middleware to be more specific
 function authenticateToken(req, res, next) {
@@ -857,10 +866,7 @@ const sendBookingNotification = async (bookingData, providerEmail) => {
   }
 };
 
-// ==================== API ROUTES ====================
 
-// Auth routes
-app.use('/api/auth', authRoutes);
 
 // Profile image upload endpoint - FIXED VERSION
 
@@ -6011,25 +6017,21 @@ app.use((err, req, res, next) => {
 });
 
 // Debug middleware for file uploads
+// 
 app.use((req, res, next) => {
-  const origin = req.headers.origin;
+  // Security headers
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   
-  // Check if origin is allowed
-  if (allowedOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
-    res.setHeader('Access-Control-Allow-Origin', origin || '*');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
-    
-    // Handle preflight requests
-    if (req.method === 'OPTIONS') {
-      res.setHeader('Access-Control-Max-Age', '86400'); // 24 hours
-      return res.status(200).end();
-    }
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Content-Security-Policy', "default-src 'self'");
   }
   
   next();
 });
+
 
 app.use(cors({
   origin: function (origin, callback) {
