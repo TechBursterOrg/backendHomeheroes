@@ -7,6 +7,8 @@ import path from 'path';
 import User from '../models/User.js';
 import VerificationToken from '../models/VerificationToken.js';
 import smsService from '../utils/smsService.js';
+import { sendVerificationEmail } from '../utils/emailService.js';
+
 
 
 const router = express.Router();
@@ -161,7 +163,25 @@ router.post('/signup', signupValidation, async (req, res) => {
         token: verificationToken
       });
 
-      const emailResult = await sendVerificationEmail(savedUser, verificationToken);
+      try {
+  console.log('📧 Attempting to send verification email...');
+  
+  const emailResult = await sendVerificationEmail(savedUser, verificationToken);
+  
+  if (emailResult.simulated) {
+    console.log('⚠️ EMAIL SIMULATION MODE');
+    console.log('🔗 Verification URL:', `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`);
+    console.log('📧 Would send to:', savedUser.email);
+  } else if (emailResult.success) {
+    console.log('✅ Real email sent successfully!');
+  } else {
+    console.log('❌ Email sending failed:', emailResult.error);
+  }
+} catch (emailError) {
+  console.error('❌ Email sending error:', emailError);
+  // Don't fail the signup if email fails
+}
+
       console.log('✅ Email sending result:', emailResult);
 
       if (emailResult.simulated) {
@@ -697,19 +717,7 @@ const generateVerificationToken = () => {
 };
 
 // SIMPLIFIED email sending function (define it locally)
-const sendVerificationEmail = async (user, verificationToken) => {
-  try {
-    console.log('📧 [SIMPLIFIED] Would send email to:', user.email);
-    console.log('📧 [SIMPLIFIED] Token:', verificationToken);
-    
-    // For now, just log it instead of actually sending
-    // We'll fix email sending after we get signup working
-    return { success: true, simulated: true };
-  } catch (error) {
-    console.error('Email error:', error);
-    return { success: false, error: error.message };
-  }
-};
+
 
 
 
