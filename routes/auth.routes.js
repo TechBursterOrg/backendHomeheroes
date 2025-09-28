@@ -491,10 +491,30 @@ router.post('/send-verification', async (req, res) => {
 
     // Validate phone number format based on country
     const countryData = {
-      NIGERIA: { pattern: /^[0-9]{11}$/, code: '+234', name: 'Nigeria' },
-      UK: { pattern: /^[0-9]{10}$/, code: '+44', name: 'United Kingdom' },
-      USA: { pattern: /^[0-9]{10}$/, code: '+1', name: 'United States' },
-      CANADA: { pattern: /^[0-9]{10}$/, code: '+1', name: 'Canada' }
+      NIGERIA: { 
+        pattern: /^[0-9]{10}$/, 
+        code: '+234', 
+        name: 'Nigeria', 
+        expectedDigits: 10 
+      },
+      UK: { 
+        pattern: /^[0-9]{10}$/, 
+        code: '+44', 
+        name: 'United Kingdom', 
+        expectedDigits: 10 
+      },
+      USA: { 
+        pattern: /^[0-9]{10}$/, 
+        code: '+1', 
+        name: 'United States', 
+        expectedDigits: 10 
+      },
+      CANADA: { 
+        pattern: /^[0-9]{10}$/, 
+        code: '+1', 
+        name: 'Canada', 
+        expectedDigits: 10 
+      }
     };
 
     const countryInfo = countryData[country];
@@ -508,10 +528,27 @@ router.post('/send-verification', async (req, res) => {
     // Clean phone number (remove any non-digit characters)
     const cleanPhoneNumber = phoneNumber.replace(/\D/g, '');
     
+    console.log('🔍 Phone validation:', {
+      original: phoneNumber,
+      cleaned: cleanPhoneNumber,
+      country: country,
+      expectedLength: countryInfo.expectedDigits,
+      actualLength: cleanPhoneNumber.length
+    });
+
+    // Check length first
+    if (cleanPhoneNumber.length !== countryInfo.expectedDigits) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid phone number format for ${countryInfo.name}. Expected ${countryInfo.expectedDigits} digits.`
+      });
+    }
+
+    // Then check pattern
     if (!countryInfo.pattern.test(cleanPhoneNumber)) {
       return res.status(400).json({
         success: false,
-        message: `Invalid phone number format for ${countryInfo.name}. Expected ${countryInfo.pattern.toString().match(/\d+/)[0]} digits.`
+        message: `Invalid phone number format for ${countryInfo.name}.`
       });
     }
 
@@ -549,17 +586,23 @@ router.post('/send-verification', async (req, res) => {
     const smsResult = await smsService.sendVerificationCode(fullPhoneNumber, token);
 
     console.log(`📱 Verification token for ${fullPhoneNumber}: ${token}`);
+    console.log('✅ SMS sending result:', {
+      provider: smsResult.provider,
+      success: smsResult.success,
+      messageId: smsResult.messageId
+    });
 
     const response = {
       success: true,
       message: `Verification code sent to ${fullPhoneNumber}`,
       data: {
-        provider: smsResult.provider
+        provider: smsResult.provider,
+        phoneNumber: fullPhoneNumber
       }
     };
 
     // Include debug token in development
-    if (process.env.NODE_ENV === 'development') {
+    if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test') {
       response.data.debugToken = token;
     }
 
@@ -569,15 +612,24 @@ router.post('/send-verification', async (req, res) => {
     console.error('❌ Send verification error:', error);
     
     let errorMessage = 'Failed to send verification code';
+    let statusCode = 500;
+
     if (error.message.includes('Invalid phone number')) {
       errorMessage = 'Invalid phone number format';
+      statusCode = 400;
     } else if (error.message.includes('Twilio')) {
       errorMessage = 'SMS service temporarily unavailable. Please try again.';
+    } else if (error.message.includes('validation') || error.message.includes('pattern')) {
+      errorMessage = 'Invalid phone number format';
+      statusCode = 400;
     }
 
-    res.status(500).json({
+    res.status(statusCode).json({
       success: false,
-      message: errorMessage
+      message: errorMessage,
+      ...(process.env.NODE_ENV === 'development' && { 
+        debug: error.message 
+      })
     });
   }
 });
@@ -593,9 +645,12 @@ router.post('/verify-phone', async (req, res) => {
       });
     }
 
+    // Clean phone number (remove any non-digit characters)
+    const cleanPhoneNumber = phoneNumber.replace(/\D/g, '');
+
     // Find the verification token
     const verification = await VerificationToken.findOne({
-      phoneNumber,
+      phoneNumber: cleanPhoneNumber,
       country,
       token,
       expiresAt: { $gt: new Date() }
@@ -613,16 +668,25 @@ router.post('/verify-phone', async (req, res) => {
     verification.verifiedAt = new Date();
     await verification.save();
 
+    console.log(`✅ Phone number verified: ${cleanPhoneNumber} (${country})`);
+
     res.json({
       success: true,
-      message: 'Phone number verified successfully'
+      message: 'Phone number verified successfully',
+      data: {
+        phoneNumber: cleanPhoneNumber,
+        country: country
+      }
     });
 
   } catch (error) {
-    console.error('Verify phone error:', error);
+    console.error('❌ Verify phone error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to verify phone number'
+      message: 'Failed to verify phone number',
+      ...(process.env.NODE_ENV === 'development' && { 
+        debug: error.message 
+      })
     });
   }
 });
