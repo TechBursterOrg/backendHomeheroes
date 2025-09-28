@@ -5704,7 +5704,22 @@ app.put('/api/auth/profile', authenticateToken, async (req, res) => {
   }
 });
 
-
+app.get('/api/debug/sms-config', (req, res) => {
+  const config = {
+    environment: process.env.NODE_ENV,
+    twilio: {
+      accountSid: process.env.TWILIO_ACCOUNT_SID ? 'Set' : 'Not set',
+      authToken: process.env.TWILIO_AUTH_TOKEN ? 'Set' : 'Not set', 
+      phoneNumber: process.env.TWILIO_PHONE_NUMBER ? 'Set' : 'Not set'
+    },
+    smsService: {
+      initialized: !!smsService.client,
+      mode: process.env.NODE_ENV === 'production' ? 'Production' : 'Development'
+    }
+  };
+  
+  res.json({ success: true, data: config });
+});
 // ADD THIS NEW POST ENDPOINT RIGHT AFTER THE PUT ENDPOINT
 app.post('/api/auth/profile', authenticateToken, async (req, res) => {
   try {
@@ -5758,6 +5773,111 @@ app.post('/api/auth/profile', authenticateToken, async (req, res) => {
       message: 'Failed to update profile',
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
+  }
+});
+
+app.post('/api/debug/test-sms', async (req, res) => {
+  try {
+    const { phoneNumber } = req.body;
+    
+    if (!phoneNumber) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number is required'
+      });
+    }
+
+    const testToken = '123456';
+    const result = await smsService.sendVerificationCode(phoneNumber, testToken);
+    
+    res.json({
+      success: true,
+      message: 'SMS test completed',
+      data: result
+    });
+  } catch (error) {
+    console.error('SMS test error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'SMS test failed',
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/debug/test-phone-formats', async (req, res) => {
+  try {
+    const { baseNumber } = req.body; // e.g., '9070510149'
+    
+    const testFormats = [
+      `+234${baseNumber}`,      // +2349070510149
+      `234${baseNumber}`,       // 2349070510149
+      `+2340${baseNumber}`,     // +23409070510149
+      `0${baseNumber}`,         // 09070510149
+    ];
+
+    const results = [];
+    
+    for (const format of testFormats) {
+      try {
+        const testToken = '123456';
+        const result = await smsService.sendVerificationCode(format, testToken);
+        results.push({ format, success: true, provider: result.provider });
+      } catch (error) {
+        results.push({ format, success: false, error: error.message });
+      }
+    }
+    
+    res.json({ success: true, results });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Add this test endpoint to server.js
+app.post('/api/debug/test-nigerian-numbers', async (req, res) => {
+  try {
+    const testNumbers = [
+      '+2349070510149',    // Your current format
+      '+2349012345678',    // Test with a known good format  
+      '+2348091234567',    // Another format
+      '+2347081234567',    // MTN format
+      '+2348181234567',    // Airtel format
+    ];
+
+    const results = [];
+    
+    for (const number of testNumbers) {
+      try {
+        console.log(`🧪 Testing: ${number}`);
+        const testToken = '123456';
+        const result = await smsService.sendVerificationCode(number, testToken);
+        results.push({ 
+          number, 
+          success: true, 
+          provider: result.provider,
+          messageId: result.messageId 
+        });
+        console.log(`✅ Success: ${number}`);
+      } catch (error) {
+        results.push({ 
+          number, 
+          success: false, 
+          error: error.message,
+          code: error.code 
+        });
+        console.log(`❌ Failed: ${number} - ${error.message}`);
+      }
+    }
+    
+    res.json({ 
+      success: true, 
+      message: 'Nigerian number test completed',
+      results 
+    });
+  } catch (error) {
+    console.error('Test error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
