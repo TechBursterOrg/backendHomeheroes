@@ -1,117 +1,48 @@
-// utils/emailService.js - UPDATED VERSION
+// In your emailService.js or server.js
 import nodemailer from 'nodemailer';
 
-const getEmailConfig = () => {
-  const config = {
-    service: 'gmail',
-    host: 'smtp.gmail.com',
-    port: 587,
-    secure: false,
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASSWORD,
-    },
-    connectionTimeout: 30000,
-    greetingTimeout: 30000,
-    socketTimeout: 30000,
-    logger: true,
-    debug: true,
-    tls: {
-      rejectUnauthorized: false
-    }
-  };
-  return config;
-};
-
 let emailTransporter = null;
+let emailServiceStatus = 'not_initialized';
 
 export const initializeEmailTransporter = async () => {
   try {
     if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
-      console.log('⚠️ Email credentials not found - running in simulation mode');
+      console.log('⚠️ Email credentials not configured - running in simulation mode');
+      emailServiceStatus = 'simulation_mode';
       return false;
     }
 
-    const transporter = nodemailer.createTransporter({
+    // Create transporter with better timeout settings
+    emailTransporter = nodemailer.createTransporter({
       service: 'gmail',
       auth: {
         user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASSWORD,
+        pass: process.env.EMAIL_PASSWORD
       },
-      // Production-specific settings
       pool: true,
       maxConnections: 5,
       maxMessages: 100,
       rateDelta: 1000,
-      rateLimit: 5
+      rateLimit: 5,
+      socketTimeout: 30000, // 30 seconds
+      connectionTimeout: 10000, // 10 seconds
+      logger: true,
+      debug: false
     });
 
-    await transporter.verify();
-    console.log('✅ Email transporter verified and ready for production');
-    emailTransporter = transporter;
+    // Verify connection
+    await emailTransporter.verify();
+    console.log('✅ Email transporter initialized and verified');
+    emailServiceStatus = 'ready';
     return true;
+
   } catch (error) {
-    console.error('❌ Email transporter initialization failed:', error);
-    
-    // In production, you might want to use a fallback service
-    if (process.env.NODE_ENV === 'production') {
-      console.log('🔄 Attempting to use SendGrid as fallback...');
-      // Add SendGrid fallback here if needed
-    }
-    
+    console.error('❌ Email transporter initialization failed:', error.message);
+    emailServiceStatus = 'failed';
+    emailTransporter = null;
     return false;
   }
 };
 
-export const sendVerificationEmail = async (user, verificationToken) => {
-  // Force re-initialization on each send
-  const initialized = await initializeEmailTransporter();
-  
-  if (!initialized || !emailTransporter) {
-    console.error('❌ Cannot send email - transporter not ready');
-    return { success: false, error: 'Email service unavailable' };
-  }
-
-  try {
-    const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
-    
-    const mailOptions = {
-      from: {
-        name: 'HomeHero',
-        address: process.env.EMAIL_USER
-      },
-      to: user.email,
-      subject: 'Verify Your HomeHero Account',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2>Verify Your HomeHero Account</h2>
-          <p>Hello ${user.name},</p>
-          <p>Please click the link below to verify your email address:</p>
-          <a href="${verificationUrl}" style="display: inline-block; padding: 10px 20px; background: #007bff; color: white; text-decoration: none; border-radius: 5px;">
-            Verify Email
-          </a>
-          <p>Or copy this URL into your browser:</p>
-          <p>${verificationUrl}</p>
-          <p>This link will expire in 24 hours.</p>
-        </div>
-      `,
-      text: `Verify your HomeHero account: ${verificationUrl}`
-    };
-
-    const result = await emailTransporter.sendMail(mailOptions);
-    console.log('✅ Verification email sent successfully:', result.messageId);
-    
-    return { 
-      success: true, 
-      messageId: result.messageId 
-    };
-  } catch (error) {
-    console.error('❌ Failed to send verification email:', error);
-    return { 
-      success: false, 
-      error: error.message 
-    };
-  }
-};
-
 export const getEmailTransporter = () => emailTransporter;
+export const getEmailServiceStatus = () => emailServiceStatus;

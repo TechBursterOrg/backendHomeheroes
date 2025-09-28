@@ -803,68 +803,52 @@ app.post('/api/debug/send-test-email', async (req, res) => {
 
 const sendBookingNotification = async (bookingData, providerEmail) => {
   try {
+    const { getEmailTransporter, getEmailServiceStatus } = await import('./utils/emailService.js');
+    
+    const emailStatus = getEmailServiceStatus();
+    
+    if (emailStatus !== 'ready') {
+      console.log('📧 Email service not available, skipping notification');
+      return;
+    }
+
+    const transporter = getEmailTransporter();
+    
     const mailOptions = {
       from: process.env.EMAIL_USER,
       to: providerEmail,
       subject: 'New Booking Request - HomeHero',
-      html: `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; color: white; border-radius: 10px 10px 0 0; }
-            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
-            .booking-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }
-            .button { display: inline-block; padding: 12px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0; }
-            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 12px; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>📅 New Booking Request</h1>
-              <p>You have a new service request on HomeHero</p>
-            </div>
-            <div class="content">
-              <p>Hello Provider,</p>
-              <p>You've received a new booking request from <strong>${bookingData.contactInfo.name}</strong>.</p>
-              
-              <div class="booking-details">
-                <h3>Booking Details:</h3>
-                <p><strong>Service:</strong> ${bookingData.serviceType}</p>
-                <p><strong>Location:</strong> ${bookingData.location}</p>
-                <p><strong>Timeframe:</strong> ${bookingData.timeframe}</p>
-                <p><strong>Budget:</strong> ${bookingData.budget}</p>
-                <p><strong>Description:</strong> ${bookingData.description || 'No description provided'}</p>
-                ${bookingData.specialRequests ? `<p><strong>Special Requests:</strong> ${bookingData.specialRequests}</p>` : ''}
-              </div>
-
-              <p>Please log in to your HomeHero account to accept or reject this booking request.</p>
-              
-              <a href="https://homeheroes.help/provider/dashboard" class="button">View Dashboard</a>
-              
-              <p>If you have any questions, please contact our support team.</p>
-              
-              <div class="footer">
-                <p>This is an automated message. Please do not reply to this email.</p>
-                <p>© 2024 HomeHero. All rights reserved.</p>
-              </div>
-            </div>
-          </div>
-        </body>
-        </html>
-      `
+      html: `... your email template ...`
     };
 
-    await transporter.sendMail(mailOptions);
-    console.log('Booking notification email sent to provider:', providerEmail);
+    // Add timeout to email sending
+    const emailPromise = transporter.sendMail(mailOptions);
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Email timeout')), 10000);
+    });
+
+    await Promise.race([emailPromise, timeoutPromise]);
+    console.log('✅ Booking notification email sent to provider:', providerEmail);
+    
   } catch (emailError) {
-    console.error('Failed to send booking notification email:', emailError);
+    console.error('❌ Failed to send booking notification email:', emailError.message);
     // Don't fail the booking if email fails
   }
 };
+
+app.get('/api/health/email', async (req, res) => {
+  const { getEmailServiceStatus } = await import('./utils/emailService.js');
+  const status = getEmailServiceStatus();
+  
+  res.json({
+    success: true,
+    data: {
+      emailService: status,
+      configured: !!(process.env.EMAIL_USER && process.env.EMAIL_PASSWORD),
+      timestamp: new Date().toISOString()
+    }
+  });
+});
 
 
 
@@ -2736,6 +2720,12 @@ app.get('/api/providers', async (req, res) => {
     } = req.query;
     
     console.log('📥 Provider query params:', { service, location, availableNow });
+
+    console.log('📥 Provider query params:', { 
+      service: service || 'none', 
+      location: location || 'none', 
+      availableNow: availableNow || 'false' 
+    });
     
     let currentUserId = null;
     try {
@@ -3882,27 +3872,26 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
       userId: req.user.id 
     });
 
-    // STATUS MAPPING: Map frontend status values to backend values
+    // Enhanced status mapping with validation
     const statusMapping = {
       'pending': 'pending',
-      'accepted': 'confirmed',    // Map 'accepted' to 'confirmed'
-      'confirmed': 'confirmed',   // Also handle 'confirmed' if frontend sends it
+      'accepted': 'confirmed',
+      'confirmed': 'confirmed',
       'completed': 'completed',
-      'cancelled': 'cancelled'
+      'cancelled': 'cancelled',
+      'rejected': 'cancelled'
     };
 
-    const backendStatus = statusMapping[status];
+    const backendStatus = statusMapping[status?.toLowerCase()];
     
     if (!backendStatus) {
       return res.status(400).json({
         success: false,
-        message: `Invalid status: ${status}. Must be: pending, accepted, completed, or cancelled`
+        message: `Invalid status: ${status}. Must be one of: ${Object.keys(statusMapping).join(', ')}`
       });
     }
 
-    console.log('🔄 Status mapping:', { frontend: status, backend: backendStatus });
-
-    // Find the booking
+    // Find and update the booking
     const booking = await Booking.findById(bookingId);
     if (!booking) {
       return res.status(404).json({
@@ -3911,14 +3900,7 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
       });
     }
 
-    console.log('📋 Found booking:', {
-      bookingId: booking._id,
-      providerId: booking.providerId,
-      customerId: booking.customerId,
-      currentStatus: booking.status
-    });
-
-    // Check if user has permission to update this booking
+    // Check authorization
     if (booking.providerId.toString() !== req.user.id) {
       return res.status(403).json({
         success: false,
@@ -3926,45 +3908,27 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
       });
     }
 
-    // Store old status for notification
     const oldStatus = booking.status;
-    
-    // Update booking with mapped status
     booking.status = backendStatus;
     booking.updatedAt = new Date();
 
     // Set timestamps based on status changes
     if (backendStatus === 'confirmed' && oldStatus !== 'confirmed') {
       booking.acceptedAt = new Date();
-      console.log('✅ Booking accepted at:', booking.acceptedAt);
     } else if (backendStatus === 'completed' && oldStatus !== 'completed') {
       booking.completedAt = new Date();
-      console.log('✅ Booking completed at:', booking.completedAt);
     }
 
-    // Save the booking
     const updatedBooking = await booking.save();
-    console.log('💾 Booking saved successfully with status:', updatedBooking.status);
-
-    // Populate customer and provider info for response
+    
+    // Populate for response
     await updatedBooking.populate('customerId', 'name email phoneNumber');
     await updatedBooking.populate('providerId', 'name email phoneNumber');
 
-    // Only create schedule entry if status is 'confirmed'
-    if (backendStatus === 'confirmed') {
-      try {
-        await addBookingToSchedule(updatedBooking);
-        console.log('📅 Schedule entry created for booking');
-      } catch (scheduleError) {
-        console.error('⚠️ Schedule creation failed (non-critical):', scheduleError);
-        // Don't fail the booking update if schedule creation fails
-      }
-    }
-
-    // Map the response status back to frontend format
+    // Map response back to frontend
     const responseStatusMapping = {
       'pending': 'pending',
-      'confirmed': 'accepted',  // Map 'confirmed' back to 'accepted' for frontend
+      'confirmed': 'accepted',
       'completed': 'completed',
       'cancelled': 'cancelled'
     };
@@ -3976,7 +3940,7 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
       message: `Booking ${frontendStatus} successfully`,
       data: {
         ...updatedBooking.toObject(),
-        status: frontendStatus  // Return frontend-friendly status
+        status: frontendStatus
       }
     });
 
