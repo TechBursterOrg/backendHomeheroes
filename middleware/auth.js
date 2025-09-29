@@ -1,7 +1,8 @@
 import jwt from 'jsonwebtoken';
+import User from '../models/User.js';
 
 // Authentication middleware
-export function authenticateToken(req, res, next) {
+export async function authenticateToken(req, res, next) { // ✅ Added async
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
@@ -12,16 +13,32 @@ export function authenticateToken(req, res, next) {
     });
   }
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-    if (err) {
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id).select('-password');
+    
+    if (!user) {
       return res.status(403).json({
         success: false,
-        message: 'Invalid or expired token'
+        message: 'User not found'
       });
     }
-    req.user = user;
+
+    req.user = {
+      id: user._id.toString(),
+      userType: user.userType,
+      email: user.email,
+      name: user.name
+    };
+
     next();
-  });
+  } catch (error) {
+    console.error('JWT verification error:', error);
+    return res.status(403).json({
+      success: false,
+      message: 'Invalid or expired token'
+    });
+  }
 }
 
 // Optional: Role-based authentication

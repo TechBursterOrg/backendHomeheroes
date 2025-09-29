@@ -18,6 +18,8 @@ import ServiceRequest from './models/ServiceRequest.js';
 import Booking from './models/Booking.js';
 import nodemailer from 'nodemailer';
 import messageRoutes from './routes/messages.routes.js';
+import jobRoutes from './routes/jobs.js';
+
 // Add to your imports in server.js
 
 // Import models
@@ -28,6 +30,8 @@ import Review from './models/Review.js';
 // Import routes
 import authRoutes from './routes/auth.routes.js';
 import { initializeEmailTransporter } from './utils/emailService.js';
+import verificationRoutes from './routes/verification.routes.js';
+
 
 // Get __dirname equivalent in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -380,6 +384,9 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Auth routes
 app.use('/api/auth', authRoutes);
+app.use('/api/verification', verificationRoutes);
+app.use('/api/jobs', jobRoutes);
+
 
 // Update the authenticateToken middleware to be more specific
 function authenticateToken(req, res, next) {
@@ -553,6 +560,55 @@ app.post('/api/debug/test-email', async (req, res) => {
   }
 });
 
+
+app.get('/api/providers/:id', async (req, res) => {
+  try {
+    const provider = await User.findById(req.params.id)
+      .select('name email services hourlyRate averageRating city state country profileImage isAvailableNow experience phoneNumber address reviewCount completedJobs isVerified isTopRated responseTime createdAt');
+    
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: provider
+    });
+  } catch (error) {
+    console.error('Provider fetch error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch provider'
+    });
+  }
+});
+
+
+app.get('/api/providers/:id/gallery', async (req, res) => {
+  try {
+    const providerId = req.params.id;
+    // Fetch gallery from your database
+    const gallery = await Gallery.find({ providerId });
+    res.json({ success: true, data: gallery });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Get provider reviews
+app.get('/api/providers/:id/reviews', async (req, res) => {
+  try {
+    const providerId = req.params.id;
+    // Fetch reviews from your database
+    const reviews = await Review.find({ providerId }).populate('customer');
+    res.json({ success: true, data: reviews });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 app.post('/api/test-email-simple', async (req, res) => {
   const transporter = nodemailer.createTransporter({
     service: 'gmail',
@@ -801,23 +857,16 @@ app.post('/api/debug/send-test-email', async (req, res) => {
   }
 });
 
+
+
 const sendBookingNotification = async (bookingData, providerEmail) => {
   try {
-    // Import the email service functions directly
-    const { getEmailServiceStatus, getEmailTransporter } = await import('./utils/emailService.js');
+    console.log('📧 Attempting to send booking notification to:', providerEmail);
     
-    const emailStatus = getEmailServiceStatus();
-    
-    if (emailStatus !== 'ready') {
-      console.log('📧 Email service not available, skipping notification. Status:', emailStatus);
-      return;
-    }
-
-    const transporter = getEmailTransporter();
-    
-    if (!transporter) {
-      console.log('📧 No email transporter available, skipping notification');
-      return;
+    // Check if email service is available
+    if (!emailTransporter) {
+      console.log('❌ Email transporter not available');
+      return { success: false, error: 'Email service not configured' };
     }
 
     const mailOptions = {
@@ -875,14 +924,98 @@ const sendBookingNotification = async (bookingData, providerEmail) => {
       `
     };
 
-    const result = await transporter.sendMail(mailOptions);
+    const result = await emailTransporter.sendMail(mailOptions);
     console.log('✅ Booking notification email sent to provider:', providerEmail);
+    console.log('✅ Message ID:', result.messageId);
     
+    return { success: true, messageId: result.messageId };
   } catch (emailError) {
-    console.error('❌ Failed to send booking notification email:', emailError.message);
-    // Don't fail the booking if email fails
+    console.error('❌ Failed to send booking notification email:', emailError);
+    return { 
+      success: false, 
+      error: emailError.message,
+      code: emailError.code 
+    };
   }
 };
+
+// Then in your booking endpoint, update the email sending part:
+if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
+  try {
+    const providerUser = await User.findById(providerId);
+    if (providerUser && providerUser.email) {
+      const emailResult = await sendBookingNotification({
+        serviceType,
+        description,
+        location,
+        timeframe,
+        budget,
+        contactInfo,
+        specialRequests
+      }, providerUser.email);
+      
+      if (!emailResult.success) {
+        console.log('⚠️ Email notification failed but booking was created');
+        console.log('⚠️ Email error:', emailResult.error);
+      }
+    }
+  } catch (emailError) {
+    console.error('⚠️ Email notification failed (non-critical):', emailError);
+    // Don't fail the booking if email fails
+  }
+} else {
+  console.log('📧 Email service not configured, skipping notification');
+}
+
+app.post('/api/debug/test-email', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email address is required'
+      });
+    }
+
+    console.log('🧪 Testing email to:', email);
+
+    if (!emailTransporter) {
+      return res.json({
+        success: false,
+        message: 'Email transporter not available'
+      });
+    }
+
+    const testMailOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: 'HomeHero Email Test',
+      text: `This is a test email from HomeHero production server at ${new Date().toISOString()}`,
+      html: `
+        <h1>HomeHero Email Test</h1>
+        <p>This email was sent from your production server.</p>
+        <p><strong>Time:</strong> ${new Date().toISOString()}</p>
+        <p><strong>Environment:</strong> ${process.env.NODE_ENV}</p>
+      `
+    };
+
+    const result = await emailTransporter.sendMail(testMailOptions);
+    
+    res.json({
+      success: true,
+      message: 'Test email sent successfully',
+      messageId: result.messageId
+    });
+  } catch (error) {
+    console.error('Test email error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send test email',
+      error: error.message
+    });
+  }
+});
 
 app.post('/api/email/reinitialize', async (req, res) => {
   try {
@@ -904,6 +1037,21 @@ app.post('/api/email/reinitialize', async (req, res) => {
       error: error.message
     });
   }
+});
+
+// Add to server.js
+app.get('/api/debug/email-config', (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      environment: process.env.NODE_ENV,
+      emailConfigured: !!(process.env.EMAIL_USER && process.env.EMAIL_PASSWORD),
+      emailUser: process.env.EMAIL_USER ? 'Set' : 'Not set',
+      emailPassword: process.env.EMAIL_PASSWORD ? 'Set' : 'Not set',
+      frontendUrl: process.env.FRONTEND_URL,
+      transporterReady: !!emailTransporter
+    }
+  });
 });
 
 app.get('/api/debug/email-config', (req, res) => {
