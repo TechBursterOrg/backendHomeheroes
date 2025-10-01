@@ -570,6 +570,64 @@ app.get('/api/debug/email-status',async (req, res) => {
     }
   });
 });
+app.get('/api/debug/database-info', async (req, res) => {
+  try {
+    const db = mongoose.connection.db;
+    const dbName = db.databaseName;
+    const collections = await db.listCollections().toArray();
+    const userCount = await User.countDocuments();
+    
+    res.json({
+      success: true,
+      data: {
+        database: dbName,
+        userCount: userCount,
+        collections: collections.map(c => c.name),
+        connectionString: process.env.MONGODB_URI ? 
+          process.env.MONGODB_URI.substring(0, 60) + '...' : 'Not set'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+
+app.get('/api/debug/check-user/:email', async (req, res) => {
+  try {
+    const user = await User.findOne({ email: req.params.email.toLowerCase() });
+    
+    if (!user) {
+      return res.json({
+        success: false,
+        message: 'User not found in database'
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        userType: user.userType,
+        isEmailVerified: user.isEmailVerified,
+        isActive: user.isActive,
+        createdAt: user.createdAt
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+
 
 app.post('/api/debug/send-test-email', async (req, res) => {
   try {
@@ -6482,50 +6540,37 @@ app.get('/api/debug/fix-test-user', async (req, res) => {
 // Also add this endpoint to create a fresh test user if needed
 app.post('/api/debug/create-test-user', async (req, res) => {
   try {
-    // Delete existing test user
-    await User.deleteOne({ email: 'alex@example.com' });
-    
     const bcrypt = await import('bcryptjs');
-    const hashedPassword = await bcrypt.hash('Password123', 10);
+    const hashedPassword = await bcrypt.hash('test123', 10);
     
     const testUser = new User({
-      name: 'Alex Johnson',
-      email: 'alex@example.com',
+      name: 'Test User',
+      email: 'test@example.com',
       password: hashedPassword,
-      userType: 'provider',
-      country: 'USA',
+      userType: 'customer',
+      country: 'NIGERIA',
       isEmailVerified: true,
-      emailVerificationToken: null,
-      emailVerificationExpires: null,
-      services: ['House Cleaning', 'Garden Maintenance'],
-      hourlyRate: 25,
-      experience: '3 years',
-      profileImage: '',
       isActive: true
     });
     
-    const savedUser = await testUser.save();
+    await testUser.save();
     
     res.json({
       success: true,
-      message: 'Fresh test user created and verified',
-      user: {
-        id: savedUser._id,
-        email: savedUser.email,
-        name: savedUser.name,
-        isEmailVerified: savedUser.isEmailVerified,
-        userType: savedUser.userType
+      message: 'Test user created',
+      data: {
+        email: 'test@example.com',
+        password: 'test123'
       }
     });
   } catch (error) {
-    console.error('Create test user error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to create test user',
       error: error.message
     });
   }
 });
+
 
 // Search conversations
 app.get('/api/messages/search', authenticateToken, async (req, res) => {
