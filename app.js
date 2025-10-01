@@ -42,17 +42,18 @@ const __dirname = path.dirname(__filename);
 
 // Load the appropriate .env file based on environment
 const envFile = process.env.NODE_ENV === 'production' 
-  ? 'env.production'  // Match your actual file name
+  ? '.env.production'  // Correct file name with dot
   : '.env';
 
 console.log(`Loading environment from: ${envFile}`);
+console.log(`Current directory: ${__dirname}`);
 console.log(`File exists: ${fs.existsSync(path.resolve(__dirname, envFile))}`);
 
 dotenv.config({ path: path.resolve(__dirname, envFile) });
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/homehero';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://homehero:7cuMFr33u7jhrbOh@homehero.b4bixqd.mongodb.net/homehero?retryWrites=true&w=majority';
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
 
 // Initialize email transporter
@@ -458,6 +459,41 @@ app.use('/api/auth', authRoutes);
 app.use('/api/verification', verificationRoutes);
 app.use('/api/jobs', jobRoutes);
 
+app.get('/api/debug/config', (req, res) => {
+  res.json({
+    environment: process.env.NODE_ENV,
+    nodeEnv: process.env.NODE_ENV,
+    port: process.env.PORT,
+    frontendUrl: process.env.FRONTEND_URL,
+    emailConfigured: !!(process.env.EMAIL_USER && process.env.EMAIL_PASSWORD),
+    database: process.env.MONGODB_URI ? 'Configured' : 'Not configured',
+    jwtSecret: process.env.JWT_SECRET ? 'Set' : 'Not set',
+    timestamp: new Date().toISOString()
+  });
+});
+
+
+app.get('/api/debug/db-test', async (req, res) => {
+  try {
+    const userCount = await User.countDocuments();
+    const dbName = mongoose.connection.db.databaseName;
+    
+    res.json({
+      success: true,
+      data: {
+        database: dbName,
+        userCount: userCount,
+        connection: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected',
+        connectionString: process.env.MONGODB_URI ? process.env.MONGODB_URI.substring(0, 50) + '...' : 'Not set'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 
 // Update the authenticateToken middleware to be more specific
 function authenticateToken(req, res, next) {
@@ -471,67 +507,43 @@ function authenticateToken(req, res, next) {
     });
   }
 
-  // Set timeout for JWT verification
-  const timeoutPromise = new Promise((_, reject) => {
-    setTimeout(() => reject(new Error('JWT verification timeout')), 10000);
-  });
-
-  const verifyPromise = new Promise((resolve, reject) => {
-    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
-      if (err) {
-        console.error('JWT verification error:', err);
-        return reject(new Error('Invalid or expired token'));
-      }
-      
-      try {
-        const user = await User.findById(decoded.id)
-          .select('-password')
-          .maxTimeMS(10000); // 10 second timeout
-        
-        if (!user) {
-          return reject(new Error('User not found'));
-        }
-        
-        req.user = {
-          id: user._id.toString(),
-          userType: user.userType,
-          email: user.email,
-          name: user.name
-        };
-        
-        resolve();
-      } catch (dbError) {
-        console.error('Database error in auth middleware:', dbError);
-        reject(new Error('Error verifying user'));
-      }
-    });
-  });
-
-  Promise.race([verifyPromise, timeoutPromise])
-    .then(() => next())
-    .catch(error => {
-      console.error('Auth middleware error:', error.message);
-      
-      if (error.message.includes('timeout')) {
-        return res.status(503).json({
-          success: false,
-          message: 'Service temporarily unavailable'
-        });
-      }
-      
-      if (error.message.includes('Invalid') || error.message.includes('expired')) {
+  jwt.verify(token, process.env.JWT_SECRET, async (err, decoded) => {
+    if (err) {
+      console.error('JWT verification error:', err);
+      return res.status(403).json({
+        success: false,
+        message: 'Invalid or expired token'
+      });
+    }
+    
+    try {
+      const user = await User.findById(decoded.id).select('-password');
+      if (!user) {
+        console.error('User not found for ID:', decoded.id);
         return res.status(403).json({
           success: false,
-          message: error.message
+          message: 'User not found'
         });
       }
       
-      res.status(500).json({
+      req.user = {
+        id: user._id.toString(),
+        userType: user.userType,
+        email: user.email,
+        name: user.name
+      };
+      
+      next();
+    } catch (error) {
+      console.error('Error verifying user:', error);
+      return res.status(500).json({
         success: false,
-        message: 'Authentication error'
+        message: 'Error verifying user'
       });
-    });
+    }
+  });
 }
+
 
 
 

@@ -5,68 +5,43 @@ let emailServiceStatus = 'initializing';
 
 export const initializeEmailTransporter = async () => {
   try {
-    console.log('🔧 Initializing email transporter...');
-    
-    // Check if credentials exist
     if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
-      console.warn('⚠️ Email credentials not configured. Running in simulation mode.');
-      emailServiceStatus = 'simulation';
+      console.log('❌ Email credentials not configured');
       return false;
     }
 
-    console.log('📧 Email configuration:', {
-      user: process.env.EMAIL_USER,
-      hasPassword: !!process.env.EMAIL_PASSWORD
-    });
-
-    // Create transporter with production-optimized settings
-    emailTransporter = nodemailer.createTransport({
+    console.log('🔧 Initializing email transporter...');
+    
+    // Create transporter with better timeout settings
+    const transporter = nodemailer.createTransporter({
       service: 'gmail',
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASSWORD
       },
-      // Production timeout settings
-      pool: true,
-      maxConnections: 5,
-      maxMessages: 100,
-      connectionTimeout: 30000, // 30 seconds
-      greetingTimeout: 30000,
-      socketTimeout: 45000,
-      secure: true,
-      tls: {
-        rejectUnauthorized: false
-      },
-      debug: false,
-      logger: false
+      connectionTimeout: 10000, // 10 seconds
+      greetingTimeout: 10000,
+      socketTimeout: 10000,
+      logger: true,
+      debug: true
     });
 
     // Verify connection with timeout
-    const verifyPromise = emailTransporter.verify();
+    const verifyPromise = transporter.verify();
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error('Email verification timeout')), 15000);
     });
 
     await Promise.race([verifyPromise, timeoutPromise]);
-    
-    console.log('✅ Email transporter initialized and verified');
-    emailServiceStatus = 'ready';
+    console.log('✅ Email transporter initialized successfully');
     return true;
-
+    
   } catch (error) {
     console.error('❌ Email transporter initialization failed:', error.message);
-    emailServiceStatus = 'failed';
-    emailTransporter = null;
-    
-    // In production, we can continue without email service
-    if (process.env.NODE_ENV === 'production') {
-      console.log('⚠️ Email service unavailable - running in simulation mode');
-      return false;
-    }
-    
     return false;
   }
 };
+
 
 export const getEmailTransporter = () => emailTransporter;
 export const getEmailServiceStatus = () => emailServiceStatus;
