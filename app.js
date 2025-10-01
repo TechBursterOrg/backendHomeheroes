@@ -4626,22 +4626,54 @@ app.get('/api/bookings/provider', authenticateToken, async (req, res) => {
 
 app.post('/api/schedule', authenticateToken, async (req, res) => {
   try {
-    const scheduleData = req.body;
+    const scheduleData = {
+      ...req.body,
+      providerId: req.user.id,
+      status: 'confirmed'
+    };
     
-    // Save to your database (adjust based on your schema)
-    const newScheduleEntry = new Schedule(scheduleData);
-    await newScheduleEntry.save();
+    const newAppointment = new Schedule(scheduleData);
+    await newAppointment.save();
     
     res.json({
       success: true,
-      message: 'Booking added to schedule successfully',
-      data: newScheduleEntry
+      message: 'Appointment created successfully',
+      data: newAppointment
     });
   } catch (error) {
-    console.error('Add to schedule error:', error);
+    console.error('Create appointment error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to add booking to schedule'
+      message: 'Failed to create appointment'
+    });
+  }
+});
+
+app.put('/api/schedule/:id', authenticateToken, async (req, res) => {
+  try {
+    const appointment = await Schedule.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    );
+    
+    if (!appointment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Appointment not found'
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Appointment updated successfully',
+      data: appointment
+    });
+  } catch (error) {
+    console.error('Update appointment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update appointment'
     });
   }
 });
