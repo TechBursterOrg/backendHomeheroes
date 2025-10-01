@@ -104,40 +104,68 @@ setupUploadDirectories();
 // Connect to MongoDB
 const connectDB = async () => {
   try {
-    const conn = await mongoose.connect(MONGODB_URI);
+    console.log('🔗 Attempting MongoDB connection...');
+    
+    const mongooseOptions = {
+      // Connection pool settings
+      maxPoolSize: parseInt(process.env.DB_MAX_POOL_SIZE) || 10,
+      minPoolSize: 5,
+      serverSelectionTimeoutMS: parseInt(process.env.DB_SERVER_SELECTION_TIMEOUT) || 30000,
+      socketTimeoutMS: parseInt(process.env.DB_SOCKET_TIMEOUT) || 45000,
+      // Buffer commands to prevent timeouts (updated for Mongoose 6+)
+      bufferCommands: true,
+      // Retry settings
+      retryWrites: true,
+      retryReads: true,
+      // Authentication
+      authSource: 'admin',
+      // Remove deprecated options
+      // bufferMaxEntries: 0, // DEPRECATED - remove this line
+    };
+
+    console.log('📋 MongoDB connection options:', mongooseOptions);
+
+    const conn = await mongoose.connect(process.env.MONGODB_URI, mongooseOptions);
+    
     console.log('✅ MongoDB connected successfully');
     console.log(`📊 Database: ${conn.connection.name}`);
-    console.log(`🌐 MongoDB Host: ${conn.connection.host}`);
-    
-    // Create test user in development
-    if (process.env.NODE_ENV !== 'production') {
-      try {
-        const bcrypt = await import('bcryptjs');
-        const userCount = await User.countDocuments();
-        if (userCount === 0) {
-          const hashedPassword = await bcrypt.hash('Password123', 10);
-          const testUser = new User({
-            name: 'Alex Johnson',
-            email: 'alex@example.com',
-            password: hashedPassword,
-            userType: 'provider',
-            country: 'USA',
-            isEmailVerified: true,
-            services: ['House Cleaning', 'Garden Maintenance'],
-            hourlyRate: 25,
-            experience: '3 years',
-            profileImage: '' // Added profileImage field
-          });
-          await testUser.save();
-          console.log('🧪 Test user created: alex@example.com / Password123');
-        }
-      } catch (error) {
-        console.log('Note: Test user creation skipped - User model not available yet');
-      }
-    }
+    console.log(`🌐 Host: ${conn.connection.host}`);
+
+    // Connection event handlers
+    mongoose.connection.on('error', (err) => {
+      console.error('❌ MongoDB connection error:', err.message);
+    });
+
+    mongoose.connection.on('disconnected', () => {
+      console.log('⚠️ MongoDB disconnected');
+    });
+
+    mongoose.connection.on('reconnected', () => {
+      console.log('✅ MongoDB reconnected');
+    });
+
+    // Handle process termination
+    process.on('SIGINT', async () => {
+      await mongoose.connection.close();
+      console.log('MongoDB connection closed through app termination');
+      process.exit(0);
+    });
+
   } catch (error) {
-    console.error('❌ MongoDB connection error:', error);
-    if (process.env.NODE_ENV !== 'production') {
+    console.error('❌ MongoDB connection failed:', error.message);
+    
+    if (error.name === 'MongoServerError') {
+      console.error('🔐 Authentication failed. Please check:');
+      console.error('   - MongoDB username and password');
+      console.error('   - IP whitelist in MongoDB Atlas');
+      console.error('   - Database name in connection string');
+    }
+    
+    // In production, try to reconnect
+    if (process.env.NODE_ENV === 'production') {
+      console.log('🔄 Will attempt to reconnect in 10 seconds...');
+      setTimeout(connectDB, 10000);
+    } else {
       process.exit(1);
     }
   }
@@ -1049,30 +1077,35 @@ const sendBookingNotification = async (bookingData, providerEmail) => {
 // Then in your booking endpoint, update the email sending part:
 if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
   try {
-    const providerUser = await User.findById(providerId);
-    if (providerUser && providerUser.email) {
-      const emailResult = await sendBookingNotification({
-        serviceType,
-        description,
-        location,
-        timeframe,
-        budget,
-        contactInfo,
-        specialRequests
-      }, providerUser.email);
-      
-      if (!emailResult.success) {
-        console.log('⚠️ Email notification failed but booking was created');
-        console.log('⚠️ Email error:', emailResult.error);
+    // Make sure providerId is defined before using it
+    if (providerId) {
+      const providerUser = await User.findById(providerId);
+      if (providerUser && providerUser.email) {
+        const emailResult = await sendBookingNotification({
+          serviceType,
+          description,
+          location,
+          timeframe,
+          budget,
+          contactInfo,
+          specialRequests
+        }, providerUser.email);
+        
+        if (!emailResult.success) {
+          console.log('⚠️ Email notification failed but booking was created');
+          console.log('⚠️ Email error:', emailResult.error);
+        }
       }
+    } else {
+      console.log('⚠️ providerId not available for email notification');
     }
   } catch (emailError) {
     console.error('⚠️ Email notification failed (non-critical):', emailError);
-    // Don't fail the booking if email fails
   }
 } else {
   console.log('📧 Email service not configured, skipping notification');
 }
+
 
 app.post('/api/debug/test-email', async (req, res) => {
   try {
