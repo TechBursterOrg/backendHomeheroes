@@ -106,62 +106,50 @@ const connectDB = async () => {
   try {
     console.log('🔗 Attempting MongoDB connection...');
     
+    // Validate MONGODB_URI format
+    const MONGODB_URI = process.env.MONGODB_URI;
+    
+    if (!MONGODB_URI) {
+      throw new Error('MONGODB_URI environment variable is not set');
+    }
+    
+    // Check if URI starts with valid protocol
+    if (!MONGODB_URI.startsWith('mongodb://') && !MONGODB_URI.startsWith('mongodb+srv://')) {
+      throw new Error(`Invalid MongoDB URI format. Expected "mongodb://" or "mongodb+srv://", got: ${MONGODB_URI.substring(0, 20)}...`);
+    }
+    
+    console.log('✅ MongoDB URI format is valid');
+    
     const mongooseOptions = {
-      // Connection pool settings
-      maxPoolSize: parseInt(process.env.DB_MAX_POOL_SIZE) || 10,
+      maxPoolSize: 10,
       minPoolSize: 5,
-      serverSelectionTimeoutMS: parseInt(process.env.DB_SERVER_SELECTION_TIMEOUT) || 30000,
-      socketTimeoutMS: parseInt(process.env.DB_SOCKET_TIMEOUT) || 45000,
-      // Buffer commands to prevent timeouts (updated for Mongoose 6+)
+      serverSelectionTimeoutMS: 30000,
+      socketTimeoutMS: 45000,
       bufferCommands: true,
-      // Retry settings
       retryWrites: true,
       retryReads: true,
-      // Authentication
-      authSource: 'admin',
-      // Remove deprecated options
-      // bufferMaxEntries: 0, // DEPRECATED - remove this line
+      authSource: 'admin'
     };
 
     console.log('📋 MongoDB connection options:', mongooseOptions);
 
-    const conn = await mongoose.connect(process.env.MONGODB_URI, mongooseOptions);
+    const conn = await mongoose.connect(MONGODB_URI, mongooseOptions);
     
     console.log('✅ MongoDB connected successfully');
     console.log(`📊 Database: ${conn.connection.name}`);
     console.log(`🌐 Host: ${conn.connection.host}`);
 
-    // Connection event handlers
-    mongoose.connection.on('error', (err) => {
-      console.error('❌ MongoDB connection error:', err.message);
-    });
-
-    mongoose.connection.on('disconnected', () => {
-      console.log('⚠️ MongoDB disconnected');
-    });
-
-    mongoose.connection.on('reconnected', () => {
-      console.log('✅ MongoDB reconnected');
-    });
-
-    // Handle process termination
-    process.on('SIGINT', async () => {
-      await mongoose.connection.close();
-      console.log('MongoDB connection closed through app termination');
-      process.exit(0);
-    });
-
   } catch (error) {
     console.error('❌ MongoDB connection failed:', error.message);
     
-    if (error.name === 'MongoServerError') {
-      console.error('🔐 Authentication failed. Please check:');
-      console.error('   - MongoDB username and password');
-      console.error('   - IP whitelist in MongoDB Atlas');
-      console.error('   - Database name in connection string');
+    // More specific error handling
+    if (error.message.includes('Invalid scheme')) {
+      console.error('🔧 SOLUTION: Check your MONGODB_URI in Render.com environment variables');
+      console.error('   - It should start with: mongodb+srv://... or mongodb://...');
+      console.error('   - Current value starts with:', process.env.MONGODB_URI?.substring(0, 20) + '...');
     }
     
-    // In production, try to reconnect
+    // In production, try to reconnect but with better error info
     if (process.env.NODE_ENV === 'production') {
       console.log('🔄 Will attempt to reconnect in 10 seconds...');
       setTimeout(connectDB, 10000);
@@ -170,6 +158,7 @@ const connectDB = async () => {
     }
   }
 };
+
 
 
 
@@ -1077,27 +1066,28 @@ const sendBookingNotification = async (bookingData, providerEmail) => {
 // Then in your booking endpoint, update the email sending part:
 if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
   try {
-    // Make sure providerId is defined before using it
-    if (providerId) {
-      const providerUser = await User.findById(providerId);
-      if (providerUser && providerUser.email) {
-        const emailResult = await sendBookingNotification({
-          serviceType,
-          description,
-          location,
-          timeframe,
-          budget,
-          contactInfo,
-          specialRequests
-        }, providerUser.email);
-        
-        if (!emailResult.success) {
-          console.log('⚠️ Email notification failed but booking was created');
-          console.log('⚠️ Email error:', emailResult.error);
-        }
-      }
-    } else {
+    // Check if providerId is defined before using it
+    if (!providerId) {
       console.log('⚠️ providerId not available for email notification');
+      
+    }
+    
+    const providerUser = await User.findById(providerId);
+    if (providerUser && providerUser.email) {
+      const emailResult = await sendBookingNotification({
+        serviceType,
+        description,
+        location,
+        timeframe,
+        budget,
+        contactInfo,
+        specialRequests
+      }, providerUser.email);
+      
+      if (!emailResult.success) {
+        console.log('⚠️ Email notification failed but booking was created');
+        console.log('⚠️ Email error:', emailResult.error);
+      }
     }
   } catch (emailError) {
     console.error('⚠️ Email notification failed (non-critical):', emailError);
@@ -1105,6 +1095,8 @@ if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
 } else {
   console.log('📧 Email service not configured, skipping notification');
 }
+
+
 
 
 app.post('/api/debug/test-email', async (req, res) => {
