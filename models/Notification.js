@@ -1,9 +1,17 @@
+// models/Notification.js
 import mongoose from 'mongoose';
+import mongoosePaginate from 'mongoose-paginate-v2';
 
 const notificationSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
+    required: true,
+    index: true
+  },
+  type: {
+    type: String,
+    enum: ['message', 'booking', 'job_accepted', 'job_applied', 'system'],
     required: true
   },
   title: {
@@ -14,26 +22,51 @@ const notificationSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  type: {
-    type: String,
-    enum: ['booking_confirmed', 'booking_reminder', 'message', 'system'],
-    required: true
-  },
   relatedId: {
-    type: mongoose.Schema.Types.ObjectId
+    type: mongoose.Schema.Types.ObjectId,
+    // Can reference different models
+    required: false
   },
-  read: {
+  relatedType: {
+    type: String,
+    enum: ['conversation', 'booking', 'job', 'user'],
+    required: false
+  },
+  isRead: {
     type: Boolean,
     default: false
   },
-  readAt: {
-    type: Date
+  priority: {
+    type: String,
+    enum: ['low', 'medium', 'high'],
+    default: 'medium'
+  },
+  metadata: {
+    type: Object,
+    default: {}
   }
 }, {
   timestamps: true
 });
 
-// Index for faster queries
-notificationSchema.index({ userId: 1, read: 1, createdAt: -1 });
+notificationSchema.plugin(mongoosePaginate);
+
+// Static method to create notifications
+notificationSchema.statics.createNotification = async function(notificationData) {
+  try {
+    const notification = new this(notificationData);
+    await notification.save();
+    
+    // Emit real-time event (for WebSocket implementation)
+    if (global.io) {
+      global.io.to(notificationData.userId.toString()).emit('new_notification', notification);
+    }
+    
+    return notification;
+  } catch (error) {
+    console.error('Error creating notification:', error);
+    throw error;
+  }
+};
 
 export default mongoose.model('Notification', notificationSchema);

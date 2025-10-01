@@ -19,6 +19,9 @@ import Booking from './models/Booking.js';
 import nodemailer from 'nodemailer';
 import messageRoutes from './routes/messages.routes.js';
 import jobRoutes from './routes/jobs.js';
+import bcrypt from 'bcryptjs';
+import Notification from './models/Notification.js';
+
 
 // Add to your imports in server.js
 
@@ -597,6 +600,51 @@ app.get('/api/providers/:id/gallery', async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
+app.get('/api/auth/preferences', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('preferences notificationSettings');
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Default preferences if none exist
+    const defaultPreferences = {
+      emailNotifications: true,
+      smsNotifications: false,
+      bookingReminders: true,
+      marketingEmails: false,
+      providerMessages: true,
+      searchRadius: '10',
+      contactMethod: 'message'
+    };
+
+    const preferences = user.preferences || defaultPreferences;
+    const notificationSettings = user.notificationSettings || defaultPreferences;
+
+    res.json({
+      success: true,
+      data: {
+        preferences: {
+          ...defaultPreferences,
+          ...preferences,
+          ...notificationSettings
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get preferences error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch preferences'
+    });
+  }
+});
+
 
 // Get provider reviews
 app.get('/api/providers/:id/reviews', async (req, res) => {
@@ -2717,66 +2765,102 @@ app.get('/api/users', authenticateToken, async (req, res) => {
 app.get('/api/earnings', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+    const { period = 'month' } = req.query;
     
-    // Fetch user to get currency preference
+    // Get user to check currency preference
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
-
-
     }
 
+    // Calculate date ranges based on period
+    const now = new Date();
+    let startDate, endDate;
     
+    switch (period) {
+      case 'week':
+        startDate = new Date(now.setDate(now.getDate() - 7));
+        endDate = new Date();
+        break;
+      case 'month':
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+        endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        break;
+      case 'quarter':
+        const quarter = Math.floor(now.getMonth() / 3);
+        startDate = new Date(now.getFullYear(), quarter * 3, 1);
+        endDate = new Date(now.getFullYear(), (quarter + 1) * 3, 0);
+        break;
+      case 'year':
+        startDate = new Date(now.getFullYear(), 0, 1);
+        endDate = new Date(now.getFullYear(), 11, 31);
+        break;
+      default:
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+        endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    }
 
-    
-
-
-
-
-    
     // Calculate earnings data
     const completedJobs = await Job.countDocuments({ 
       providerId: userId, 
-      status: 'completed' 
+      status: 'completed',
+      date: { $gte: startDate, $lte: endDate }
     });
     
     const totalEarningsResult = await Job.aggregate([
-      { $match: { providerId: new mongoose.Types.ObjectId(userId), status: 'completed' } },
-      { $group: { _id: null, total: { $sum: '$payment' } } }
-    ]);
-    
-    const thisMonth = new Date();
-    thisMonth.setDate(1);
-    const thisMonthEarningsResult = await Job.aggregate([
       { 
         $match: { 
           providerId: new mongoose.Types.ObjectId(userId), 
           status: 'completed',
-          date: { $gte: thisMonth }
+          date: { $gte: startDate, $lte: endDate }
         } 
       },
       { $group: { _id: null, total: { $sum: '$payment' } } }
     ]);
     
-    const lastMonth = new Date();
-    lastMonth.setMonth(lastMonth.getMonth() - 1);
-    lastMonth.setDate(1);
-    const lastMonthEarningsResult = await Job.aggregate([
+    const thisPeriodEarnings = totalEarningsResult.length > 0 ? totalEarningsResult[0].total : 0;
+    
+    // Calculate previous period for growth comparison
+    let previousStartDate, previousEndDate;
+    switch (period) {
+      case 'week':
+        previousStartDate = new Date(startDate);
+        previousStartDate.setDate(previousStartDate.getDate() - 7);
+        previousEndDate = new Date(startDate);
+        break;
+      case 'month':
+        previousStartDate = new Date(startDate.getFullYear(), startDate.getMonth() - 1, 1);
+        previousEndDate = new Date(startDate.getFullYear(), startDate.getMonth(), 0);
+        break;
+      case 'quarter':
+        const prevQuarter = Math.floor((startDate.getMonth() - 3) / 3);
+        previousStartDate = new Date(startDate.getFullYear(), prevQuarter * 3, 1);
+        previousEndDate = new Date(startDate.getFullYear(), (prevQuarter + 1) * 3, 0);
+        break;
+      case 'year':
+        previousStartDate = new Date(startDate.getFullYear() - 1, 0, 1);
+        previousEndDate = new Date(startDate.getFullYear() - 1, 11, 31);
+        break;
+    }
+    
+    const previousEarningsResult = await Job.aggregate([
       { 
         $match: { 
           providerId: new mongoose.Types.ObjectId(userId), 
           status: 'completed',
-          date: { 
-            $gte: lastMonth,
-            $lt: thisMonth
-          }
+          date: { $gte: previousStartDate, $lte: previousEndDate }
         } 
       },
       { $group: { _id: null, total: { $sum: '$payment' } } }
     ]);
+    
+    const previousPeriodEarnings = previousEarningsResult.length > 0 ? previousEarningsResult[0].total : 0;
+    const growth = previousPeriodEarnings > 0 
+      ? ((thisPeriodEarnings - previousPeriodEarnings) / previousPeriodEarnings) * 100 
+      : 0;
     
     const pendingEarningsResult = await Job.aggregate([
       { 
@@ -2789,22 +2873,24 @@ app.get('/api/earnings', authenticateToken, async (req, res) => {
     ]);
     
     const avgPerJobResult = await Job.aggregate([
-      { $match: { providerId: new mongoose.Types.ObjectId(userId), status: 'completed' } },
+      { 
+        $match: { 
+          providerId: new mongoose.Types.ObjectId(userId), 
+          status: 'completed',
+          date: { $gte: startDate, $lte: endDate }
+        } 
+      },
       { $group: { _id: null, average: { $avg: '$payment' } } }
     ]);
     
-    // Calculate growth percentage
-    const thisMonthEarnings = thisMonthEarningsResult.length > 0 ? thisMonthEarningsResult[0].total : 0;
-    const lastMonthEarnings = lastMonthEarningsResult.length > 0 ? lastMonthEarningsResult[0].total : 0;
-    const growth = lastMonthEarnings > 0 
-      ? ((thisMonthEarnings - lastMonthEarnings) / lastMonthEarnings) * 100 
-      : 0;
-    
     // Get recent transactions
-    const recentTransactions = await Job.find({ providerId: userId })
-      .sort({ date: -1 })
-      .limit(10)
-      .populate('clientId', 'name');
+    const recentTransactions = await Job.find({ 
+      providerId: userId,
+      date: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } // Last 30 days
+    })
+    .sort({ date: -1 })
+    .limit(10)
+    .populate('clientId', 'name');
     
     // Get monthly data for the chart
     const monthlyData = await Job.aggregate([
@@ -2851,19 +2937,22 @@ app.get('/api/earnings', authenticateToken, async (req, res) => {
       amount: transaction.payment,
       date: transaction.date.toISOString().split('T')[0],
       status: transaction.status,
-      method: transaction.paymentMethod || 'Unknown',
+      method: transaction.paymentMethod || 'Bank Transfer',
       category: transaction.category || 'other'
     }));
     
     // Prepare response
     const earningsData = {
-      total: totalEarningsResult.length > 0 ? totalEarningsResult[0].total : 0,
-      thisMonth: thisMonthEarnings,
-      lastMonth: lastMonthEarnings,
+      total: thisPeriodEarnings,
+      thisWeek: period === 'week' ? thisPeriodEarnings : await calculatePeriodEarnings(userId, 'week'),
+      thisMonth: period === 'month' ? thisPeriodEarnings : await calculatePeriodEarnings(userId, 'month'),
+      thisQuarter: period === 'quarter' ? thisPeriodEarnings : await calculatePeriodEarnings(userId, 'quarter'),
+      thisYear: period === 'year' ? thisPeriodEarnings : await calculatePeriodEarnings(userId, 'year'),
+      lastMonth: previousPeriodEarnings,
       pending: pendingEarningsResult.length > 0 ? pendingEarningsResult[0].total : 0,
       growth: Math.round(growth * 10) / 10,
       avgPerJob: avgPerJobResult.length > 0 ? Math.round(avgPerJobResult[0].average) : 0,
-      currency: user.currency || 'USD'
+      currency: user.currency || 'NGN'
     };
     
     res.json({
@@ -2880,6 +2969,112 @@ app.get('/api/earnings', authenticateToken, async (req, res) => {
       success: false,
       message: 'Failed to fetch earnings data',
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+// Helper function to calculate earnings for a specific period
+async function calculatePeriodEarnings(userId, period) {
+  const now = new Date();
+  let startDate, endDate;
+  
+  switch (period) {
+    case 'week':
+      startDate = new Date(now.setDate(now.getDate() - 7));
+      endDate = new Date();
+      break;
+    case 'month':
+      startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+      endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      break;
+    case 'quarter':
+      const quarter = Math.floor(now.getMonth() / 3);
+      startDate = new Date(now.getFullYear(), quarter * 3, 1);
+      endDate = new Date(now.getFullYear(), (quarter + 1) * 3, 0);
+      break;
+    case 'year':
+      startDate = new Date(now.getFullYear(), 0, 1);
+      endDate = new Date(now.getFullYear(), 11, 31);
+      break;
+  }
+  
+  const result = await Job.aggregate([
+    { 
+      $match: { 
+        providerId: new mongoose.Types.ObjectId(userId), 
+        status: 'completed',
+        date: { $gte: startDate, $lte: endDate }
+      } 
+    },
+    { $group: { _id: null, total: { $sum: '$payment' } } }
+  ]);
+  
+  return result.length > 0 ? result[0].total : 0;
+}
+
+// Export earnings data endpoint
+app.get('/api/earnings/export', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { period = 'month' } = req.query;
+    
+    // Calculate date range based on period
+    const now = new Date();
+    let startDate, endDate;
+    
+    switch (period) {
+      case 'week':
+        startDate = new Date(now.setDate(now.getDate() - 7));
+        endDate = new Date();
+        break;
+      case 'month':
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+        endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        break;
+      case 'quarter':
+        const quarter = Math.floor(now.getMonth() / 3);
+        startDate = new Date(now.getFullYear(), quarter * 3, 1);
+        endDate = new Date(now.getFullYear(), (quarter + 1) * 3, 0);
+        break;
+      case 'year':
+        startDate = new Date(now.getFullYear(), 0, 1);
+        endDate = new Date(now.getFullYear(), 11, 31);
+        break;
+    }
+    
+    // Get transactions for export
+    const transactions = await Job.find({ 
+      providerId: userId,
+      date: { $gte: startDate, $lte: endDate }
+    })
+    .sort({ date: -1 })
+    .populate('clientId', 'name');
+    
+    // Create CSV content
+    const headers = ['Date', 'Client', 'Service', 'Amount (₦)', 'Status', 'Payment Method', 'Category'];
+    const csvContent = [
+      headers.join(','),
+      ...transactions.map(transaction => [
+        transaction.date.toISOString().split('T')[0],
+        `"${transaction.clientId?.name || 'Unknown Client'}"`,
+        `"${transaction.serviceType}"`,
+        transaction.payment,
+        transaction.status,
+        transaction.paymentMethod || 'Bank Transfer',
+        transaction.category || 'other'
+      ].join(','))
+    ].join('\n');
+    
+    // Set response headers for file download
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename=earnings-${period}-${new Date().toISOString().split('T')[0]}.csv`);
+    
+    res.send(csvContent);
+  } catch (error) {
+    console.error('Export earnings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to export earnings data'
     });
   }
 });
@@ -3027,6 +3222,313 @@ app.post('/api/debug/create-test-providers', async (req, res) => {
       success: false,
       message: 'Failed to create test providers',
       error: error.message
+    });
+  }
+});
+
+app.get('/api/settings', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const settings = user.getSettings();
+
+    res.json({
+      success: true,
+      data: settings
+    });
+  } catch (error) {
+    console.error('Get settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch settings'
+    });
+  }
+});
+
+app.put('/api/settings', authenticateToken, async (req, res) => {
+  try {
+    const updates = req.body;
+
+    const updatedUser = await User.updateUserSettings(req.user.id, updates);
+
+    res.json({
+      success: true,
+      message: 'Settings updated successfully',
+      data: updatedUser
+    });
+  } catch (error) {
+    console.error('Update settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update settings',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.put('/api/settings/:section', authenticateToken, async (req, res) => {
+  try {
+    const { section } = req.params;
+    const data = req.body;
+
+    const updates = { [section]: data };
+    const updatedUser = await User.updateUserSettings(req.user.id, updates);
+
+    res.json({
+      success: true,
+      message: `${section.charAt(0).toUpperCase() + section.slice(1)} settings updated successfully`,
+      data: updatedUser[section]
+    });
+  } catch (error) {
+    console.error(`Update ${req.params.section} settings error:`, error);
+    res.status(500).json({
+      success: false,
+      message: `Failed to update ${req.params.section} settings`
+    });
+  }
+});
+
+
+
+app.put('/api/settings/general', authenticateToken, async (req, res) => {
+  try {
+    const { language, timeZone, currency } = req.body;
+
+    const updateData = {};
+    if (language) updateData.language = language;
+    if (timeZone) updateData.timeZone = timeZone;
+    if (currency) updateData.currency = currency;
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user.id,
+      updateData,
+      { new: true, runValidators: true }
+    ).select('language timeZone currency');
+
+    res.json({
+      success: true,
+      message: 'General settings updated successfully',
+      data: updatedUser
+    });
+  } catch (error) {
+    console.error('Update general settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update general settings'
+    });
+  }
+});
+
+app.put('/api/settings/notifications', authenticateToken, async (req, res) => {
+  try {
+    const { email, push, sms, newJobs, messages, payments } = req.body;
+
+    const notificationSettings = {
+      email: email ?? true,
+      push: push ?? true,
+      sms: sms ?? false,
+      newJobs: newJobs ?? true,
+      messages: messages ?? true,
+      payments: payments ?? true
+    };
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user.id,
+      { notificationSettings },
+      { new: true }
+    ).select('notificationSettings');
+
+    res.json({
+      success: true,
+      message: 'Notification settings updated successfully',
+      data: updatedUser.notificationSettings
+    });
+  } catch (error) {
+    console.error('Update notification settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update notification settings'
+    });
+  }
+});
+
+app.put('/api/settings/security', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword, enableTwoFactor } = req.body;
+
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const updateData = {};
+    let message = 'Security settings updated successfully';
+
+    // Handle password change
+    if (currentPassword && newPassword) {
+      const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password);
+      if (!isCurrentPasswordValid) {
+        return res.status(400).json({
+          success: false,
+          message: 'Current password is incorrect'
+        });
+      }
+
+      const hashedNewPassword = await bcrypt.hash(newPassword, 10);
+      updateData.password = hashedNewPassword;
+      updateData.lastPasswordChange = new Date();
+      message = 'Password updated successfully';
+    }
+
+    // Handle two-factor authentication
+    if (enableTwoFactor !== undefined) {
+      updateData.twoFactorEnabled = enableTwoFactor;
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user.id,
+      updateData,
+      { new: true }
+    ).select('twoFactorEnabled lastPasswordChange');
+
+    res.json({
+      success: true,
+      message,
+      data: updatedUser
+    });
+  } catch (error) {
+    console.error('Update security settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update security settings'
+    });
+  }
+});
+
+
+app.put('/api/settings/account', authenticateToken, async (req, res) => {
+  try {
+    const { name, phoneNumber, address, city, state, country } = req.body;
+
+    const updateData = {};
+    if (name) updateData.name = name.trim();
+    if (phoneNumber !== undefined) updateData.phoneNumber = phoneNumber;
+    if (address !== undefined) updateData.address = address;
+    if (city !== undefined) updateData.city = city;
+    if (state !== undefined) updateData.state = state;
+    if (country !== undefined) updateData.country = country;
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user.id,
+      updateData,
+      { new: true, runValidators: true }
+    ).select('name email phoneNumber address city state country profileImage');
+
+    res.json({
+      success: true,
+      message: 'Account information updated successfully',
+      data: updatedUser
+    });
+  } catch (error) {
+    console.error('Update account settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update account information'
+    });
+  }
+});
+
+
+app.put('/api/settings/payment', authenticateToken, async (req, res) => {
+  try {
+    const { payoutSchedule, currency, bankAccount } = req.body;
+
+    const updateData = {};
+    if (payoutSchedule) updateData.payoutSchedule = payoutSchedule;
+    if (currency) updateData.currency = currency;
+    
+    // In a real app, you'd want to encrypt bank account info
+    if (bankAccount) {
+      updateData.bankAccount = {
+        ...bankAccount,
+        lastFour: bankAccount.accountNumber ? bankAccount.accountNumber.slice(-4) : ''
+      };
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user.id,
+      updateData,
+      { new: true }
+    ).select('payoutSchedule currency bankAccount');
+
+    res.json({
+      success: true,
+      message: 'Payment settings updated successfully',
+      data: updatedUser
+    });
+  } catch (error) {
+    console.error('Update payment settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update payment settings'
+    });
+  }
+});
+
+// Delete account
+app.delete('/api/settings/account', authenticateToken, async (req, res) => {
+  try {
+    const { confirmation } = req.body;
+
+    if (confirmation !== 'DELETE MY ACCOUNT') {
+      return res.status(400).json({
+        success: false,
+        message: 'Please type "DELETE MY ACCOUNT" to confirm account deletion'
+      });
+    }
+
+    const user = await User.findByIdAndDelete(req.user.id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Clean up related data (bookings, service requests, etc.)
+    await Booking.deleteMany({ 
+      $or: [
+        { customerId: req.user.id },
+        { providerId: req.user.id }
+      ]
+    });
+
+    await ServiceRequest.deleteMany({
+      $or: [
+        { customerId: req.user.id },
+        { providerId: req.user.id }
+      ]
+    });
+
+    res.json({
+      success: true,
+      message: 'Account deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete account error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete account'
     });
   }
 });
@@ -4051,6 +4553,17 @@ app.post('/api/bookings', authenticateToken, async (req, res) => {
       }
     }
 
+    await Notification.createNotification({
+      userId: providerId,
+      type: 'booking',
+      title: 'New Booking Request',
+      message: `You have a new booking request for ${serviceType}`,
+      relatedId: savedBooking._id,
+      relatedType: 'booking',
+      priority: 'high'
+    });
+
+
     res.status(201).json({
       success: true,
       message: 'Booking request sent successfully',
@@ -4522,28 +5035,30 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
+    const unreadOnly = req.query.unreadOnly === 'true';
+
+    let filter = { userId: req.user.id };
+    if (unreadOnly) {
+      filter.isRead = false;
+    }
 
     const options = {
       page,
       limit,
-      sort: { createdAt: -1 },
-      where: { userId: req.user.id }
+      sort: { createdAt: -1 }
     };
 
-    const result = await Notification.paginate({ userId: req.user.id }, options);
-    const unreadCount = await Notification.countDocuments({ 
-      userId: req.user.id, 
-      read: false 
-    });
+    const result = await Notification.paginate(filter, options);
 
     res.json({
       success: true,
       data: {
         notifications: result.docs,
-        unreadCount,
         totalDocs: result.totalDocs,
         totalPages: result.totalPages,
-        currentPage: result.page
+        page: result.page,
+        hasNextPage: result.hasNextPage,
+        hasPrevPage: result.hasPrevPage
       }
     });
   } catch (error) {
@@ -4551,6 +5066,26 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch notifications'
+    });
+  }
+});
+
+app.get('/api/notifications/unread-count', authenticateToken, async (req, res) => {
+  try {
+    const count = await Notification.countDocuments({
+      userId: req.user.id,
+      isRead: false
+    });
+
+    res.json({
+      success: true,
+      data: { count }
+    });
+  } catch (error) {
+    console.error('Get unread count error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch unread count'
     });
   }
 });
@@ -4570,8 +5105,7 @@ app.patch('/api/notifications/:id/read', authenticateToken, async (req, res) => 
       });
     }
 
-    notification.read = true;
-    notification.readAt = new Date();
+    notification.isRead = true;
     await notification.save();
 
     res.json({
@@ -4587,7 +5121,54 @@ app.patch('/api/notifications/:id/read', authenticateToken, async (req, res) => 
   }
 });
 
+app.patch('/api/notifications/mark-all-read', authenticateToken, async (req, res) => {
+  try {
+    await Notification.updateMany(
+      { userId: req.user.id, isRead: false },
+      { isRead: true }
+    );
 
+    res.json({
+      success: true,
+      message: 'All notifications marked as read'
+    });
+  } catch (error) {
+    console.error('Mark all notifications as read error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to mark all notifications as read'
+    });
+  }
+});
+
+
+app.post('/api/notifications', authenticateToken, async (req, res) => {
+  try {
+    const { userId, type, title, message, relatedId, relatedType, priority } = req.body;
+
+    const notification = await Notification.createNotification({
+      userId,
+      type,
+      title,
+      message,
+      relatedId,
+      relatedType,
+      priority: priority || 'medium'
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Notification created',
+      data: { notification }
+    });
+  } catch (error) {
+    console.error('Create notification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create notification'
+    });
+  }
+});
 
 
 app.get('/api/jobs', authenticateToken, async (req, res) => {
@@ -4761,6 +5342,16 @@ app.post('/api/jobs/:id/apply', authenticateToken, async (req, res) => {
     // Populate the updated job
     await job.populate('customerId', 'name email phoneNumber');
     await job.populate('providerId', 'name email phoneNumber profileImage');
+
+    await Notification.createNotification({
+      userId: job.customerId,
+      type: 'job_applied',
+      title: 'New Job Application',
+      message: `A provider has applied for your ${job.serviceType} job`,
+      relatedId: job._id,
+      relatedType: 'job',
+      priority: 'medium'
+    });
     
     res.json({
       success: true,
@@ -4775,6 +5366,41 @@ app.post('/api/jobs/:id/apply', authenticateToken, async (req, res) => {
     });
   }
 });
+
+app.patch('/api/jobs/:id/accept', authenticateToken, async (req, res) => {
+  try {
+    const job = await ServiceRequest.findById(req.params.id);
+    
+    // Update job status to accepted
+    job.status = 'accepted';
+    job.providerId = req.user.id; // or the provider who applied
+    await job.save();
+
+    // Create notification for the provider who applied
+    await Notification.createNotification({
+      userId: req.user.id, // or the provider ID
+      type: 'job_accepted',
+      title: 'Job Application Accepted!',
+      message: `Your application for ${job.serviceType} has been accepted`,
+      relatedId: job._id,
+      relatedType: 'job',
+      priority: 'high'
+    });
+
+    res.json({
+      success: true,
+      message: 'Job accepted successfully',
+      data: job
+    });
+  } catch (error) {
+    console.error('Accept job error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to accept job'
+    });
+  }
+});
+
 
 // Update job status (complete, cancel, etc.)
 app.patch('/api/jobs/:id/status', authenticateToken, async (req, res) => {
@@ -5160,6 +5786,18 @@ app.post('/api/messages/send', authenticateToken, async (req, res) => {
 
     // Populate sender info
     await message.populate('senderId', 'name profileImage');
+
+    if (recipientId) {
+      await Notification.createNotification({
+        userId: recipientId,
+        type: 'message',
+        title: 'New Message',
+        message: `You have a new message from ${req.user.name}`,
+        relatedId: conversationId,
+        relatedType: 'conversation',
+        priority: 'high'
+      });
+    }
 
     res.status(201).json({
       success: true,
@@ -5928,6 +6566,34 @@ function cleanupOldCalls() {
 // Clean up every 5 minutes
 setInterval(cleanupOldCalls, 300000);
 // Profile endpoints
+// app.get('/api/auth/profile', authenticateToken, async (req, res) => {
+//   try {
+//     const user = await User.findById(req.user.id).select('-password');
+//     if (!user) {
+//       return res.status(404).json({
+//         success: false,
+//         message: 'User not found'
+//       });
+//     }
+
+//     const userWithProfileImage = {
+//       ...user.toObject(),
+//       profileImage: user.profilePicture || ''
+//     };
+
+//     res.json({
+//       success: true,
+//       data: { user: userWithProfileImage }
+//     });
+//   } catch (error) {
+//     console.error('Profile error:', error);
+//     res.status(500).json({
+//       success: false,
+//       message: 'Failed to fetch user profile'
+//     });
+//   }
+// });
+
 app.get('/api/auth/profile', authenticateToken, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password');
@@ -5938,14 +6604,22 @@ app.get('/api/auth/profile', authenticateToken, async (req, res) => {
       });
     }
 
-    const userWithProfileImage = {
-      ...user.toObject(),
-      profileImage: user.profilePicture || ''
+    const profileData = {
+      name: user.name,
+      email: user.email,
+      phone: user.phoneNumber || '',
+      address: user.address || '',
+      bio: user.bio || '',
+      avatar: user.profileImage ? `${req.protocol}://${req.get('host')}${user.profileImage}` : '',
+      role: user.userType || 'customer',
+      city: user.city || '',
+      state: user.state || '',
+      country: user.country || ''
     };
 
     res.json({
       success: true,
-      data: { user: userWithProfileImage }
+      data: { user: profileData }
     });
   } catch (error) {
     console.error('Profile error:', error);
@@ -5956,41 +6630,516 @@ app.get('/api/auth/profile', authenticateToken, async (req, res) => {
   }
 });
 
+
+
 // Keep your existing PUT endpoint
 app.put('/api/auth/profile', authenticateToken, async (req, res) => {
-  console.log('Sending data to backend:', {
-  ...editForm,
-  city: editForm.city,
-  state: editForm.state,
-  country: editForm.country
-});
   try {
-    const { 
-      name, 
-      phoneNumber, 
-      address, 
-      city,        // Make sure these are included
-      state,       // in the destructuring
-      country,     // here
-      services, 
-      hourlyRate, 
-      experience, 
-      profileImage 
-    } = req.body;
+    const { name, phone, address, bio, city, state, country } = req.body;
     
     const updateData = {};
     if (name) updateData.name = name.trim();
-    if (phoneNumber) updateData.phoneNumber = phoneNumber;
-    if (address) updateData.address = address;
-    if (city) updateData.city = city;           // Make sure these are
-    if (state) updateData.state = state;        // being added to
-    if (country) updateData.country = country;  // updateData object
-    
-    // ... rest of the code
+    if (phone !== undefined) updateData.phoneNumber = phone;
+    if (address !== undefined) updateData.address = address;
+    if (bio !== undefined) updateData.bio = bio;
+    if (city !== undefined) updateData.city = city;
+    if (state !== undefined) updateData.state = state;
+    if (country !== undefined) updateData.country = country;
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user.id,
+      updateData,
+      { new: true, runValidators: true }
+    ).select('-password');
+
+    if (!updatedUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const profileData = {
+      name: updatedUser.name,
+      email: updatedUser.email,
+      phone: updatedUser.phoneNumber || '',
+      address: updatedUser.address || '',
+      bio: updatedUser.bio || '',
+      avatar: updatedUser.profileImage ? `${req.protocol}://${req.get('host')}${updatedUser.profileImage}` : '',
+      role: updatedUser.userType || 'customer',
+      city: updatedUser.city || '',
+      state: updatedUser.state || '',
+      country: updatedUser.country || ''
+    };
+
+    res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      data: { user: profileData }
+    });
   } catch (error) {
-    // error handling
+    console.error('Profile update error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update profile',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
   }
 });
+
+
+app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Current password and new password are required'
+      });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Verify current password
+    const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password);
+    if (!isCurrentPasswordValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Current password is incorrect'
+      });
+    }
+
+    // Hash new password
+    const hashedNewPassword = await bcrypt.hash(newPassword, 10);
+    user.password = hashedNewPassword;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Password changed successfully'
+    });
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to change password'
+    });
+  }
+});
+
+// Preferences endpoints
+app.put('/api/auth/preferences', authenticateToken, async (req, res) => {
+  try {
+    const { preferences } = req.body;
+
+    if (!preferences) {
+      return res.status(400).json({
+        success: false,
+        message: 'Preferences data is required'
+      });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Update user preferences
+    user.preferences = {
+      ...user.preferences,
+      ...preferences
+    };
+
+    // Also update notification settings for compatibility
+    user.notificationSettings = {
+      ...user.notificationSettings,
+      ...preferences
+    };
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Preferences updated successfully',
+      data: {
+        preferences: user.preferences
+      }
+    });
+  } catch (error) {
+    console.error('Update preferences error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update preferences'
+    });
+  }
+});
+
+
+
+// Activity endpoints
+app.get('/api/auth/activity', authenticateToken, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    // Get user bookings as activity
+    const bookings = await Booking.find({
+      $or: [
+        { customerId: req.user.id },
+        { providerId: req.user.id }
+      ]
+    })
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit)
+    .populate('customerId', 'name profileImage')
+    .populate('providerId', 'name profileImage');
+
+    // Get service requests as activity
+    const serviceRequests = await ServiceRequest.find({
+      $or: [
+        { customerId: req.user.id },
+        { providerId: req.user.id }
+      ]
+    })
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit)
+    .populate('customerId', 'name profileImage')
+    .populate('providerId', 'name profileImage');
+
+    // Get messages as activity
+    const messages = await Message.find({
+      $or: [
+        { senderId: req.user.id },
+        { conversationId: { 
+            $in: await Conversation.find({ participants: req.user.id }).select('_id') 
+        }}
+      ]
+    })
+    .sort({ timestamp: -1 })
+    .skip(skip)
+    .limit(limit)
+    .populate('senderId', 'name profileImage');
+
+    // Combine and format activities
+    const activities = [];
+
+    // Add bookings to activities
+    bookings.forEach(booking => {
+      const isCustomer = booking.customerId?._id.toString() === req.user.id;
+      activities.push({
+        id: booking._id,
+        type: 'booking',
+        action: isCustomer ? `Booked ${booking.serviceType}` : `Received booking for ${booking.serviceType}`,
+        provider: booking.providerId?.name || 'Unknown Provider',
+        customer: booking.customerId?.name || 'Unknown Customer',
+        date: booking.createdAt,
+        status: booking.status,
+        timestamp: booking.createdAt
+      });
+    });
+
+    // Add service requests to activities
+    serviceRequests.forEach(request => {
+      const isCustomer = request.customerId?._id.toString() === req.user.id;
+      activities.push({
+        id: request._id,
+        type: 'service_request',
+        action: isCustomer ? `Posted ${request.serviceType} request` : `Applied for ${request.serviceType} request`,
+        provider: request.providerId?.name || 'Unknown Provider',
+        customer: request.customerId?.name || 'Unknown Customer',
+        date: request.createdAt,
+        status: request.status,
+        timestamp: request.createdAt
+      });
+    });
+
+    // Add messages to activities (only unique conversations)
+    const uniqueConversations = new Set();
+    messages.forEach(message => {
+      const conversationKey = message.conversationId.toString();
+      if (!uniqueConversations.has(conversationKey)) {
+        uniqueConversations.add(conversationKey);
+        const isSender = message.senderId?._id.toString() === req.user.id;
+        activities.push({
+          id: message._id,
+          type: 'message',
+          action: isSender ? 'Message sent' : 'Message received',
+          provider: !isSender ? message.senderId?.name : 'You',
+          customer: isSender ? 'You' : message.senderId?.name,
+          date: message.timestamp,
+          status: 'delivered',
+          timestamp: message.timestamp
+        });
+      }
+    });
+
+    // Sort all activities by timestamp and limit to requested count
+    activities.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    const paginatedActivities = activities.slice(0, limit);
+
+    // Format dates for display
+    const formattedActivities = paginatedActivities.map(activity => ({
+      ...activity,
+      displayDate: formatActivityDate(activity.timestamp)
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        activities: formattedActivities,
+        pagination: {
+          currentPage: page,
+          totalPages: Math.ceil(activities.length / limit),
+          totalActivities: activities.length
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get activity error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch activity'
+    });
+  }
+});
+
+function formatActivityDate(date) {
+  const now = new Date();
+  const activityDate = new Date(date);
+  const diffInMs = now - activityDate;
+  const diffInHours = diffInMs / (1000 * 60 * 60);
+  const diffInDays = diffInHours / 24;
+
+  if (diffInHours < 1) {
+    return 'Just now';
+  } else if (diffInHours < 24) {
+    const hours = Math.floor(diffInHours);
+    return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+  } else if (diffInDays < 7) {
+    const days = Math.floor(diffInDays);
+    return `${days} ${days === 1 ? 'day' : 'days'} ago`;
+  } else if (diffInDays < 30) {
+    const weeks = Math.floor(diffInDays / 7);
+    return `${weeks} ${weeks === 1 ? 'week' : 'weeks'} ago`;
+  } else {
+    return activityDate.toLocaleDateString();
+  }
+}
+
+
+app.post('/api/bookings/reschedule', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId, newDate, newTime, reason, providerId, customerId } = req.body;
+
+    // Validate required fields
+    if (!bookingId || !newDate || !newTime || !reason) {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking ID, new date, new time, and reason are required'
+      });
+    }
+
+    // Find the booking
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Verify the user owns this booking
+    if (booking.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to reschedule this booking'
+      });
+    }
+
+    // Create reschedule request (you might want to create a separate RescheduleRequest model)
+    const rescheduleRequest = {
+      bookingId,
+      originalDate: booking.requestedAt,
+      newDate: new Date(`${newDate} ${newTime}`),
+      reason,
+      requestedBy: req.user.id,
+      status: 'pending',
+      createdAt: new Date()
+    };
+
+    // Update booking status to indicate reschedule request
+    booking.status = 'reschedule_requested';
+    booking.rescheduleRequests = booking.rescheduleRequests || [];
+    booking.rescheduleRequests.push(rescheduleRequest);
+    
+    await booking.save();
+
+    // Send notification to provider (you can implement this)
+    console.log(`Reschedule request submitted for booking: ${bookingId}`);
+
+    res.json({
+      success: true,
+      message: 'Reschedule request submitted successfully',
+      data: { rescheduleRequest }
+    });
+
+  } catch (error) {
+    console.error('Reschedule booking error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to submit reschedule request',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.get('/api/service-requests/:id/proposals', authenticateToken, async (req, res) => {
+  try {
+    const serviceRequestId = req.params.id;
+    
+    // Verify the user owns this service request
+    const serviceRequest = await ServiceRequest.findById(serviceRequestId);
+    if (!serviceRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service request not found'
+      });
+    }
+
+    if (serviceRequest.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to view proposals for this service request'
+      });
+    }
+
+    // In a real implementation, you would have a Proposal model
+    // For now, return mock data or implement your Proposal model
+    const proposals = []; // This would be populated from your Proposal model
+
+    res.json({
+      success: true,
+      data: { proposals }
+    });
+  } catch (error) {
+    console.error('Get proposals error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch proposals'
+    });
+  }
+});
+
+app.put('/api/service-requests/:id', authenticateToken, async (req, res) => {
+  try {
+    const { serviceType, description, location, budget, category, urgency, timeframe } = req.body;
+    
+    const serviceRequest = await ServiceRequest.findById(req.params.id);
+    if (!serviceRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service request not found'
+      });
+    }
+
+    // Verify the user owns this service request
+    if (serviceRequest.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to update this service request'
+      });
+    }
+
+    // Update fields
+    if (serviceType) serviceRequest.serviceType = serviceType;
+    if (description) serviceRequest.description = description;
+    if (location) serviceRequest.location = location;
+    if (budget) serviceRequest.budget = budget;
+    if (category) serviceRequest.category = category;
+    if (urgency) serviceRequest.urgency = urgency;
+    if (timeframe) serviceRequest.timeframe = timeframe;
+
+    await serviceRequest.save();
+
+    res.json({
+      success: true,
+      message: 'Service request updated successfully',
+      data: serviceRequest
+    });
+  } catch (error) {
+    console.error('Update service request error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update service request'
+    });
+  }
+});
+
+
+app.delete('/api/service-requests/:id', authenticateToken, async (req, res) => {
+  try {
+    const serviceRequest = await ServiceRequest.findById(req.params.id);
+    if (!serviceRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service request not found'
+      });
+    }
+
+    // Verify the user owns this service request
+    if (serviceRequest.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to delete this service request'
+      });
+    }
+
+    await ServiceRequest.findByIdAndDelete(req.params.id);
+
+    res.json({
+      success: true,
+      message: 'Service request deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete service request error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete service request'
+    });
+  }
+});
+
+app.post('/api/proposals/:id/accept', authenticateToken, async (req, res) => {
+  try {
+    // In a real implementation, you would update the proposal status
+    // and potentially create a booking
+    
+    res.json({
+      success: true,
+      message: 'Proposal accepted successfully'
+    });
+  } catch (error) {
+    console.error('Accept proposal error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to accept proposal'
+    });
+  }
+});
+
 
 app.get('/api/debug/sms-config', (req, res) => {
   const config = {
