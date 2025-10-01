@@ -436,40 +436,66 @@ function authenticateToken(req, res, next) {
     });
   }
 
-  jwt.verify(token, JWT_SECRET, async (err, decoded) => {
-    if (err) {
-      console.error('JWT verification error:', err);
-      return res.status(403).json({
-        success: false,
-        message: 'Invalid or expired token'
-      });
-    }
-    
-    try {
-      const user = await User.findById(decoded.id).select('-password');
-      if (!user) {
-        return res.status(403).json({
+  // Set timeout for JWT verification
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error('JWT verification timeout')), 10000);
+  });
+
+  const verifyPromise = new Promise((resolve, reject) => {
+    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
+      if (err) {
+        console.error('JWT verification error:', err);
+        return reject(new Error('Invalid or expired token'));
+      }
+      
+      try {
+        const user = await User.findById(decoded.id)
+          .select('-password')
+          .maxTimeMS(10000); // 10 second timeout
+        
+        if (!user) {
+          return reject(new Error('User not found'));
+        }
+        
+        req.user = {
+          id: user._id.toString(),
+          userType: user.userType,
+          email: user.email,
+          name: user.name
+        };
+        
+        resolve();
+      } catch (dbError) {
+        console.error('Database error in auth middleware:', dbError);
+        reject(new Error('Error verifying user'));
+      }
+    });
+  });
+
+  Promise.race([verifyPromise, timeoutPromise])
+    .then(() => next())
+    .catch(error => {
+      console.error('Auth middleware error:', error.message);
+      
+      if (error.message.includes('timeout')) {
+        return res.status(503).json({
           success: false,
-          message: 'User not found'
+          message: 'Service temporarily unavailable'
         });
       }
       
-      req.user = {
-        id: user._id.toString(),
-        userType: user.userType,
-        email: user.email,
-        name: user.name
-      };
+      if (error.message.includes('Invalid') || error.message.includes('expired')) {
+        return res.status(403).json({
+          success: false,
+          message: error.message
+        });
+      }
       
-      next();
-    } catch (error) {
-      console.error('Error verifying user:', error);
-      return res.status(500).json({
+      res.status(500).json({
         success: false,
-        message: 'Error verifying user'
+        message: 'Authentication error'
       });
-    }
-  });
+    });
 }
 
 
