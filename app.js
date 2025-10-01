@@ -118,6 +118,24 @@ const connectDB = async () => {
       throw new Error(`Invalid MongoDB URI format. Expected "mongodb://" or "mongodb+srv://", got: ${MONGODB_URI.substring(0, 20)}...`);
     }
     
+    try {
+    const MONGODB_URI = process.env.MONGODB_URI;
+    
+    if (!MONGODB_URI) {
+      throw new Error('MONGODB_URI is not defined');
+    }
+
+    const conn = await mongoose.connect(MONGODB_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+
+    console.log(`MongoDB Connected: ${conn.connection.host}`);
+  } catch (error) {
+    console.error('Database connection error:', error.message);
+    process.exit(1);
+  }
+
     console.log('✅ MongoDB URI format is valid');
     
     const mongooseOptions = {
@@ -7788,20 +7806,12 @@ process.on('SIGTERM', async () => {
 
 // Start server
 const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`HomeHero API server running on http://localhost:${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/api/health`);
-  console.log(`Upload health check: http://localhost:${PORT}/api/health/upload`);
-  console.log(`Email verification enabled: ${!!process.env.EMAIL_USER && !!process.env.EMAIL_PASSWORD}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`HomeHero API server running on port ${PORT}`);
+  console.log(`Health check: http://0.0.0.0:${PORT}/api/health`);
+  console.log(`Environment: ${process.env.NODE_ENV}`);
 }).on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`Port ${PORT} is already in use.`);
-    console.log(`Try: PORT=3002 npm run dev`);
-    console.log(`Or kill process: lsof -ti:${PORT} | xargs kill -9`);
-    process.exit(1);
-  } else {
-    console.error('Server error:', err);
-  }
+  console.error('Server error:', err);
+  process.exit(1);
 });
 
 process.on('unhandledRejection', (err, promise) => {
