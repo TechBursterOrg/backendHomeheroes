@@ -237,6 +237,39 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin','Cache-Control', 'Pragma']
 }));
 
+app.post('/api/debug/test-email-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is required'
+      });
+    }
+
+    const verificationToken = '123456';
+    const emailResult = await sendVerificationEmail(
+      { email, name: 'Test User' },
+      verificationToken
+    );
+
+    res.json({
+      success: emailResult.success,
+      message: emailResult.success ? 'Test email sent successfully' : 'Failed to send test email',
+      debugToken: verificationToken,
+      emailResult
+    });
+  } catch (error) {
+    console.error('Test email verification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Test failed',
+      error: error.message
+    });
+  }
+});
+
 app.options('*', cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
@@ -4626,54 +4659,22 @@ app.get('/api/bookings/provider', authenticateToken, async (req, res) => {
 
 app.post('/api/schedule', authenticateToken, async (req, res) => {
   try {
-    const scheduleData = {
-      ...req.body,
-      providerId: req.user.id,
-      status: 'confirmed'
-    };
+    const scheduleData = req.body;
     
-    const newAppointment = new Schedule(scheduleData);
-    await newAppointment.save();
+    // Save to your database (adjust based on your schema)
+    const newScheduleEntry = new Schedule(scheduleData);
+    await newScheduleEntry.save();
     
     res.json({
       success: true,
-      message: 'Appointment created successfully',
-      data: newAppointment
+      message: 'Booking added to schedule successfully',
+      data: newScheduleEntry
     });
   } catch (error) {
-    console.error('Create appointment error:', error);
+    console.error('Add to schedule error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to create appointment'
-    });
-  }
-});
-
-app.put('/api/schedule/:id', authenticateToken, async (req, res) => {
-  try {
-    const appointment = await Schedule.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true }
-    );
-    
-    if (!appointment) {
-      return res.status(404).json({
-        success: false,
-        message: 'Appointment not found'
-      });
-    }
-    
-    res.json({
-      success: true,
-      message: 'Appointment updated successfully',
-      data: appointment
-    });
-  } catch (error) {
-    console.error('Update appointment error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update appointment'
+      message: 'Failed to add booking to schedule'
     });
   }
 });

@@ -374,21 +374,25 @@ router.post('/login', loginValidation, async (req, res) => {
   }
 });
 
-router.post('/verify-email', async (req, res) => {
-  
-  try {
-    const { token } = req.body;
 
-    if (!token) {
+router.post('/verify-email', async (req, res) => {
+  try {
+    const { email, token } = req.body;
+
+    console.log('✅ Verifying email:', { email, token });
+
+    if (!email || !token) {
       return res.status(400).json({
         success: false,
-        message: 'Verification token is required'
+        message: 'Email and verification token are required'
       });
     }
 
+    // Find user by email and verification token
     const user = await User.findOne({
+      email: email.toLowerCase(),
       emailVerificationToken: token,
-      emailVerificationExpires: { $gt: Date.now() }
+      emailVerificationExpires: { $gt: new Date() }
     });
 
     if (!user) {
@@ -398,49 +402,27 @@ router.post('/verify-email', async (req, res) => {
       });
     }
 
+    // Update user verification status
     user.isEmailVerified = true;
     user.emailVerificationToken = null;
     user.emailVerificationExpires = null;
     await user.save();
 
-    const authToken = jwt.sign(
-      { 
-        id: user._id, 
-        email: user.email, 
-        userType: user.userType,
-        isEmailVerified: user.isEmailVerified
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: '24h' }
-    );
-
     res.json({
       success: true,
-      message: 'Email verified successfully!',
-      data: {
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          userType: user.userType,
-          country: user.country,
-          isEmailVerified: user.isEmailVerified
-        },
-        token: authToken,
-        redirectTo: user.userType === 'provider' || user.userType === 'both' 
-          ? '/provider/dashboard' 
-          : '/customer'
-      }
+      message: 'Email verified successfully'
     });
 
   } catch (error) {
-    console.error('Email verification error:', error);
+    console.error('Verify email error:', error);
     res.status(500).json({
       success: false,
-      message: 'Internal server error. Please try again later.'
+      message: 'Failed to verify email',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
+
 
 router.post('/resend-verification', async (req, res) => {
   try {
@@ -449,12 +431,12 @@ router.post('/resend-verification', async (req, res) => {
     if (!email) {
       return res.status(400).json({
         success: false,
-        message: 'Email address is required'
+        message: 'Email is required'
       });
     }
 
     const user = await User.findOne({ email: email.toLowerCase() });
-
+    
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -469,190 +451,108 @@ router.post('/resend-verification', async (req, res) => {
       });
     }
 
-    const verificationToken = generateVerificationToken();
+    // Generate new verification token
+    const verificationToken = crypto.randomInt(100000, 999999).toString();
+    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
     user.emailVerificationToken = verificationToken;
-    user.emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    user.emailVerificationExpires = verificationExpires;
     await user.save();
 
-    try {
-      await sendVerificationEmail(user, verificationToken);
-      
-      res.json({
+    // Send verification email
+    const emailResult = await sendVerificationEmail(user, verificationToken);
+
+    if (emailResult.success) {
+      const response = {
         success: true,
-        message: 'Verification email sent successfully! Please check your inbox.'
-      });
-    } catch (emailError) {
-      console.error('Email sending failed:', emailError);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to send verification email. Please try again later.'
-      });
+        message: 'Verification email resent successfully'
+      };
+
+      if (process.env.NODE_ENV === 'development') {
+        response.data = { debugToken: verificationToken };
+      }
+
+      res.json(response);
+    } else {
+      throw new Error('Failed to resend verification email');
     }
 
   } catch (error) {
     console.error('Resend verification error:', error);
     res.status(500).json({
       success: false,
-      message: 'Internal server error. Please try again later.'
+      message: 'Failed to resend verification email',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
+
 
 router.post('/send-verification', async (req, res) => {
   try {
-    const { phoneNumber, country } = req.body;
+    const { email } = req.body;
 
-    if (!phoneNumber || !country) {
+    console.log('📧 Sending email verification to:', email);
+
+    if (!email) {
       return res.status(400).json({
         success: false,
-        message: 'Phone number and country are required'
+        message: 'Email is required'
       });
     }
 
-    // Validate phone number format based on country
-    const countryData = {
-      NIGERIA: { 
-        pattern: /^[0-9]{10}$/, 
-        code: '+234', 
-        name: 'Nigeria', 
-        expectedDigits: 10 
-      },
-      UK: { 
-        pattern: /^[0-9]{10}$/, 
-        code: '+44', 
-        name: 'United Kingdom', 
-        expectedDigits: 10 
-      },
-      USA: { 
-        pattern: /^[0-9]{10}$/, 
-        code: '+1', 
-        name: 'United States', 
-        expectedDigits: 10 
-      },
-      CANADA: { 
-        pattern: /^[0-9]{10}$/, 
-        code: '+1', 
-        name: 'Canada', 
-        expectedDigits: 10 
-      }
-    };
-
-    const countryInfo = countryData[country];
-    if (!countryInfo) {
+    // Check if user exists with this email
+    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    if (existingUser && existingUser.isEmailVerified) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid country selected'
+        message: 'Email is already verified'
       });
     }
 
-    // Clean phone number (remove any non-digit characters)
-    const cleanPhoneNumber = phoneNumber.replace(/\D/g, '');
-    
-    console.log('🔍 Phone validation:', {
-      original: phoneNumber,
-      cleaned: cleanPhoneNumber,
-      country: country,
-      expectedLength: countryInfo.expectedDigits,
-      actualLength: cleanPhoneNumber.length
-    });
-
-    // Check length first
-    if (cleanPhoneNumber.length !== countryInfo.expectedDigits) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid phone number format for ${countryInfo.name}. Expected ${countryInfo.expectedDigits} digits.`
-      });
-    }
-
-    // Then check pattern
-    if (!countryInfo.pattern.test(cleanPhoneNumber)) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid phone number format for ${countryInfo.name}.`
-      });
-    }
-
-    // Check if phone number is already registered and verified
-    const existingUser = await User.findOne({ 
-      phoneNumber: cleanPhoneNumber,
-      country: country,
-      isPhoneVerified: true
-    });
+    // Generate verification token
+    const verificationToken = crypto.randomInt(100000, 999999).toString();
+    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
 
     if (existingUser) {
-      return res.status(409).json({
-        success: false,
-        message: 'This phone number is already registered and verified'
-      });
+      // Update existing user
+      existingUser.emailVerificationToken = verificationToken;
+      existingUser.emailVerificationExpires = verificationExpires;
+      await existingUser.save();
     }
 
-    const token = Math.floor(100000 + Math.random() * 900000).toString();
-
-    // Store verification token in database
-    const verificationToken = await VerificationToken.findOneAndUpdate(
-      { phoneNumber: cleanPhoneNumber, country },
-      {
-        token,
-        expiresAt: new Date(Date.now() + 5 * 60 * 1000), // 5 minutes
-        verified: false
-      },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
+    // Send verification email
+    const emailResult = await sendVerificationEmail(
+      { email, name: existingUser?.name || 'User' },
+      verificationToken
     );
 
-    // Format phone number with country code
-    const fullPhoneNumber = smsService.formatPhoneNumberWithCountryCode(cleanPhoneNumber, countryInfo.code);
-    
-    // Send SMS
-    const smsResult = await smsService.sendVerificationCode(fullPhoneNumber, token);
+    if (emailResult.success) {
+      // In development, return the token for testing
+      const response = {
+        success: true,
+        message: 'Verification email sent successfully'
+      };
 
-    console.log(`📱 Verification token for ${fullPhoneNumber}: ${token}`);
-    console.log('✅ SMS sending result:', {
-      provider: smsResult.provider,
-      success: smsResult.success,
-      messageId: smsResult.messageId
-    });
-
-    const response = {
-      success: true,
-      message: `Verification code sent to ${fullPhoneNumber}`,
-      data: {
-        provider: smsResult.provider,
-        phoneNumber: fullPhoneNumber
+      if (process.env.NODE_ENV === 'development') {
+        response.data = { debugToken: verificationToken };
       }
-    };
 
-    // Include debug token in development
-    if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test') {
-      response.data.debugToken = token;
+      res.json(response);
+    } else {
+      throw new Error('Failed to send verification email');
     }
-
-    res.json(response);
 
   } catch (error) {
-    console.error('❌ Send verification error:', error);
-    
-    let errorMessage = 'Failed to send verification code';
-    let statusCode = 500;
-
-    if (error.message.includes('Invalid phone number')) {
-      errorMessage = 'Invalid phone number format';
-      statusCode = 400;
-    } else if (error.message.includes('Twilio')) {
-      errorMessage = 'SMS service temporarily unavailable. Please try again.';
-    } else if (error.message.includes('validation') || error.message.includes('pattern')) {
-      errorMessage = 'Invalid phone number format';
-      statusCode = 400;
-    }
-
-    res.status(statusCode).json({
+    console.error('Send email verification error:', error);
+    res.status(500).json({
       success: false,
-      message: errorMessage,
-      ...(process.env.NODE_ENV === 'development' && { 
-        debug: error.message 
-      })
+      message: 'Failed to send verification email. Please try again.',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
+
 
 router.post('/verify-phone', async (req, res) => {
   try {
