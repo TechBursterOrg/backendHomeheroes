@@ -640,41 +640,41 @@ app.post('/api/debug/send-test-email', async (req, res) => {
       });
     }
 
-    const { initializeEmailTransporter, getEmailTransporter } = await import('./utils/emailService.js');
+    // const { initializeEmailTransporter, getEmailTransporter } = await import('./utils/emailService.js');
     
-    console.log('🧪 Testing email sending to:', email);
+    // console.log('🧪 Testing email sending to:', email);
     
-    // Ensure transporter is initialized
-    await initializeEmailTransporter();
-    const transporter = getEmailTransporter();
+    // // Ensure transporter is initialized
+    // await initializeEmailTransporter();
+    // const transporter = getEmailTransporter();
     
-    if (!transporter) {
-      return res.status(500).json({
-        success: false,
-        message: 'Email transporter not available'
-      });
-    }
+    // if (!transporter) {
+    //   return res.status(500).json({
+    //     success: false,
+    //     message: 'Email transporter not available'
+    //   });
+    // }
 
-    const testMailOptions = {
-      from: process.env.EMAIL_USER,
-      to: email,
-      subject: 'HomeHero Production Email Test',
-      text: `This is a test email sent from HomeHero production server at ${new Date().toISOString()}`,
-      html: `
-        <h1>HomeHero Production Test</h1>
-        <p>This email was sent from your production server.</p>
-        <p><strong>Time:</strong> ${new Date().toISOString()}</p>
-        <p><strong>Environment:</strong> ${process.env.NODE_ENV}</p>
-      `
-    };
+    // const testMailOptions = {
+    //   from: process.env.EMAIL_USER,
+    //   to: email,
+    //   subject: 'HomeHero Production Email Test',
+    //   text: `This is a test email sent from HomeHero production server at ${new Date().toISOString()}`,
+    //   html: `
+    //     <h1>HomeHero Production Test</h1>
+    //     <p>This email was sent from your production server.</p>
+    //     <p><strong>Time:</strong> ${new Date().toISOString()}</p>
+    //     <p><strong>Environment:</strong> ${process.env.NODE_ENV}</p>
+    //   `
+    // };
 
-    const result = await transporter.sendMail(testMailOptions);
+    // const result = await transporter.sendMail(testMailOptions);
     
-    res.json({
-      success: true,
-      message: 'Test email sent successfully',
-      messageId: result.messageId
-    });
+    // res.json({
+    //   success: true,
+    //   message: 'Test email sent successfully',
+    //   messageId: result.messageId
+    // });
   } catch (error) {
     console.error('Test email error:', error);
     res.status(500).json({
