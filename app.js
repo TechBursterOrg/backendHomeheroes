@@ -822,7 +822,7 @@ app.get('/api/providers/:id/reviews', async (req, res) => {
   }
 });
 app.post('/api/test-email-simple', async (req, res) => {
-  const transporter = nodemailer.createTransporter({
+  const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
       user: process.env.EMAIL_USER,
@@ -949,7 +949,7 @@ app.get('/api/debug/email-config-detailed', async (req, res) => {
     const transporter = getEmailTransporter();
     
     // Test credentials
-    const testTransporter = nodemailer.createTransporter({
+    const testTransporter = nodemailer.createTransport({
       service: 'gmail',
       auth: {
         user: process.env.EMAIL_USER,

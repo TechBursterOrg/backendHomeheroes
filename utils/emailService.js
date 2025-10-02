@@ -5,43 +5,45 @@ let emailServiceStatus = 'initializing';
 
 export const initializeEmailTransporter = async () => {
   try {
+    console.log('🔧 Initializing email transporter...');
+    console.log('📧 Email config check:', {
+      emailUser: process.env.EMAIL_USER ? 'Set' : 'Not set',
+      emailPassword: process.env.EMAIL_PASSWORD ? 'Set' : 'Not set',
+      environment: process.env.NODE_ENV
+    });
+
     if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
       console.log('❌ Email credentials not configured');
+      emailServiceStatus = 'missing_credentials';
       return false;
     }
 
-    console.log('🔧 Initializing email transporter...');
-    
-    // Create transporter with better timeout settings
-    const transporter = nodemailer.createTransporter({
+    // ✅ CORRECT: Use createTransport (not createTransporter)
+    emailTransporter = nodemailer.createTransport({
       service: 'gmail',
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASSWORD
       },
-      connectionTimeout: 10000, // 10 seconds
+      connectionTimeout: 10000,
       greetingTimeout: 10000,
-      socketTimeout: 10000,
-      logger: true,
-      debug: true
+      socketTimeout: 10000
     });
 
-    // Verify connection with timeout
-    const verifyPromise = transporter.verify();
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Email verification timeout')), 15000);
-    });
-
-    await Promise.race([verifyPromise, timeoutPromise]);
+    // Verify connection
+    console.log('🔍 Verifying email connection...');
+    await emailTransporter.verify();
+    
     console.log('✅ Email transporter initialized successfully');
+    emailServiceStatus = 'ready';
     return true;
     
   } catch (error) {
     console.error('❌ Email transporter initialization failed:', error.message);
+    emailServiceStatus = 'failed';
     return false;
   }
 };
-
 
 export const getEmailTransporter = () => emailTransporter;
 export const getEmailServiceStatus = () => emailServiceStatus;
@@ -53,15 +55,9 @@ export const sendVerificationEmail = async (user, verificationToken) => {
 
     console.log(`📧 Attempting to send verification to: ${email}`);
     console.log(`🔑 Token: ${verificationToken}`);
-    console.log(`📡 Email service status: ${emailServiceStatus}`);
 
-    // If email service is not ready, simulate success
     if (!emailTransporter || emailServiceStatus !== 'ready') {
       console.log('🔄 Email service not available - running in simulation mode');
-      
-      // In simulation mode, we still "successfully" send the email
-      // but just log the token for development purposes
-      console.log('📧 SIMULATION: Verification email would be sent to:', email);
       console.log('🔑 SIMULATION: Verification token:', verificationToken);
       
       return { 
@@ -108,16 +104,11 @@ export const sendVerificationEmail = async (user, verificationToken) => {
 
   } catch (error) {
     console.error('❌ Failed to send verification email:', error.message);
-    
-    // Even if email fails, we don't want to break the signup flow
-    // Log the token so users can still verify
-    console.log('🔑 Verification token (for manual use):', verificationToken);
-    
     return {
       success: false,
       error: error.message,
       simulated: false,
-      fallbackToken: verificationToken // Provide token for manual verification
+      fallbackToken: verificationToken
     };
   }
 };
