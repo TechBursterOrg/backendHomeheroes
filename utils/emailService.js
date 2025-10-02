@@ -7,15 +7,15 @@ export const initializeEmailTransporter = async () => {
   try {
     console.log('🔧 Initializing email transporter...');
     
-    // Debug: Check what credentials are available
+    // Check environment variables
     console.log('🔍 Environment check:');
-    console.log('   MAILJET_API_KEY:', process.env.MAILJET_API_KEY ? `Set (length: ${process.env.MAILJET_API_KEY.length})` : 'Not set');
-    console.log('   MAILJET_SECRET_KEY:', process.env.MAILJET_SECRET_KEY ? `Set (length: ${process.env.MAILJET_SECRET_KEY.length})` : 'Not set');
-    console.log('   EMAIL_USER:', process.env.EMAIL_USER ? 'Set' : 'Not set');
+    console.log('   MAILJET_API_KEY:', process.env.MAILJET_API_KEY ? 'Set' : 'Not set');
+    console.log('   MAILJET_SECRET_KEY:', process.env.MAILJET_SECRET_KEY ? 'Set' : 'Not set');
+    console.log('   NODE_ENV:', process.env.NODE_ENV);
     
-    // Try Mailjet first
-    if (process.env.MAILJET_API_KEY && process.env.MAILJET_SECRET_KEY) {
-      console.log('📧 Using Mailjet configuration');
+    // Priority 1: Mailjet in production
+    if (process.env.NODE_ENV === 'production' && process.env.MAILJET_API_KEY && process.env.MAILJET_SECRET_KEY) {
+      console.log('📧 Using Mailjet for production');
       
       emailTransporter = nodemailer.createTransport({
         host: 'in-v3.mailjet.com',
@@ -26,11 +26,10 @@ export const initializeEmailTransporter = async () => {
           pass: process.env.MAILJET_SECRET_KEY
         },
         connectionTimeout: 15000,
-        greetingTimeout: 15000,
         socketTimeout: 15000
       });
-    } 
-    // Fallback to Gmail
+    }
+    // Priority 2: Gmail for development
     else if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
       console.log('📧 Using Gmail configuration');
       
@@ -47,7 +46,6 @@ export const initializeEmailTransporter = async () => {
       return false;
     }
 
-    console.log('🔍 Verifying email connection...');
     await emailTransporter.verify();
     console.log('✅ Email transporter initialized successfully');
     emailServiceStatus = 'ready';
