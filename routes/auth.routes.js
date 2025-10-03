@@ -36,6 +36,11 @@ function authenticateToken(req, res, next) {
     next();
   });
 }
+const generateVerificationToken = () => {
+  return crypto.randomBytes(32).toString('hex');
+};
+
+
 
 // Validation middleware
 const loginValidation = [
@@ -51,6 +56,140 @@ const loginValidation = [
     .isIn(['customer', 'provider'])
     .withMessage('User type must be either customer or provider')
 ];
+
+router.post('/signup', [
+  body('name')
+    .trim()
+    .isLength({ min: 2, max: 50 })
+    .withMessage('Name must be between 2 and 50 characters'),
+  body('email')
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Please provide a valid email address'),
+  body('password')
+    .isLength({ min: 6 })
+    .withMessage('Password must be at least 6 characters long'),
+  body('confirmPassword')
+    .custom((value, { req }) => {
+      if (value !== req.body.password) {
+        throw new Error('Passwords do not match');
+      }
+      return true;
+    }),
+  body('userType')
+    .isIn(['customer', 'provider', 'both'])
+    .withMessage('User type must be customer, provider, or both'),
+  body('country')
+    .isIn(['UK', 'USA', 'CANADA', 'NIGERIA'])
+    .withMessage('Please select a valid country')
+], async (req, res) => {
+  try {
+    console.log('🔧 Signup request received:', {
+      email: req.body.email,
+      userType: req.body.userType,
+      timestamp: new Date().toISOString()
+    });
+
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.log('❌ Validation errors:', errors.array());
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { name, email, password, userType, country, phoneNumber } = req.body;
+
+    // Check for existing user
+    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    if (existingUser) {
+      console.log('⚠️ User already exists:', email);
+      return res.status(409).json({
+        success: false,
+        message: 'An account with this email already exists.'
+      });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Generate verification token
+    const emailVerificationToken = generateVerificationToken();
+    const emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+    // Create user (but don't mark as active until email is verified)
+    const newUser = new User({
+      name: name.trim(),
+      email: email.toLowerCase(),
+      password: hashedPassword,
+      userType,
+      country,
+      phoneNumber: phoneNumber || '',
+      emailVerificationToken,
+      emailVerificationExpires,
+      isEmailVerified: false,
+      isActive: false // User won't be active until email is verified
+    });
+
+    // Save user
+    const savedUser = await newUser.save();
+    console.log('✅ User created (pending verification):', savedUser._id);
+
+    // Send verification email
+    try {
+      console.log('📧 Attempting to send verification email...');
+      
+      const emailResult = await sendVerificationEmail(savedUser, emailVerificationToken);
+      
+      if (emailResult.success) {
+        console.log('✅ Verification email sent successfully');
+        
+        // In development, return the verification link for testing
+        const debugLink = `${process.env.FRONTEND_URL}/verify-email?token=${emailVerificationToken}&email=${encodeURIComponent(savedUser.email)}`;
+        
+        res.status(201).json({
+          success: true,
+          message: 'Account created successfully! Please check your email to verify your account.',
+          data: {
+            user: {
+              id: savedUser._id,
+              name: savedUser.name,
+              email: savedUser.email,
+              userType: savedUser.userType,
+              country: savedUser.country,
+              isEmailVerified: savedUser.isEmailVerified,
+              createdAt: savedUser.createdAt
+            },
+            requiresVerification: true,
+            ...(process.env.NODE_ENV === 'development' && { debugLink })
+          }
+        });
+      } else {
+        // If email fails, delete the user and return error
+        await User.findByIdAndDelete(savedUser._id);
+        throw new Error('Failed to send verification email');
+      }
+    } catch (emailError) {
+      // If email fails, delete the user
+      await User.findByIdAndDelete(savedUser._id);
+      console.error('❌ Email sending failed:', emailError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send verification email. Please try again.'
+      });
+    }
+
+  } catch (error) {
+    console.error('💥 SIGNUP CRITICAL ERROR:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error. Please try again later.'
+    });
+  }
+});
+
 
 const signupValidation = [
   body('name')
@@ -402,15 +541,18 @@ router.post('/verify-email', async (req, res) => {
       });
     }
 
-    // Update user verification status
+    // Update user verification status and activate account
     user.isEmailVerified = true;
+    user.isActive = true;
     user.emailVerificationToken = null;
     user.emailVerificationExpires = null;
     await user.save();
 
+    console.log('✅ Email verified successfully for:', user.email);
+
     res.json({
       success: true,
-      message: 'Email verified successfully'
+      message: 'Email verified successfully! You can now login to your account.'
     });
 
   } catch (error) {
@@ -419,6 +561,111 @@ router.post('/verify-email', async (req, res) => {
       success: false,
       message: 'Failed to verify email',
       ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
+router.post('/login', [
+  body('email')
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Please provide a valid email address'),
+  body('password')
+    .notEmpty()
+    .withMessage('Password is required')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const { email, password } = req.body;
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password'
+      });
+    }
+
+    // Check if email is verified
+    if (!user.isEmailVerified) {
+      return res.status(403).json({
+        success: false,
+        message: 'Please verify your email address before logging in. Check your inbox for the verification link.',
+        requiresVerification: true,
+        email: user.email
+      });
+    }
+
+    // Check if account is active
+    if (!user.isActive) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account is not active. Please contact support.'
+      });
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password'
+      });
+    }
+
+    // Update last login
+    user.lastLogin = new Date();
+    await user.save();
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { 
+        id: user._id, 
+        email: user.email, 
+        userType: user.userType,
+        isEmailVerified: user.isEmailVerified
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    // Determine redirect path based on user type
+    let redirectTo = '/dashboard';
+    if (user.userType === 'provider' || user.userType === 'both') {
+      redirectTo = '/provider/dashboard';
+    } else {
+      redirectTo = '/customer/dashboard';
+    }
+
+    res.json({
+      success: true,
+      message: 'Login successful',
+      data: {
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          userType: user.userType,
+          country: user.country,
+          isEmailVerified: user.isEmailVerified
+        },
+        token,
+        redirectTo
+      }
+    });
+
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
     });
   }
 });
@@ -554,6 +801,76 @@ router.post('/send-verification', async (req, res) => {
 });
 
 
+router.post('/send-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    console.log('📧 Sending email verification to:', email);
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is required'
+      });
+    }
+
+    // Check if user exists with this email
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (user.isEmailVerified) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is already verified'
+      });
+    }
+
+    // Generate new verification token
+    const verificationToken = generateVerificationToken();
+    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    user.emailVerificationToken = verificationToken;
+    user.emailVerificationExpires = verificationExpires;
+    await user.save();
+
+    // Send verification email
+    const emailResult = await sendVerificationEmail(user, verificationToken);
+
+    if (emailResult.success) {
+      const response = {
+        success: true,
+        message: 'Verification email sent successfully'
+      };
+
+      // In development, return the verification link for testing
+      if (process.env.NODE_ENV === 'development') {
+        response.data = { 
+          debugLink: `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}&email=${encodeURIComponent(user.email)}`
+        };
+      }
+
+      res.json(response);
+    } else {
+      throw new Error('Failed to send verification email');
+    }
+
+  } catch (error) {
+    console.error('Send email verification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send verification email. Please try again.',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
+
+
 router.post('/verify-phone', async (req, res) => {
   try {
     const { phoneNumber, country, token } = req.body;
@@ -612,9 +929,7 @@ router.post('/verify-phone', async (req, res) => {
 });
 
 
-const generateVerificationToken = () => {
-  return crypto.randomBytes(32).toString('hex');
-};
+
 
 // SIMPLIFIED email sending function (define it locally)
 
