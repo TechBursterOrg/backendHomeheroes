@@ -42,6 +42,7 @@ const generateVerificationToken = () => {
 
 
 
+
 // Validation middleware
 const loginValidation = [
   body('email')
@@ -58,30 +59,17 @@ const loginValidation = [
 ];
 
 router.post('/signup', [
-  body('name')
-    .trim()
-    .isLength({ min: 2, max: 50 })
-    .withMessage('Name must be between 2 and 50 characters'),
-  body('email')
-    .isEmail()
-    .normalizeEmail()
-    .withMessage('Please provide a valid email address'),
-  body('password')
-    .isLength({ min: 6 })
-    .withMessage('Password must be at least 6 characters long'),
-  body('confirmPassword')
-    .custom((value, { req }) => {
-      if (value !== req.body.password) {
-        throw new Error('Passwords do not match');
-      }
-      return true;
-    }),
-  body('userType')
-    .isIn(['customer', 'provider', 'both'])
-    .withMessage('User type must be customer, provider, or both'),
-  body('country')
-    .isIn(['UK', 'USA', 'CANADA', 'NIGERIA'])
-    .withMessage('Please select a valid country')
+  body('name').trim().isLength({ min: 2, max: 50 }),
+  body('email').isEmail().normalizeEmail(),
+  body('password').isLength({ min: 6 }),
+  body('confirmPassword').custom((value, { req }) => {
+    if (value !== req.body.password) {
+      throw new Error('Passwords do not match');
+    }
+    return true;
+  }),
+  body('userType').isIn(['customer', 'provider', 'both']),
+  body('country').isIn(['UK', 'USA', 'CANADA', 'NIGERIA'])
 ], async (req, res) => {
   try {
     console.log('🔧 Signup request received:', {
@@ -92,7 +80,6 @@ router.post('/signup', [
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.log('❌ Validation errors:', errors.array());
       return res.status(400).json({
         success: false,
         message: 'Validation failed',
@@ -100,12 +87,29 @@ router.post('/signup', [
       });
     }
 
-    const { name, email, password, userType, country, phoneNumber } = req.body;
+    const { name, email, password, userType, country } = req.body;
 
     // Check for existing user
     const existingUser = await User.findOne({ email: email.toLowerCase() });
     if (existingUser) {
-      console.log('⚠️ User already exists:', email);
+      // If user exists but email is not verified, allow resending verification
+      if (!existingUser.isEmailVerified) {
+        // Generate new verification token
+        const newVerificationToken = generateVerificationToken();
+        existingUser.emailVerificationToken = newVerificationToken;
+        existingUser.emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        await existingUser.save();
+
+        // Send verification email with link
+        await sendVerificationEmail(existingUser, newVerificationToken);
+
+        return res.status(200).json({
+          success: true,
+          message: 'Verification email sent again. Please check your email.',
+          requiresVerification: true
+        });
+      }
+      
       return res.status(409).json({
         success: false,
         message: 'An account with this email already exists.'
@@ -116,70 +120,42 @@ router.post('/signup', [
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // Generate verification token
-    const emailVerificationToken = generateVerificationToken();
-    const emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    const verificationToken = generateVerificationToken();
 
-    // Create user (but don't mark as active until email is verified)
+    // Create user but don't mark as active until email is verified
     const newUser = new User({
       name: name.trim(),
       email: email.toLowerCase(),
       password: hashedPassword,
       userType,
       country,
-      phoneNumber: phoneNumber || '',
-      emailVerificationToken,
-      emailVerificationExpires,
+      emailVerificationToken: verificationToken,
+      emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000),
       isEmailVerified: false,
-      isActive: false // User won't be active until email is verified
+      isActive: false // User not active until email verification
     });
 
-    // Save user
     const savedUser = await newUser.save();
     console.log('✅ User created (pending verification):', savedUser._id);
 
-    // Send verification email
-    try {
-      console.log('📧 Attempting to send verification email...');
-      
-      const emailResult = await sendVerificationEmail(savedUser, emailVerificationToken);
-      
-      if (emailResult.success) {
-        console.log('✅ Verification email sent successfully');
-        
-        // In development, return the verification link for testing
-        const debugLink = `${process.env.FRONTEND_URL}/verify-email?token=${emailVerificationToken}&email=${encodeURIComponent(savedUser.email)}`;
-        
-        res.status(201).json({
-          success: true,
-          message: 'Account created successfully! Please check your email to verify your account.',
-          data: {
-            user: {
-              id: savedUser._id,
-              name: savedUser.name,
-              email: savedUser.email,
-              userType: savedUser.userType,
-              country: savedUser.country,
-              isEmailVerified: savedUser.isEmailVerified,
-              createdAt: savedUser.createdAt
-            },
-            requiresVerification: true,
-            ...(process.env.NODE_ENV === 'development' && { debugLink })
-          }
-        });
-      } else {
-        // If email fails, delete the user and return error
-        await User.findByIdAndDelete(savedUser._id);
-        throw new Error('Failed to send verification email');
+    // Send verification email with link
+    const emailResult = await sendVerificationEmail(savedUser, verificationToken);
+
+    res.status(201).json({
+      success: true,
+      message: 'Account created successfully! Please check your email to verify your account.',
+      data: {
+        user: {
+          id: savedUser._id,
+          name: savedUser.name,
+          email: savedUser.email,
+          userType: savedUser.userType,
+          country: savedUser.country,
+          isEmailVerified: savedUser.isEmailVerified
+        },
+        requiresVerification: true
       }
-    } catch (emailError) {
-      // If email fails, delete the user
-      await User.findByIdAndDelete(savedUser._id);
-      console.error('❌ Email sending failed:', emailError);
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to send verification email. Please try again.'
-      });
-    }
+    });
 
   } catch (error) {
     console.error('💥 SIGNUP CRITICAL ERROR:', error);
@@ -189,6 +165,53 @@ router.post('/signup', [
     });
   }
 });
+
+router.get('/verify-email/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+
+    console.log('✅ Verifying email with token:', token);
+
+    if (!token) {
+      return res.status(400).json({
+        success: false,
+        message: 'Verification token is required'
+      });
+    }
+
+    // Find user by verification token
+    const user = await User.findOne({
+      emailVerificationToken: token,
+      emailVerificationExpires: { $gt: new Date() }
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired verification link. Please request a new verification email.'
+      });
+    }
+
+    // Update user verification status and activate account
+    user.isEmailVerified = true;
+    user.isActive = true;
+    user.emailVerificationToken = null;
+    user.emailVerificationExpires = null;
+    await user.save();
+
+    console.log('✅ Email verified successfully for user:', user.email);
+
+    // Redirect to login page with success message
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    res.redirect(`${frontendUrl}/login?message=Email verified successfully! You can now login.`);
+
+  } catch (error) {
+    console.error('Verify email error:', error);
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    res.redirect(`${frontendUrl}/login?error=Failed to verify email. Please try again.`);
+  }
+});
+
 
 
 const signupValidation = [
@@ -699,37 +722,57 @@ router.post('/resend-verification', async (req, res) => {
     }
 
     // Generate new verification token
-    const verificationToken = crypto.randomInt(100000, 999999).toString();
+    const verificationToken = generateVerificationToken();
     const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
     user.emailVerificationToken = verificationToken;
     user.emailVerificationExpires = verificationExpires;
     await user.save();
 
-    // Send verification email
-    const emailResult = await sendVerificationEmail(user, verificationToken);
+    // Send verification email with new link
+    await sendVerificationEmail(user, verificationToken);
 
-    if (emailResult.success) {
-      const response = {
-        success: true,
-        message: 'Verification email resent successfully'
-      };
-
-      if (process.env.NODE_ENV === 'development') {
-        response.data = { debugToken: verificationToken };
-      }
-
-      res.json(response);
-    } else {
-      throw new Error('Failed to resend verification email');
-    }
+    res.json({
+      success: true,
+      message: 'Verification email sent successfully. Please check your email.'
+    });
 
   } catch (error) {
     console.error('Resend verification error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to resend verification email',
-      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+      message: 'Failed to resend verification email'
+    });
+  }
+});
+
+router.get('/verification-status/:email', async (req, res) => {
+  try {
+    const { email } = req.params;
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        isEmailVerified: user.isEmailVerified,
+        hasVerificationToken: !!user.emailVerificationToken,
+        tokenExpires: user.emailVerificationExpires
+      }
+    });
+
+  } catch (error) {
+    console.error('Check verification status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check verification status'
     });
   }
 });
