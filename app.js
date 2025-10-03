@@ -6712,6 +6712,50 @@ app.get('/api/calls/check-answer/:fromUserId', authenticateToken, async (req, re
   }
 });
 
+// Add this to your server.js
+app.post('/api/debug/test-email-production', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    console.log('🧪 Testing production email to:', email);
+    console.log('🔧 Mailjet config:', {
+      hasApiKey: !!process.env.MAILJET_API_KEY,
+      hasSecret: !!process.env.MAILJET_SECRET_KEY,
+      frontendUrl: process.env.FRONTEND_URL
+    });
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is required'
+      });
+    }
+
+    // Test with a simple verification token
+    const testToken = 'test123';
+    const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${testToken}&email=${encodeURIComponent(email)}`;
+    
+    console.log('🔗 Would send verification link:', verificationUrl);
+
+    res.json({
+      success: true,
+      message: 'Email test completed',
+      data: {
+        debugLink: verificationUrl,
+        mailjetConfigured: !!(process.env.MAILJET_API_KEY && process.env.MAILJET_SECRET_KEY),
+        environment: process.env.NODE_ENV
+      }
+    });
+  } catch (error) {
+    console.error('Test email error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Test failed',
+      error: error.message
+    });
+  }
+});
+
 // Clean up old call data
 function cleanupOldCalls() {
   const now = Date.now();
