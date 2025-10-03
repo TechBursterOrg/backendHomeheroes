@@ -56,6 +56,8 @@ const PORT = process.env.PORT || 3001;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://homehero:7cuMFr33u7jhrbOh@homehero.b4bixqd.mongodb.net/homehero?retryWrites=true&w=majority';
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secure-jwt-secret-key-change-in-production-2025';
 
+
+
 // Initialize email transporter
 console.log('🚀 Starting email service initialization...');
 initializeEmailTransporter().then(success => {

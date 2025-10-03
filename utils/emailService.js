@@ -4,10 +4,28 @@ import fetch from 'node-fetch';
 let emailTransporter = null;
 let emailServiceStatus = 'initializing';
 
+// Get correct URLs based on environment
+const getApiUrl = () => {
+  return process.env.API_URL || 
+    (process.env.NODE_ENV === 'production' 
+      ? 'https://backendhomeheroes.onrender.com' 
+      : 'http://localhost:3001');
+};
+
+const getFrontendUrl = () => {
+  return process.env.FRONTEND_URL || 
+    (process.env.NODE_ENV === 'production'
+      ? 'https://homeheroes.help'
+      : 'http://localhost:5173');
+};
+
 // Initialize email transporter
 export const initializeEmailTransporter = async () => {
   try {
     console.log('🔧 Checking email configuration...');
+    console.log('🌐 Environment:', process.env.NODE_ENV);
+    console.log('🔗 API URL:', getApiUrl());
+    console.log('🔗 Frontend URL:', getFrontendUrl());
     
     if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
       console.log('❌ Email credentials not configured, using simulation mode');
@@ -45,16 +63,17 @@ export const initializeEmailTransporter = async () => {
 
 export const getEmailServiceStatus = () => emailServiceStatus;
 
-// Send verification email with LINK instead of token
+// Send verification email with correct URLs
 export const sendVerificationEmail = async (user, verificationToken) => {
   try {
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    const verificationUrl = `${process.env.API_URL || 'http://localhost:3001'}/api/auth/verify-email/${verificationToken}`;
+    const apiUrl = getApiUrl();
+    const verificationUrl = `${apiUrl}/api/auth/verify-email/${verificationToken}`;
     
     const email = user.email || user;
     const name = user.name || 'User';
 
     console.log('📧 Sending verification email to:', email);
+    console.log('🌐 Using API URL:', apiUrl);
     console.log('🔗 Verification URL:', verificationUrl);
 
     // Use Mailjet API if configured
@@ -98,7 +117,8 @@ export const sendVerificationEmail = async (user, verificationToken) => {
     console.error('❌ Email sending failed:', error.message);
     
     // Final fallback - just log the URL
-    const verificationUrl = `${process.env.API_URL || 'http://localhost:3001'}/api/auth/verify-email/${verificationToken}`;
+    const apiUrl = getApiUrl();
+    const verificationUrl = `${apiUrl}/api/auth/verify-email/${verificationToken}`;
     console.log('🔑 FALLBACK - Verification URL:', verificationUrl);
     
     return {
@@ -116,6 +136,7 @@ const sendVerificationEmailViaMailjet = async (user, verificationUrl) => {
     const name = user.name || 'User';
 
     console.log('📧 Sending verification via Mailjet API to:', email);
+    console.log('🔗 Verification URL:', verificationUrl);
 
     const response = await fetch('https://api.mailjet.com/v3.1/send', {
       method: 'POST',
@@ -145,6 +166,8 @@ const sendVerificationEmailViaMailjet = async (user, verificationUrl) => {
     });
 
     if (!response.ok) {
+      const errorText = await response.text();
+      console.error('❌ Mailjet API error:', response.status, errorText);
       throw new Error(`Mailjet API error: ${response.status} ${response.statusText}`);
     }
 
