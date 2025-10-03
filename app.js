@@ -4705,28 +4705,54 @@ app.post('/api/bookings', authenticateToken, async (req, res) => {
     await savedBooking.populate('customerId', 'name email phoneNumber');
     await savedBooking.populate('providerId', 'name email phoneNumber');
 
-    // Send notification to provider (you can implement email/notification service here)
-    console.log(`New booking created for provider: ${providerId}`);
-    if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
-      try {
-        const providerUser = await User.findById(providerId);
-        if (providerUser && providerUser.email) {
-          await sendBookingNotification({
-            serviceType,
-            description,
-            location,
-            timeframe,
-            budget,
-            contactInfo,
-            specialRequests
-          }, providerUser.email);
+    // ✅ RENDER PRODUCTION: SEND EMAIL NOTIFICATION TO PROVIDER
+    try {
+      const { sendBookingNotificationToProvider } = await import('./utils/emailService.js');
+      
+      const bookingData = {
+        providerName: savedBooking.providerName,
+        serviceType: savedBooking.serviceType,
+        location: savedBooking.location,
+        timeframe: savedBooking.timeframe,
+        budget: savedBooking.budget,
+        description: savedBooking.description,
+        specialRequests: savedBooking.specialRequests,
+        bookingType: savedBooking.bookingType
+      };
+
+      const customerInfo = {
+        name: savedBooking.customerName,
+        email: savedBooking.customerEmail,
+        phone: savedBooking.customerPhone
+      };
+
+      // Send email notification to provider
+      const emailResult = await sendBookingNotificationToProvider(
+        savedBooking.providerEmail,
+        bookingData,
+        customerInfo
+      );
+
+      // Log results for Render monitoring
+      if (emailResult.success) {
+        console.log('✅ [RENDER] Booking notification sent successfully');
+        console.log('📨 Provider:', savedBooking.providerEmail);
+        console.log('🔧 Service:', emailResult.provider);
+        
+        if (emailResult.simulated) {
+          console.log('🔄 Simulation mode - check Render logs for details');
         }
-      } catch (emailError) {
-        console.error('Failed to send booking notification email:', emailError);
-        // Don't fail the booking if email fails
+      } else {
+        console.log('⚠️ [RENDER] Email notification failed:', emailResult.error);
+        console.log('🔧 Failed provider:', emailResult.provider);
+        // Don't fail the booking - email is secondary
       }
+    } catch (emailError) {
+      console.error('⚠️ [RENDER] Email notification error (non-critical):', emailError);
+      // Don't fail the booking if email fails
     }
 
+    // Create notification in database
     await Notification.createNotification({
       userId: providerId,
       type: 'booking',
@@ -4737,10 +4763,9 @@ app.post('/api/bookings', authenticateToken, async (req, res) => {
       priority: 'high'
     });
 
-
     res.status(201).json({
       success: true,
-      message: 'Booking request sent successfully',
+      message: 'Booking request sent successfully! The provider has been notified.',
       data: savedBooking
     });
   } catch (error) {
@@ -4752,6 +4777,79 @@ app.post('/api/bookings', authenticateToken, async (req, res) => {
     });
   }
 });
+
+app.get('/api/email/status', async (req, res) => {
+  const { getEmailServiceStatus } = await import('./utils/emailService.js');
+  const status = getEmailServiceStatus();
+  
+  res.json({
+    success: true,
+    data: {
+      environment: process.env.NODE_ENV,
+      emailService: status,
+      mailjetConfigured: !!(process.env.MAILJET_API_KEY && process.env.MAILJET_SECRET_KEY),
+      gmailConfigured: !!(process.env.EMAIL_USER && process.env.EMAIL_PASSWORD),
+      frontendUrl: process.env.FRONTEND_URL,
+      apiUrl: process.env.API_URL,
+      timestamp: new Date().toISOString()
+    }
+  });
+});
+
+app.post('/api/debug/test-booking-email', authenticateToken, async (req, res) => {
+  try {
+    const { providerEmail } = req.body;
+    
+    if (!providerEmail) {
+      return res.status(400).json({
+        success: false,
+        message: 'Provider email is required'
+      });
+    }
+
+    console.log('🧪 Testing booking email to:', providerEmail);
+
+    const { sendBookingNotificationToProvider } = await import('./utils/emailService.js');
+    
+    const testBookingData = {
+      providerName: 'Test Provider',
+      serviceType: 'House Cleaning',
+      location: 'Test Location, Lagos',
+      timeframe: 'ASAP',
+      budget: '₦15,000',
+      description: 'Test booking description',
+      specialRequests: 'Test special requests',
+      bookingType: 'immediate'
+    };
+
+    const testCustomerInfo = {
+      name: 'Test Customer',
+      email: 'customer@example.com',
+      phone: '+234 123 456 7890'
+    };
+
+    const result = await sendBookingNotificationToProvider(
+      providerEmail,
+      testBookingData,
+      testCustomerInfo
+    );
+
+    res.json({
+      success: true,
+      message: 'Booking email test completed',
+      data: result
+    });
+  } catch (error) {
+    console.error('Test booking email error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Booking email test failed',
+      error: error.message
+    });
+  }
+});
+
+
 
 // Get bookings for a provider
 app.get('/api/bookings/provider', authenticateToken, async (req, res) => {

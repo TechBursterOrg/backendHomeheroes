@@ -186,6 +186,126 @@ const sendVerificationEmailViaMailjet = async (user, verificationUrl) => {
   }
 };
 
+export const sendBookingNotificationToProvider = async (providerEmail, bookingData, customerInfo) => {
+  try {
+    console.log('📧 Sending booking notification to provider:', providerEmail);
+    
+    // Use Mailjet API if configured
+    if (process.env.MAILJET_API_KEY && process.env.MAILJET_SECRET_KEY) {
+      return await sendBookingEmailViaMailjet(providerEmail, bookingData, customerInfo);
+    }
+
+    // Fallback to nodemailer
+    if (emailTransporter) {
+      const mailOptions = {
+        from: {
+          name: 'HomeHero Bookings',
+          address: process.env.EMAIL_USER
+        },
+        to: providerEmail,
+        subject: `New Booking Request - ${bookingData.serviceType}`,
+        html: generateBookingNotificationHTML(bookingData, customerInfo),
+        text: generateBookingNotificationText(bookingData, customerInfo)
+      };
+
+      const result = await emailTransporter.sendMail(mailOptions);
+      console.log('✅ Booking notification sent via nodemailer');
+      
+      return {
+        success: true,
+        messageId: result.messageId,
+        simulated: false
+      };
+    }
+
+    // Simulation mode
+    console.log('🔄 SIMULATION MODE - Booking notification for:', providerEmail);
+    
+    return {
+      success: true,
+      simulated: true
+    };
+
+  } catch (error) {
+    console.error('❌ Booking notification failed:', error.message);
+    
+    return {
+      success: false,
+      error: error.message,
+      simulated: false
+    };
+  }
+};
+
+const sendBookingEmailViaMailjet = async (providerEmail, bookingData, customerInfo) => {
+  try {
+    console.log('📧 [MAILJET] Sending booking notification to:', providerEmail);
+
+    const response = await fetch('https://api.mailjet.com/v3.1/send', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + Buffer.from(
+          `${process.env.MAILJET_API_KEY}:${process.env.MAILJET_SECRET_KEY}`
+        ).toString('base64')
+      },
+      body: JSON.stringify({
+        Messages: [
+          {
+            From: {
+              Email: process.env.MAILJET_FROM_EMAIL || "bookings@homeheroes.help",
+              Name: process.env.MAILJET_FROM_NAME || "HomeHero Bookings"
+            },
+            To: [
+              {
+                Email: providerEmail,
+                Name: bookingData.providerName || 'Service Provider'
+              }
+            ],
+            Subject: `New Booking Request - ${bookingData.serviceType}`,
+            HTMLPart: generateBookingNotificationHTML(bookingData, customerInfo),
+            TextPart: generateBookingNotificationText(bookingData, customerInfo),
+            CustomID: `booking_${Date.now()}`
+          }
+        ]
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('❌ Mailjet API error:', response.status, errorText);
+      
+      // Don't throw error, return failure so booking still gets created
+      return {
+        success: false,
+        error: `Mailjet API error: ${response.status}`,
+        provider: 'mailjet-failed'
+      };
+    }
+
+    const result = await response.json();
+    console.log('✅ [MAILJET] Booking notification sent successfully');
+    
+    return {
+      success: true,
+      messageId: result.Messages?.[0]?.To?.[0]?.MessageID,
+      provider: 'mailjet'
+    };
+
+  } catch (error) {
+    console.error('❌ [MAILJET] Failed to send booking email:', error.message);
+    
+    return {
+      success: false,
+      error: error.message,
+      provider: 'mailjet-error'
+    };
+  }
+};
+
+
+
+
 // HTML email template
 const generateVerificationEmailHTML = (name, verificationUrl) => {
   return `
@@ -253,3 +373,153 @@ This is an automated message. Please do not reply to this email.
 © ${new Date().getFullYear()} HomeHero. All rights reserved.
   `;
 };
+
+
+
+const generateBookingNotificationHTML = (bookingData, customerInfo) => {
+  const frontendUrl = getFrontendUrl();
+  
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 30px; text-align: center; color: white; border-radius: 10px 10px 0 0; }
+        .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+        .booking-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981; }
+        .button { display: inline-block; padding: 12px 30px; background: #10b981; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0; }
+        .footer { text-align: center; margin-top: 30px; color: #666; font-size: 12px; }
+        .detail-row { margin: 10px 0; padding: 8px 0; border-bottom: 1px solid #eee; }
+        .detail-label { font-weight: bold; color: #555; }
+        .urgent { background: #fef3cd; padding: 10px; border-radius: 5px; border-left: 4px solid #f59e0b; }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <h1>🎉 New Booking Request!</h1>
+        <p>You have a new service request on HomeHero</p>
+      </div>
+      <div class="content">
+        <p>Hello <strong>${bookingData.providerName}</strong>,</p>
+        <p>Great news! You've received a new booking request from <strong>${customerInfo.name}</strong>.</p>
+        
+        <div class="booking-details">
+          <h3>📋 Booking Details</h3>
+          
+          <div class="detail-row">
+            <span class="detail-label">Service Type:</span>
+            <span>${bookingData.serviceType}</span>
+          </div>
+          
+          <div class="detail-row">
+            <span class="detail-label">Customer:</span>
+            <span>${customerInfo.name}</span>
+          </div>
+          
+          <div class="detail-row">
+            <span class="detail-label">Email:</span>
+            <span>${customerInfo.email}</span>
+          </div>
+          
+          <div class="detail-row">
+            <span class="detail-label">Phone:</span>
+            <span>${customerInfo.phone || 'Not provided'}</span>
+          </div>
+          
+          <div class="detail-row">
+            <span class="detail-label">Location:</span>
+            <span>${bookingData.location}</span>
+          </div>
+          
+          <div class="detail-row">
+            <span class="detail-label">Preferred Time:</span>
+            <span>${bookingData.timeframe}</span>
+          </div>
+          
+          <div class="detail-row">
+            <span class="detail-label">Budget:</span>
+            <span>${bookingData.budget}</span>
+          </div>
+          
+          ${bookingData.description ? `
+          <div class="detail-row">
+            <span class="detail-label">Description:</span>
+            <span>${bookingData.description}</span>
+          </div>
+          ` : ''}
+          
+          ${bookingData.specialRequests ? `
+          <div class="detail-row">
+            <span class="detail-label">Special Requests:</span>
+            <span>${bookingData.specialRequests}</span>
+          </div>
+          ` : ''}
+          
+          ${bookingData.bookingType === 'immediate' ? `
+          <div class="urgent">
+            <strong>🚨 Immediate Booking:</strong> Customer needs this service as soon as possible!
+          </div>
+          ` : ''}
+        </div>
+
+        <p><strong>Next Steps:</strong></p>
+        <ol>
+          <li>Review the booking details above</li>
+          <li>Contact the customer to confirm availability</li>
+          <li>Update the booking status in your dashboard</li>
+        </ol>
+        
+        <div style="text-align: center;">
+          <a href="${frontendUrl}/provider/dashboard" class="button">View Booking in Dashboard</a>
+        </div>
+        
+        <p>Please respond to this booking request within 24 hours.</p>
+        
+        <div class="footer">
+          <p>This is an automated message. Please do not reply to this email.</p>
+          <p>© ${new Date().getFullYear()} HomeHero. All rights reserved.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+};
+
+// Plain text template for booking notification
+const generateBookingNotificationText = (bookingData, customerInfo) => {
+  return `
+NEW BOOKING REQUEST - HomeHero
+
+Hello ${bookingData.providerName},
+
+You have received a new booking request from ${customerInfo.name}.
+
+BOOKING DETAILS:
+---------------
+Service Type: ${bookingData.serviceType}
+Customer: ${customerInfo.name}
+Email: ${customerInfo.email}
+Phone: ${customerInfo.phone || 'Not provided'}
+Location: ${bookingData.location}
+Preferred Time: ${bookingData.timeframe}
+Budget: ${bookingData.budget}
+${bookingData.description ? `Description: ${bookingData.description}` : ''}
+${bookingData.specialRequests ? `Special Requests: ${bookingData.specialRequests}` : ''}
+${bookingData.bookingType === 'immediate' ? 'URGENT: Immediate booking requested!' : ''}
+
+Next Steps:
+1. Review the booking details
+2. Contact the customer to confirm availability  
+3. Update the booking status in your dashboard
+
+Please respond to this booking request within 24 hours.
+
+View your dashboard: ${getFrontendUrl()}/provider/dashboard
+
+This is an automated message. Please do not reply to this email.
+
+© ${new Date().getFullYear()} HomeHero. All rights reserved.
+  `;
+};
+2
