@@ -6756,6 +6756,34 @@ app.post('/api/debug/test-email-production', async (req, res) => {
   }
 });
 
+app.get('/api/debug/email-config-full', (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      domain: 'homeheroes.help',
+      status: 'Pending DNS validation',
+      currentSender: 'noreply@homeheroes.help',
+      verifiedSender: 'techbursterdev@gmail.com',
+      dnsRecordsNeeded: [
+        {
+          type: 'TXT',
+          host: 'mailjet._d390662c',
+          value: 'd390662cce7b923f40237ebf4f7fc678',
+          purpose: 'Domain validation'
+        },
+        {
+          type: 'TXT', 
+          host: '@',
+          value: 'v=spf1 include:spf.mailjet.com ~all',
+          purpose: 'SPF authentication'
+        }
+      ],
+      immediateAction: 'Add TXT record to DNS and change sender to techbursterdev@gmail.com temporarily'
+    }
+  });
+});
+
+
 // Clean up old call data
 function cleanupOldCalls() {
   const now = Date.now();

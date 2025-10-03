@@ -21,7 +21,7 @@ export const sendVerificationEmailViaAPI = async (user, verificationToken) => {
           {
             From: {
               Email: "techbursterdev@gmail.com",
-              Name: "HomeHero"
+              Name: "HomeHeroes"
             },
             To: [
               {
