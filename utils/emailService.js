@@ -148,7 +148,7 @@ const sendVerificationEmailViaMailjet = async (user, verificationUrl) => {
         Messages: [
           {
             From: {
-              Email: "homehoroes.help@gmail.com",
+              Email: "noreply@homeheroes.help",
               Name: "HomeHeroes"
             },
             To: [
