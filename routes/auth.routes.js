@@ -173,10 +173,8 @@ router.get('/verify-email/:token', async (req, res) => {
     console.log('✅ Verifying email with token:', token);
 
     if (!token) {
-      return res.status(400).json({
-        success: false,
-        message: 'Verification token is required'
-      });
+      const frontendUrl = getFrontendUrl();
+      return res.redirect(`${frontendUrl}/login?error=Verification token is required`);
     }
 
     // Find user by verification token
@@ -186,11 +184,12 @@ router.get('/verify-email/:token', async (req, res) => {
     });
 
     if (!user) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid or expired verification link. Please request a new verification email.'
-      });
+      const frontendUrl = getFrontendUrl();
+      return res.redirect(`${frontendUrl}/login?error=Invalid or expired verification link. Please request a new verification email.`);
     }
+
+    // Store user email for pre-population
+    const userEmail = user.email;
 
     // Update user verification status and activate account
     user.isEmailVerified = true;
@@ -199,18 +198,29 @@ router.get('/verify-email/:token', async (req, res) => {
     user.emailVerificationExpires = null;
     await user.save();
 
-    console.log('✅ Email verified successfully for user:', user.email);
+    console.log('✅ Email verified successfully for user:', userEmail);
 
-    // Redirect to login page with success message
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    res.redirect(`${frontendUrl}/login?message=Email verified successfully! You can now login.`);
+    // Redirect to login page with success message and user data
+    const frontendUrl = getFrontendUrl();
+    const redirectUrl = `${frontendUrl}/login?verified=true&email=${encodeURIComponent(userEmail)}&message=Email verified successfully! You can now login.`;
+    
+    res.redirect(redirectUrl);
 
   } catch (error) {
     console.error('Verify email error:', error);
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const frontendUrl = getFrontendUrl();
     res.redirect(`${frontendUrl}/login?error=Failed to verify email. Please try again.`);
   }
 });
+
+// Helper function to get frontend URL
+const getFrontendUrl = () => {
+  return process.env.FRONTEND_URL || 
+    (process.env.NODE_ENV === 'production'
+      ? 'https://homeheroes.help'
+      : 'http://localhost:5173');
+};
+
 
 
 
