@@ -21,6 +21,7 @@ import messageRoutes from './routes/messages.routes.js';
 import jobRoutes from './routes/jobs.js';
 import bcrypt from 'bcryptjs';
 import Notification from './models/Notification.js';
+import Rating from './models/Rating.js';
 
 
 // Add to your imports in server.js
@@ -308,6 +309,36 @@ app.post('/api/debug/test-email-verification', async (req, res) => {
   }
 });
 
+app.get('/api/debug/ratings', async (req, res) => {
+  try {
+    const ratings = await Rating.find({})
+      .populate('providerId', 'name email')
+      .populate('customerId', 'name email')
+      .populate('bookingId', 'serviceType status');
+    
+    res.json({
+      success: true,
+      data: {
+        totalRatings: ratings.length,
+        ratings: ratings.map(r => ({
+          id: r._id,
+          bookingId: r.bookingId?._id,
+          serviceType: r.bookingId?.serviceType,
+          provider: r.providerId?.name,
+          customer: r.customerId?.name,
+          providerRating: r.providerRating,
+          customerRating: r.customerRating,
+          customerRated: r.customerRated,
+          providerRated: r.providerRated
+        }))
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
 app.options('*', cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
@@ -358,105 +389,6 @@ app.use(cookieParser());
 // Serve static files for uploaded images
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Authentication middleware
-// In your auth middleware
-// function authenticateToken(req, res, next) {
-//   const authHeader = req.headers['authorization'];
-//   const token = authHeader && authHeader.split(' ')[1];
-
-//   if (!token) {
-//     return res.status(401).json({
-//       success: false,
-//       message: 'Access token required'
-//     });
-//   }
-
-//   jwt.verify(token, JWT_SECRET, async (err, decoded) => {
-//     if (err) {
-//       return res.status(403).json({
-//         success: false,
-//         message: 'Invalid or expired token'
-//       });
-//     }
-    
-//     // Add user info to request
-//     try {
-//       const user = await User.findById(decoded.id).select('-password');
-//       if (!user) {
-//         return res.status(403).json({
-//           success: false,
-//           message: 'User not found'
-//         });
-//       }
-      
-//       req.user = {
-//         id: user._id.toString(),
-//         userType: user.userType,
-//         email: user.email,
-//         name: user.name
-//       };
-      
-//       next();
-//     } catch (error) {
-//       return res.status(500).json({
-//         success: false,
-//         message: 'Error verifying user'
-//       });
-//     }
-//   });
-// }
-// function authenticateToken(req, res, next) {
-//   const authHeader = req.headers['authorization'];
-//   const token = authHeader && authHeader.split(' ')[1];
-
-//   if (!token) {
-//     return res.status(401).json({
-//       success: false,
-//       message: 'Access token required'
-//     });
-//   }
-
-//   jwt.verify(token, JWT_SECRET, async (err, decoded) => {
-//     if (err) {
-//       console.error('JWT verification error:', err);
-//       return res.status(403).json({
-//         success: false,
-//         message: 'Invalid or expired token'
-//       });
-//     }
-    
-//     // Add user info to request
-//     try {
-//       const user = await User.findById(decoded.id).select('-password');
-//       if (!user) {
-//         return res.status(403).json({
-//           success: false,
-//           message: 'User not found'
-//         });
-//       }
-      
-//       req.user = {
-//         id: user._id.toString(),
-//         userType: user.userType,
-//         email: user.email,
-//         name: user.name
-//       };
-      
-//       next();
-//     } catch (error) {
-//       console.error('Error verifying user:', error);
-//       return res.status(500).json({
-//         success: false,
-//         message: 'Error verifying user'
-//       });
-//     }
-//   });
-// }
-
-
-// ==================== API ROUTES ====================
-
-// Auth routes
 app.use('/api/auth', authRoutes);
 app.use('/api/verification', verificationRoutes);
 app.use('/api/jobs', jobRoutes);
@@ -642,41 +574,7 @@ app.post('/api/debug/send-test-email', async (req, res) => {
       });
     }
 
-    // const { initializeEmailTransporter, getEmailTransporter } = await import('./utils/emailService.js');
     
-    // console.log('🧪 Testing email sending to:', email);
-    
-    // // Ensure transporter is initialized
-    // await initializeEmailTransporter();
-    // const transporter = getEmailTransporter();
-    
-    // if (!transporter) {
-    //   return res.status(500).json({
-    //     success: false,
-    //     message: 'Email transporter not available'
-    //   });
-    // }
-
-    // const testMailOptions = {
-    //   from: process.env.EMAIL_USER,
-    //   to: email,
-    //   subject: 'HomeHero Production Email Test',
-    //   text: `This is a test email sent from HomeHero production server at ${new Date().toISOString()}`,
-    //   html: `
-    //     <h1>HomeHero Production Test</h1>
-    //     <p>This email was sent from your production server.</p>
-    //     <p><strong>Time:</strong> ${new Date().toISOString()}</p>
-    //     <p><strong>Environment:</strong> ${process.env.NODE_ENV}</p>
-    //   `
-    // };
-
-    // const result = await transporter.sendMail(testMailOptions);
-    
-    // res.json({
-    //   success: true,
-    //   message: 'Test email sent successfully',
-    //   messageId: result.messageId
-    // });
   } catch (error) {
     console.error('Test email error:', error);
     res.status(500).json({
@@ -2269,52 +2167,6 @@ app.use('/uploads', (req, res, next) => {
   next();
 });
 
-// app.use('/uploads', (req, res, next) => {
-//   const filePath = path.join(__dirname, 'uploads', req.path);
-  
-//   if (!fs.existsSync(filePath)) {
-//     console.log(`File not found: ${filePath}`);
-    
-//     // Handle profile images
-//     if (req.path.includes('/profiles/')) {
-//       const filename = path.basename(req.path);
-//       const userId = filename.split('-')[1];
-      
-//       if (userId && mongoose.Types.ObjectId.isValid(userId)) {
-//         return User.findById(userId)
-//           .then(user => {
-//             if (user && user.profileImageFull) {
-//               return res.redirect(user.profileImageFull);
-//             }
-//             return res.redirect('https://via.placeholder.com/400x400/e2e8f0/64748b?text=Profile+Image');
-//           })
-//           .catch(() => {
-//             return res.redirect('https://via.placeholder.com/400x400/e2e8f0/64748b?text=Profile+Image');
-//           });
-//       }
-//     }
-    
-//     // NEW: Handle gallery images
-//     if (req.path.includes('/gallery/')) {
-//       const filename = path.basename(req.path);
-//       // Try to find the gallery image by filename
-//       return Gallery.findOne({ imageUrl: `/uploads/gallery/${filename}` })
-//         .then(image => {
-//           if (image && image.fullImageUrl) {
-//             return res.redirect(image.fullImageUrl);
-//           }
-//           return res.redirect('https://via.placeholder.com/600x400/e2e8f0/64748b?text=Gallery+Image');
-//         })
-//         .catch(() => {
-//           return res.redirect('https://via.placeholder.com/600x400/e2e8f0/64748b?text=Gallery+Image');
-//         });
-//     }
-    
-//     // Return placeholder for other images
-//     return res.redirect('https://via.placeholder.com/400x400/e2e8f0/64748b?text=Image+Not+Found');
-//   }
-//   next();
-// });
 
 
 app.post('/api/gallery/fix-urls', authenticateToken, async (req, res) => {
@@ -4796,6 +4648,61 @@ app.get('/api/email/status', async (req, res) => {
   });
 });
 
+app.post('/api/email/send-booking-accepted', authenticateToken, async (req, res) => {
+  try {
+    const { customerEmail, bookingData, providerInfo } = req.body;
+
+    if (!customerEmail || !bookingData || !providerInfo) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer email, booking data, and provider info are required'
+      });
+    }
+
+    console.log('📧 Sending booking acceptance email to customer:', customerEmail);
+
+    const { sendBookingAcceptedNotificationToCustomer } = await import('./utils/emailService.js');
+    
+    const emailResult = await sendBookingAcceptedNotificationToCustomer(
+      customerEmail,
+      bookingData,
+      providerInfo
+    );
+
+    if (emailResult.success) {
+      console.log('✅ Booking acceptance email sent successfully to:', customerEmail);
+      
+      if (emailResult.simulated) {
+        console.log('🔄 Email simulation mode - check logs for details');
+      } else {
+        console.log('📨 Actual email sent with ID:', emailResult.messageId);
+      }
+      
+      res.json({
+        success: true,
+        message: 'Booking acceptance email sent successfully',
+        data: emailResult
+      });
+    } else {
+      console.log('⚠️ Failed to send booking acceptance email:', emailResult.error);
+      
+      res.status(500).json({
+        success: false,
+        message: 'Failed to send booking acceptance email',
+        error: emailResult.error
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Send booking acceptance email error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send booking acceptance email',
+      error: error.message
+    });
+  }
+});
+
 app.post('/api/debug/test-booking-email', authenticateToken, async (req, res) => {
   try {
     const { providerEmail } = req.body;
@@ -4981,7 +4888,6 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
       userId: req.user.id 
     });
 
-    // Enhanced status mapping with validation
     const statusMapping = {
       'pending': 'pending',
       'accepted': 'confirmed',
@@ -5000,7 +4906,6 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
       });
     }
 
-    // Find and update the booking
     const booking = await Booking.findById(bookingId);
     if (!booking) {
       return res.status(404).json({
@@ -5018,14 +4923,42 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     }
 
     const oldStatus = booking.status;
+    
+    // Prevent moving from completed back to other statuses
+    if (booking.status === 'completed' && backendStatus !== 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot change status of completed booking'
+      });
+    }
+
     booking.status = backendStatus;
     booking.updatedAt = new Date();
 
     // Set timestamps based on status changes
     if (backendStatus === 'confirmed' && oldStatus !== 'confirmed') {
       booking.acceptedAt = new Date();
+      
+      // Add to schedule when confirmed
+      try {
+        await addBookingToSchedule(booking);
+      } catch (scheduleError) {
+        console.error('⚠️ Failed to add to schedule:', scheduleError);
+        // Don't fail the booking update if schedule fails
+      }
     } else if (backendStatus === 'completed' && oldStatus !== 'completed') {
       booking.completedAt = new Date();
+      
+      // Set flag to prompt customer for rating
+      booking.ratingPrompted = true;
+      
+      // Send completion notification to customer
+      try {
+        const { sendBookingCompletionNotification } = await import('./utils/emailService.js');
+        await sendBookingCompletionNotification(booking);
+      } catch (emailError) {
+        console.error('⚠️ Failed to send completion email:', emailError);
+      }
     }
 
     const updatedBooking = await booking.save();
@@ -5034,10 +4967,9 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     await updatedBooking.populate('customerId', 'name email phoneNumber');
     await updatedBooking.populate('providerId', 'name email phoneNumber');
 
-    // Map response back to frontend
     const responseStatusMapping = {
       'pending': 'pending',
-      'confirmed': 'accepted',
+      'confirmed': 'confirmed',
       'completed': 'completed',
       'cancelled': 'cancelled'
     };
@@ -5062,6 +4994,270 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     });
   }
 });
+
+app.post('/api/ratings/customer', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId, rating, comment } = req.body;
+
+    console.log('📝 Customer rating request:', { bookingId, rating, comment, customerId: req.user.id });
+
+    if (!bookingId || !rating) {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking ID and rating are required'
+      });
+    }
+
+    if (rating < 1 || rating > 5) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rating must be between 1 and 5'
+      });
+    }
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Check if user is the customer for this booking
+    if (booking.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to rate this booking'
+      });
+    }
+
+    // Check if booking is completed
+    if (booking.status !== 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Can only rate completed bookings'
+      });
+    }
+
+    // Find or create rating
+    let ratingDoc = await Rating.findOne({ bookingId });
+    
+    if (!ratingDoc) {
+      ratingDoc = new Rating({
+        bookingId,
+        providerId: booking.providerId,
+        customerId: booking.customerId,
+        providerRating: rating,
+        providerComment: comment || '',
+        customerRated: true
+      });
+    } else {
+      ratingDoc.providerRating = rating;
+      ratingDoc.providerComment = comment || '';
+      ratingDoc.customerRated = true;
+    }
+
+    await ratingDoc.save();
+
+    // Update booking rating status
+    if (!booking.ratingStatus) {
+      booking.ratingStatus = {
+        customerRated: false,
+        providerRated: false
+      };
+    }
+    booking.ratingStatus.customerRated = true;
+    await booking.save();
+
+    // Update provider's average rating
+    await updateProviderRating(booking.providerId);
+
+    console.log('✅ Customer rating submitted successfully for booking:', bookingId);
+
+    res.json({
+      success: true,
+      message: 'Rating submitted successfully',
+      data: { rating: ratingDoc }
+    });
+
+  } catch (error) {
+    console.error('❌ Customer rating error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to submit rating',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.post('/api/ratings/provider', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId, rating } = req.body;
+
+    console.log('📝 Provider rating request:', { bookingId, rating, providerId: req.user.id });
+
+    if (!bookingId || !rating) {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking ID and rating are required'
+      });
+    }
+
+    if (rating < 1 || rating > 5) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rating must be between 1 and 5'
+      });
+    }
+
+    // Find the booking
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Check if user is the provider for this booking
+    if (booking.providerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to rate this booking'
+      });
+    }
+
+    // Check if booking is completed
+    if (booking.status !== 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Can only rate completed bookings'
+      });
+    }
+
+    // Find or create rating
+    let ratingDoc = await Rating.findOne({ bookingId });
+    
+    if (!ratingDoc) {
+      ratingDoc = new Rating({
+        bookingId,
+        providerId: booking.providerId,
+        customerId: booking.customerId,
+        customerRating: rating,
+        providerRated: true
+      });
+    } else {
+      ratingDoc.customerRating = rating;
+      ratingDoc.providerRated = true;
+    }
+
+    await ratingDoc.save();
+
+    // Update booking rating status
+    if (!booking.ratingStatus) {
+      booking.ratingStatus = {
+        customerRated: false,
+        providerRated: false
+      };
+    }
+    booking.ratingStatus.providerRated = true;
+    await booking.save();
+
+    console.log('✅ Provider rating submitted successfully for booking:', bookingId);
+
+    res.json({
+      success: true,
+      message: 'Customer rating submitted successfully',
+      data: { rating: ratingDoc }
+    });
+
+  } catch (error) {
+    console.error('❌ Provider rating error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to submit customer rating',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+async function updateProviderRating(providerId) {
+  try {
+    const ratings = await Rating.find({ 
+      providerId, 
+      customerRated: true,
+      providerRating: { $exists: true, $ne: null }
+    });
+    
+    if (ratings.length > 0) {
+      const averageRating = ratings.reduce((sum, rating) => sum + rating.providerRating, 0) / ratings.length;
+      
+      await User.findByIdAndUpdate(providerId, {
+        averageRating: Math.round(averageRating * 10) / 10,
+        reviewCount: ratings.length
+      });
+
+      console.log(`✅ Updated provider ${providerId} rating: ${averageRating.toFixed(1)} from ${ratings.length} reviews`);
+    }
+  } catch (error) {
+    console.error('Error updating provider rating:', error);
+  }
+}
+
+
+app.post('/api/debug/test-booking-accepted-email', authenticateToken, async (req, res) => {
+  try {
+    const { customerEmail } = req.body;
+    
+    if (!customerEmail) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer email is required'
+      });
+    }
+
+    console.log('🧪 Testing booking acceptance email to:', customerEmail);
+
+    const { sendBookingAcceptedNotificationToCustomer } = await import('./utils/emailService.js');
+    
+    const testBookingData = {
+      customerName: 'Test Customer',
+      serviceType: 'House Cleaning',
+      location: 'Test Location, Lagos',
+      timeframe: 'ASAP',
+      budget: '₦15,000',
+      description: 'Test booking description',
+      specialRequests: 'Test special requests'
+    };
+
+    const testProviderInfo = {
+      name: 'Test Provider',
+      phone: '+234 123 456 7890',
+      email: 'provider@example.com'
+    };
+
+    const result = await sendBookingAcceptedNotificationToCustomer(
+      customerEmail,
+      testBookingData,
+      testProviderInfo
+    );
+
+    res.json({
+      success: true,
+      message: 'Booking acceptance email test completed',
+      data: result
+    });
+  } catch (error) {
+    console.error('Test booking acceptance email error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Booking acceptance email test failed',
+      error: error.message
+    });
+  }
+});
+
 
 app.patch('/api/debug/test-booking-status/:id', authenticateToken, async (req, res) => {
   try {
@@ -7333,6 +7529,93 @@ app.post('/api/bookings/reschedule', authenticateToken, async (req, res) => {
       success: false,
       message: 'Failed to submit reschedule request',
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.post('/api/bookings/:id/rating-prompt', authenticateToken, async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+    
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Verify the user is the provider for this booking
+    if (booking.providerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to trigger rating prompt for this booking'
+      });
+    }
+
+    // Set flag to prompt customer for rating
+    booking.ratingPrompted = true;
+    await booking.save();
+
+    // Send email notification to customer to rate the provider
+    try {
+      const { sendRatingPromptToCustomer } = await import('./utils/emailService.js');
+      await sendRatingPromptToCustomer(booking);
+    } catch (emailError) {
+      console.error('Failed to send rating prompt email:', emailError);
+      // Continue even if email fails
+    }
+
+    console.log('✅ Rating prompt triggered for customer:', booking.customerEmail);
+
+    res.json({
+      success: true,
+      message: 'Customer rating prompt sent successfully'
+    });
+  } catch (error) {
+    console.error('❌ Rating prompt error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send rating prompt',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.get('/api/reviews', async (req, res) => {
+  try {
+    const { providerId, page = 1, limit = 10 } = req.query;
+
+    let filter = {};
+    if (providerId) {
+      filter.providerId = providerId;
+    }
+
+    const options = {
+      page: parseInt(page),
+      limit: parseInt(limit),
+      sort: { ratedAt: -1 },
+      populate: [
+        { path: 'customerId', select: 'name profileImage' },
+        { path: 'providerId', select: 'name profileImage' }
+      ]
+    };
+
+    const result = await Rating.paginate(filter, options);
+
+    res.json({
+      success: true,
+      data: {
+        reviews: result.docs,
+        totalDocs: result.totalDocs,
+        totalPages: result.totalPages,
+        page: result.page
+      }
+    });
+  } catch (error) {
+    console.error('Get reviews error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch reviews'
     });
   }
 });

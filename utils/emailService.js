@@ -61,6 +61,8 @@ export const initializeEmailTransporter = async () => {
   }
 };
 
+
+
 export const getEmailServiceStatus = () => emailServiceStatus;
 
 // Send verification email with correct URLs
@@ -303,7 +305,337 @@ const sendBookingEmailViaMailjet = async (providerEmail, bookingData, customerIn
   }
 };
 
+export const sendBookingAcceptedNotificationToCustomer = async (customerEmail, bookingData, providerInfo) => {
+  try {
+    console.log('📧 Sending booking acceptance notification to customer:', customerEmail);
+    
+    // Use Mailjet API if configured
+    if (process.env.MAILJET_API_KEY && process.env.MAILJET_SECRET_KEY) {
+      return await sendBookingAcceptedEmailViaMailjet(customerEmail, bookingData, providerInfo);
+    }
 
+    // Fallback to nodemailer
+    if (emailTransporter) {
+      const mailOptions = {
+        from: {
+          name: 'HomeHero Bookings',
+          address: process.env.EMAIL_USER || 'noreply@homeheroes.help'
+        },
+        to: customerEmail,
+        subject: `Booking Confirmed! - ${bookingData.serviceType}`,
+        html: generateBookingAcceptedHTML(bookingData, providerInfo),
+        text: generateBookingAcceptedText(bookingData, providerInfo)
+      };
+
+      const result = await emailTransporter.sendMail(mailOptions);
+      console.log('✅ Booking acceptance notification sent via nodemailer');
+      
+      return {
+        success: true,
+        messageId: result.messageId,
+        simulated: false
+      };
+    }
+
+    // Simulation mode
+    console.log('🔄 SIMULATION MODE - Booking acceptance notification would be sent to:', customerEmail);
+    
+    return {
+      success: true,
+      simulated: true
+    };
+
+  } catch (error) {
+    console.error('❌ Booking acceptance notification failed:', error.message);
+    
+    return {
+      success: false,
+      error: error.message,
+      simulated: false
+    };
+  }
+};
+
+// Mailjet API for booking acceptance notifications
+const sendBookingAcceptedEmailViaMailjet = async (customerEmail, bookingData, providerInfo) => {
+  try {
+    console.log('📧 [MAILJET] Sending booking acceptance notification to:', customerEmail);
+
+    const response = await fetch('https://api.mailjet.com/v3.1/send', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + Buffer.from(
+          `${process.env.MAILJET_API_KEY}:${process.env.MAILJET_SECRET_KEY}`
+        ).toString('base64')
+      },
+      body: JSON.stringify({
+        Messages: [
+          {
+            From: {
+              Email: process.env.MAILJET_FROM_EMAIL || "bookings@homeheroes.help",
+              Name: process.env.MAILJET_FROM_NAME || "HomeHero Bookings"
+            },
+            To: [
+              {
+                Email: customerEmail,
+                Name: bookingData.customerName || 'Customer'
+              }
+            ],
+            Subject: `Booking Confirmed! - ${bookingData.serviceType}`,
+            HTMLPart: generateBookingAcceptedHTML(bookingData, providerInfo),
+            TextPart: generateBookingAcceptedText(bookingData, providerInfo),
+            CustomID: `booking_accepted_${Date.now()}`
+          }
+        ]
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('❌ Mailjet API error:', response.status, errorText);
+      
+      return {
+        success: false,
+        error: `Mailjet API error: ${response.status}`,
+        provider: 'mailjet-failed'
+      };
+    }
+
+    const result = await response.json();
+    console.log('✅ [MAILJET] Booking acceptance notification sent successfully');
+    
+    return {
+      success: true,
+      messageId: result.Messages?.[0]?.To?.[0]?.MessageID,
+      provider: 'mailjet'
+    };
+
+  } catch (error) {
+    console.error('❌ [MAILJET] Failed to send booking acceptance email:', error.message);
+    
+    return {
+      success: false,
+      error: error.message,
+      provider: 'mailjet-error'
+    };
+  }
+};
+
+export const sendRatingPromptToCustomer = async (booking) => {
+  try {
+    const transporter = getEmailTransporter();
+    
+    if (!transporter) {
+      console.log('📧 Email transporter not available, simulating rating prompt email');
+      return { 
+        success: true, 
+        simulated: true,
+        message: 'Rating prompt email would be sent to: ' + booking.customerEmail
+      };
+    }
+
+    const ratingUrl = `${process.env.FRONTEND_URL}/rate-provider?bookingId=${booking._id}`;
+
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: booking.customerEmail,
+      subject: 'Rate Your Service Provider - HomeHero',
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 30px; text-align: center; color: white; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .button { display: inline-block; padding: 12px 30px; background: #f59e0b; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0; }
+            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 12px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>⭐ Rate Your Experience</h1>
+              <p>How was your service with ${booking.providerName}?</p>
+            </div>
+            <div class="content">
+              <p>Hello ${booking.customerName},</p>
+              <p>Your recent service with <strong>${booking.providerName}</strong> has been completed. We'd love to hear about your experience!</p>
+              
+              <div style="text-align: center; margin: 30px 0;">
+                <a href="${ratingUrl}" class="button">Rate Your Provider</a>
+              </div>
+
+              <p>Your feedback helps us maintain quality standards and helps other customers make informed decisions.</p>
+              
+              <div class="footer">
+                <p>This is an automated message. Please do not reply to this email.</p>
+                <p>© 2024 HomeHero. All rights reserved.</p>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `
+    };
+
+    const result = await transporter.sendMail(mailOptions);
+    console.log('✅ Rating prompt email sent to customer:', booking.customerEmail);
+    
+    return { success: true, messageId: result.messageId };
+  } catch (error) {
+    console.error('❌ Failed to send rating prompt email:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+
+
+const generateBookingAcceptedHTML = (bookingData, providerInfo) => {
+  const frontendUrl = getFrontendUrl();
+  
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 30px; text-align: center; color: white; border-radius: 10px 10px 0 0; }
+        .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+        .booking-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #10b981; }
+        .button { display: inline-block; padding: 12px 30px; background: #10b981; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0; }
+        .footer { text-align: center; margin-top: 30px; color: #666; font-size: 12px; }
+        .detail-row { margin: 10px 0; padding: 8px 0; border-bottom: 1px solid #eee; }
+        .detail-label { font-weight: bold; color: #555; }
+        .provider-info { background: #e6f3ff; padding: 15px; border-radius: 8px; margin: 15px 0; border-left: 4px solid #3b82f6; }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <h1>✅ Booking Confirmed!</h1>
+        <p>Your service provider has accepted your booking request</p>
+      </div>
+      <div class="content">
+        <p>Hello <strong>${bookingData.customerName}</strong>,</p>
+        <p>Great news! <strong>${providerInfo.name}</strong> has accepted your booking request and is looking forward to helping you.</p>
+        
+        <div class="provider-info">
+          <h3>👨‍🔧 Your Service Provider</h3>
+          <div class="detail-row">
+            <span class="detail-label">Provider:</span>
+            <span>${providerInfo.name}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Contact:</span>
+            <span>${providerInfo.phone || 'Will contact you shortly'}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Email:</span>
+            <span>${providerInfo.email}</span>
+          </div>
+        </div>
+        
+        <div class="booking-details">
+          <h3>📋 Booking Details</h3>
+          
+          <div class="detail-row">
+            <span class="detail-label">Service Type:</span>
+            <span>${bookingData.serviceType}</span>
+          </div>
+          
+          <div class="detail-row">
+            <span class="detail-label">Location:</span>
+            <span>${bookingData.location}</span>
+          </div>
+          
+          <div class="detail-row">
+            <span class="detail-label">Preferred Time:</span>
+            <span>${bookingData.timeframe}</span>
+          </div>
+          
+          <div class="detail-row">
+            <span class="detail-label">Budget:</span>
+            <span>${bookingData.budget}</span>
+          </div>
+          
+          ${bookingData.description ? `
+          <div class="detail-row">
+            <span class="detail-label">Description:</span>
+            <span>${bookingData.description}</span>
+          </div>
+          ` : ''}
+          
+          ${bookingData.specialRequests ? `
+          <div class="detail-row">
+            <span class="detail-label">Special Requests:</span>
+            <span>${bookingData.specialRequests}</span>
+          </div>
+          ` : ''}
+        </div>
+
+        <p><strong>Next Steps:</strong></p>
+        <ol>
+          <li>Your provider will contact you within 24 hours to confirm details</li>
+          <li>Discuss any specific requirements or timing preferences</li>
+          <li>Be available at the scheduled time for the service</li>
+        </ol>
+        
+        <div style="text-align: center;">
+          <a href="${frontendUrl}/customer/dashboard" class="button">View Booking in Dashboard</a>
+        </div>
+        
+        <p>If you have any questions or need to make changes, please contact your provider directly.</p>
+        
+        <div class="footer">
+          <p>This is an automated message. Please do not reply to this email.</p>
+          <p>© ${new Date().getFullYear()} HomeHero. All rights reserved.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+};
+
+// Plain text template for booking acceptance notification
+const generateBookingAcceptedText = (bookingData, providerInfo) => {
+  return `
+BOOKING CONFIRMED! - HomeHero
+
+Hello ${bookingData.customerName},
+
+Great news! ${providerInfo.name} has accepted your booking request and is looking forward to helping you.
+
+YOUR SERVICE PROVIDER:
+----------------------
+Provider: ${providerInfo.name}
+Contact: ${providerInfo.phone || 'Will contact you shortly'}
+Email: ${providerInfo.email}
+
+BOOKING DETAILS:
+---------------
+Service Type: ${bookingData.serviceType}
+Location: ${bookingData.location}
+Preferred Time: ${bookingData.timeframe}
+Budget: ${bookingData.budget}
+${bookingData.description ? `Description: ${bookingData.description}` : ''}
+${bookingData.specialRequests ? `Special Requests: ${bookingData.specialRequests}` : ''}
+
+Next Steps:
+1. Your provider will contact you within 24 hours to confirm details
+2. Discuss any specific requirements or timing preferences
+3. Be available at the scheduled time for the service
+
+View your dashboard: ${getFrontendUrl()}/customer/dashboard
+
+If you have any questions or need to make changes, please contact your provider directly.
+
+This is an automated message. Please do not reply to this email.
+
+© ${new Date().getFullYear()} HomeHero. All rights reserved.
+  `;
+};
 
 
 // HTML email template

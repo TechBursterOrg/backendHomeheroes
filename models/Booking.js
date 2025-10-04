@@ -85,6 +85,11 @@ const bookingSchema = new mongoose.Schema({
     enum: ['pending', 'confirmed', 'completed', 'cancelled'], // Changed from 'accepted' to 'confirmed'
     default: 'pending'
   },
+  ratingStatus: {
+    customerRated: { type: Boolean, default: false },
+    providerRated: { type: Boolean, default: false }
+  },
+  ratingPrompted: { type: Boolean, default: false }
 }, {
   timestamps: true
 });
