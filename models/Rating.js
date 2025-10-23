@@ -1,4 +1,4 @@
-// models/Rating.js
+// models/Rating.js - ENHANCED VERSION
 import mongoose from 'mongoose';
 
 const ratingSchema = new mongoose.Schema({
@@ -21,21 +21,31 @@ const ratingSchema = new mongoose.Schema({
     type: Number,
     min: 1,
     max: 5,
-    required: false
+    required: false,
+    validate: {
+      validator: Number.isInteger,
+      message: 'Provider rating must be an integer'
+    }
   },
   providerComment: {
     type: String,
-    default: ""
+    default: "",
+    maxlength: 500
   },
   customerRating: {
     type: Number,
     min: 1,
     max: 5,
-    required: false
+    required: false,
+    validate: {
+      validator: Number.isInteger,
+      message: 'Customer rating must be an integer'
+    }
   },
   customerComment: {
     type: String,
-    default: ""
+    default: "",
+    maxlength: 500
   },
   customerRated: {
     type: Boolean,
@@ -52,14 +62,17 @@ const ratingSchema = new mongoose.Schema({
   ratedAt: {
     type: Date,
     default: Date.now
+  },
+  status: {
+    type: String,
+    enum: ['pending', 'completed', 'cancelled'],
+    default: 'pending'
   }
 }, {
   timestamps: true
 });
 
-
-
-// Static method to get provider's average rating
+// Static method to get provider's average rating - FIXED VERSION
 ratingSchema.statics.getProviderAverageRating = async function(providerId) {
   try {
     console.log('📊 Calculating average rating for provider:', providerId);
@@ -101,7 +114,7 @@ ratingSchema.statics.getProviderAverageRating = async function(providerId) {
     const breakdown = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
     if (ratingData.ratingBreakdown && Array.isArray(ratingData.ratingBreakdown)) {
       ratingData.ratingBreakdown.forEach(rating => {
-        const roundedRating = Math.floor(rating);
+        const roundedRating = Math.round(rating); // Use round instead of floor
         if (roundedRating >= 1 && roundedRating <= 5) {
           breakdown[roundedRating]++;
         }
@@ -127,45 +140,74 @@ ratingSchema.statics.getProviderAverageRating = async function(providerId) {
   }
 };
 
-ratingSchema.statics.getCustomerAverageRating = async function(customerId) {
+// Instance method to check if rating is complete
+ratingSchema.methods.isComplete = function() {
+  return this.customerRated && this.providerRated;
+};
+
+// Static method to create or update customer rating
+ratingSchema.statics.submitCustomerRating = async function(bookingId, customerId, rating, comment) {
   try {
-    const result = await this.aggregate([
-      {
-        $match: {
-          customerId: new mongoose.Types.ObjectId(customerId),
-          providerRated: true,
-          customerRating: { $exists: true, $ne: null }
-        }
-      },
-      {
-        $group: {
-          _id: '$customerId',
-          averageRating: { $avg: '$customerRating' },
-          totalRatings: { $sum: 1 }
-        }
-      }
-    ]);
-    
-    if (result.length === 0) {
-      return {
-        averageRating: 0,
-        totalRatings: 0
-      };
+    // Find the booking first
+    const booking = await mongoose.model('Booking').findById(bookingId);
+    if (!booking) {
+      throw new Error('Booking not found');
     }
+
+    // Verify the customer owns this booking
+    if (booking.customerId.toString() !== customerId) {
+      throw new Error('Not authorized to rate this booking');
+    }
+
+    // Find existing rating or create new one
+    let ratingDoc = await this.findOne({ bookingId });
     
-    return {
-      averageRating: Math.round(result[0].averageRating * 10) / 10,
-      totalRatings: result[0].totalRatings
-    };
+    if (!ratingDoc) {
+      ratingDoc = new this({
+        bookingId,
+        providerId: booking.providerId,
+        customerId,
+        serviceType: booking.serviceType
+      });
+    }
+
+    // Update customer rating
+    ratingDoc.providerRating = rating;
+    ratingDoc.providerComment = comment || '';
+    ratingDoc.customerRated = true;
+    ratingDoc.ratedAt = new Date();
+
+    if (ratingDoc.customerRated && ratingDoc.providerRated) {
+      ratingDoc.status = 'completed';
+    }
+
+    await ratingDoc.save();
+
+    // Update provider's average rating
+    await this.updateProviderRating(booking.providerId);
+
+    return ratingDoc;
   } catch (error) {
-    console.error('Error calculating customer average rating:', error);
-    return {
-      averageRating: 0,
-      totalRatings: 0
-    };
+    console.error('Submit customer rating error:', error);
+    throw error;
   }
 };
 
+// Static method to update provider rating in User model
+ratingSchema.statics.updateProviderRating = async function(providerId) {
+  try {
+    const ratingStats = await this.getProviderAverageRating(providerId);
+    
+    await mongoose.model('User').findByIdAndUpdate(providerId, {
+      averageRating: ratingStats.averageRating,
+      reviewCount: ratingStats.totalRatings
+    });
+
+    console.log(`✅ Updated provider ${providerId} rating: ${ratingStats.averageRating}`);
+  } catch (error) {
+    console.error('Error updating provider rating:', error);
+  }
+};
 
 // Ensure one rating document per booking
 ratingSchema.index({ bookingId: 1 }, { unique: true });
@@ -173,5 +215,6 @@ ratingSchema.index({ bookingId: 1 }, { unique: true });
 // Compound indexes for better query performance
 ratingSchema.index({ providerId: 1, customerRated: 1 });
 ratingSchema.index({ customerId: 1, providerRated: 1 });
+ratingSchema.index({ providerId: 1, status: 1 });
 
 export default mongoose.model('Rating', ratingSchema);

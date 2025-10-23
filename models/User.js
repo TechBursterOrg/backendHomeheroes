@@ -48,10 +48,39 @@ const userSchema = new mongoose.Schema({
     required: true
   },
 
+    businessHours: [{
+    dayOfWeek: {
+      type: String,
+      required: true
+    },
+    startTime: {
+      type: String,
+      required: true
+    },
+    endTime: {
+      type: String,
+      required: true
+    },
+    isAvailable: {
+      type: Boolean,
+      default: true
+    },
+    serviceTypes: [{
+      type: String
+    }],
+    notes: {
+      type: String,
+      default: ''
+    }
+  }],
+
+
   favorites: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   }],
+
+  
 
   isAvailableNow: {
     type: Boolean,

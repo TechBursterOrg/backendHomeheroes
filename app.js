@@ -24,8 +24,7 @@ import Notification from './models/Notification.js';
 import Rating from './models/Rating.js';
 import { Storage } from '@google-cloud/storage';
 import ratingRoutes from './routes/ratings.routes.js';
-
-
+import Schedule from './models/Schedule.js'; // Adjust path as needed
 
 // Add to your imports in server.js
 
@@ -132,6 +131,25 @@ const uploadToGCS = (file, folder = 'gallery') => {
       reject(error);
     }
   });
+};
+
+
+const deleteFromGCS = async (fileUrl) => {
+  try {
+    if (fileUrl && fileUrl.includes('storage.googleapis.com')) {
+      // Extract the filename from the GCS URL
+      const urlParts = fileUrl.split('/');
+      const filename = urlParts.slice(3).join('/'); // Remove https://storage.googleapis.com/bucket-name/
+      
+      await bucket.file(filename).delete();
+      console.log(`✅ Deleted file from GCS: ${filename}`);
+      return true;
+    }
+    return false;
+  } catch (error) {
+    console.error('❌ GCS delete error:', error);
+    throw error;
+  }
 };
 
 
@@ -265,6 +283,78 @@ app.post('/api/auth/profile/image', authenticateToken, upload.single('profileIma
     });
   }
 });
+
+//NIN
+app.post('/api/auth/verify-identity', authenticateToken, upload.single('nepaBill'), async (req, res) => {
+  try {
+    const { nin } = req.body;
+    const nepaBill = req.file;
+
+    // Server-side NIN validation
+    if (!nin) {
+      return res.status(400).json({
+        success: false,
+        message: 'NIN is required'
+      });
+    }
+
+    // Clean and validate NIN
+    const cleanNIN = nin.replace(/\D/g, '');
+    
+    if (cleanNIN.length !== 11) {
+      return res.status(400).json({
+        success: false,
+        message: 'NIN must be exactly 11 digits'
+      });
+    }
+
+    // Handle file upload for NEPA bill to GCS
+    let nepaBillUrl = '';
+    if (nepaBill) {
+      console.log('Uploading NEPA bill to Google Cloud Storage...');
+      const uploadResult = await uploadToGCS(nepaBill, 'verification');
+      nepaBillUrl = uploadResult.url;
+      console.log('✅ NEPA bill uploaded to GCS:', nepaBillUrl);
+    }
+
+    // Update user verification data
+    const user = await User.findById(req.user.id);
+    user.identityVerification = {
+      nin: cleanNIN,
+      nepaBillUrl: nepaBillUrl,
+      isNinVerified: false,
+      isNepaVerified: false,
+      verificationStatus: 'pending',
+      verificationSubmittedAt: new Date(),
+      verificationNotes: ''
+    };
+
+    user.hasSubmittedVerification = true;
+    await user.save();
+
+    // In production, integrate with real NIMC API here
+    await verifyWithExternalService(cleanNIN, user._id);
+
+    res.json({
+      success: true,
+      message: 'Identity verification submitted successfully. It will be reviewed by our team.',
+      data: {
+        isNinVerified: false,
+        isNepaVerified: false,
+        verificationStatus: 'pending',
+        hasSubmittedVerification: true
+      }
+    });
+
+  } catch (error) {
+    console.error('Identity verification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to submit identity verification'
+    });
+  }
+});
+
 app.use('/api/ratings', (req, res, next) => {
   const origin = req.headers.origin;
   
@@ -309,7 +399,7 @@ app.delete('/api/gallery/:id', authenticateToken, async (req, res) => {
   try {
     const imageId = req.params.id;
     
-    // Find the image first to get the file path
+    // Find the image first to get the file URL
     const image = await Gallery.findById(imageId);
     
     if (!image) {
@@ -330,12 +420,7 @@ app.delete('/api/gallery/:id', authenticateToken, async (req, res) => {
     // Delete from Google Cloud Storage if it's a GCS URL
     if (image.imageUrl && image.imageUrl.includes('storage.googleapis.com')) {
       try {
-        // Extract the filename from the GCS URL
-        const urlParts = image.imageUrl.split('/');
-        const filename = urlParts.slice(3).join('/'); // Remove https://storage.googleapis.com/bucket-name/
-        
-        await bucket.file(filename).delete();
-        console.log(`✅ Deleted file from GCS: ${filename}`);
+        await deleteFromGCS(image.imageUrl);
       } catch (gcsError) {
         console.error('❌ GCS delete error (non-critical):', gcsError);
         // Continue with database deletion even if GCS delete fails
@@ -361,36 +446,36 @@ app.delete('/api/gallery/:id', authenticateToken, async (req, res) => {
 });
 
 // Check and create upload directories with proper permissions
-const setupUploadDirectories = () => {
-  const uploadDirs = [
-    path.join(__dirname, 'uploads', 'gallery'),
-    path.join(__dirname, 'uploads', 'profiles')
-  ];
+// const setupUploadDirectories = () => {
+//   const uploadDirs = [
+//     path.join(__dirname, 'uploads', 'gallery'),
+//     path.join(__dirname, 'uploads', 'profiles')
+//   ];
   
-  uploadDirs.forEach(uploadDir => {
-    try {
-      if (!fs.existsSync(uploadDir)) {
-        fs.mkdirSync(uploadDir, { 
-          recursive: true,
-          mode: 0o755 // Read/write/execute for owner, read/execute for group and others
-        });
-      }
+//   uploadDirs.forEach(uploadDir => {
+//     try {
+//       if (!fs.existsSync(uploadDir)) {
+//         fs.mkdirSync(uploadDir, { 
+//           recursive: true,
+//           mode: 0o755 // Read/write/execute for owner, read/execute for group and others
+//         });
+//       }
       
-      // Test write permissions
-      const testFile = path.join(uploadDir, 'test.txt');
-      fs.writeFileSync(testFile, 'test');
-      fs.unlinkSync(testFile);
+//       // Test write permissions
+//       const testFile = path.join(uploadDir, 'test.txt');
+//       fs.writeFileSync(testFile, 'test');
+//       fs.unlinkSync(testFile);
       
-      console.log(`✅ Upload directory is writable: ${uploadDir}`);
-    } catch (error) {
-      console.error(`❌ Upload directory error for ${uploadDir}:`, error);
-      console.error('Please check directory permissions for:', uploadDir);
-    }
-  });
-};
+//       console.log(`✅ Upload directory is writable: ${uploadDir}`);
+//     } catch (error) {
+//       console.error(`❌ Upload directory error for ${uploadDir}:`, error);
+//       console.error('Please check directory permissions for:', uploadDir);
+//     }
+//   });
+// };
 
 // Initialize upload directories
-setupUploadDirectories();
+// setupUploadDirectories();
 
 // Connect to MongoDB
 const connectDB = async () => {
@@ -554,6 +639,15 @@ const corsOptions = {
     // Allow requests with no origin (like mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
     
+    const allowedOrigins = [
+      'http://localhost:5173',
+      'http://localhost:3000', 
+      'http://127.0.0.1:5173',
+      'http://localhost:4173',
+      'https://homeheroes.help',
+      'https://www.homeheroes.help'
+    ];
+    
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
@@ -570,17 +664,20 @@ const corsOptions = {
     'Accept', 
     'Origin',
     'Cache-Control',
-    'Pragma'
+    'Pragma',
+    'Access-Control-Allow-Origin'
   ],
   exposedHeaders: [
     'Content-Length',
     'Content-Type',
-    'Authorization'
+    'Authorization',
+    'Access-Control-Allow-Origin'
   ],
   maxAge: 86400, // 24 hours
   preflightContinue: false,
   optionsSuccessStatus: 204
 };
+
 
 
 app.use(express.json({ 
@@ -602,6 +699,35 @@ app.use(cors(corsOptions));
 
 app.use('/api/ratings', express.json({ limit: '10mb' }));
 app.use('/api/ratings', express.urlencoded({ extended: true }));
+
+app.use('/api/ratings', express.json({ 
+  limit: '10mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+    console.log('📦 Ratings Raw Body:', buf.toString('utf8').substring(0, 200));
+  }
+}));
+
+app.use('/api/ratings', express.urlencoded({ 
+  extended: true, 
+  limit: '10mb' 
+}));
+
+// Debug middleware to log ALL ratings requests
+app.use('/api/ratings', (req, res, next) => {
+  console.log('🎯 Ratings Route Hit:', {
+    method: req.method,
+    url: req.originalUrl,
+    path: req.path,
+    body: req.body,
+    contentType: req.headers['content-type'],
+    hasBody: !!req.body,
+    bodyKeys: req.body ? Object.keys(req.body) : 'No body'
+  });
+  next();
+});
+
+
 app.use('/api/ratings', ratingRoutes);
 
 app.options('*', cors(corsOptions));
@@ -755,7 +881,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
 // Serve static files for uploaded images
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 app.use('/api/auth', authRoutes);
 app.use('/api/verification', verificationRoutes);
@@ -1077,6 +1203,29 @@ app.get('/api/auth/preferences', authenticateToken, async (req, res) => {
   }
 });
 
+async function testBucketAccess() {
+  try {
+    console.log('🔍 Testing GCS bucket access...');
+    
+    // Test if we can list files in the bucket
+    const [files] = await bucket.getFiles({ maxResults: 1 });
+    console.log('✅ Bucket access successful');
+    console.log('📁 Bucket name:', bucketName);
+    console.log('🔑 Project ID:', process.env.GCLOUD_PROJECT_ID);
+    
+    return true;
+  } catch (error) {
+    console.error('❌ Bucket access failed:', error.message);
+    console.log('💡 Check:');
+    console.log('   - Bucket name:', bucketName);
+    console.log('   - Service account permissions');
+    console.log('   - Google Cloud Key file exists');
+    return false;
+  }
+}
+
+// Call this when server starts
+testBucketAccess();
 
 // Get provider reviews
 app.get('/api/providers/:id/reviews', async (req, res) => {
@@ -2785,7 +2934,7 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
     
     console.log('📊 Fetching dashboard data for user:', userId);
 
-    // Fetch user data
+    // Fetch user data with latest stats
     const user = await User.findById(userId).select('-password');
     if (!user) {
       return res.status(404).json({
@@ -2806,67 +2955,43 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
       };
     }
 
-    // Fetch all bookings for this provider
-    const allBookings = await Booking.find({ providerId: userId })
-      .sort({ updatedAt: -1 })
-      .populate('customerId', 'name email phoneNumber');
+    // Calculate real-time stats from completed bookings
+    const completedBookings = await Booking.find({ 
+      providerId: userId, 
+      status: 'completed' 
+    }).populate('customerId', 'name email phoneNumber');
 
-    // Helper function to extract budget amount
-    const extractBudgetAmount = (budget) => {
-      if (!budget) return 0;
-      const numericString = budget.replace(/[^\d.]/g, '');
-      return parseFloat(numericString) || 0;
-    };
+    // Calculate real-time earnings
+    const realTimeEarnings = completedBookings.reduce((total, booking) => {
+      const amount = extractBudgetAmount(booking.budget);
+      return total + amount;
+    }, 0);
 
-    // Calculate stats from completed bookings
-    const completedBookings = allBookings.filter(booking => booking.status === 'completed');
+    // Calculate real-time active clients (last 90 days)
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
     
-    let totalEarnings = user.totalEarnings || 0;
-    let jobsCompleted = user.completedJobs || 0;
+    const recentCompletedBookings = completedBookings.filter(booking => 
+      booking.completedAt && new Date(booking.completedAt) >= ninetyDaysAgo
+    );
     
-    // Calculate active clients from unique customers in completed bookings
-    const uniqueCustomerIds = [...new Set(completedBookings
-      .map(booking => booking.customerId ? booking.customerId.toString() : null)
+    const uniqueCustomerIds = [...new Set(recentCompletedBookings
+      .map(booking => booking.customerId ? booking.customerId._id.toString() : null)
       .filter(id => id !== null)
     )];
-    
-    let activeClients = user.activeClients ? user.activeClients.length : uniqueCustomerIds.length;
 
-    // If user stats are 0, calculate from completed bookings and update user
-    let needsUserUpdate = false;
-    
-    if (totalEarnings === 0 && completedBookings.length > 0) {
-      totalEarnings = completedBookings.reduce((sum, booking) => {
-        return sum + extractBudgetAmount(booking.budget);
-      }, 0);
-      user.totalEarnings = totalEarnings;
-      needsUserUpdate = true;
-      console.log('💰 Calculated total earnings from bookings:', totalEarnings);
-    }
-
-    if (jobsCompleted === 0 && completedBookings.length > 0) {
-      jobsCompleted = completedBookings.length;
-      user.completedJobs = jobsCompleted;
-      needsUserUpdate = true;
-      console.log('📊 Calculated jobs completed from bookings:', jobsCompleted);
-    }
-
-    if (needsUserUpdate) {
-      await user.save();
-      console.log('✅ Updated user stats in database');
-    }
-
+    // Use real-time calculated stats or fallback to stored stats
     const stats = {
-      totalEarnings,
-      jobsCompleted,
-      averageRating: ratingStats.averageRating || 0,
-      activeClients,
-      totalRatings: ratingStats.totalRatings || 0
+      totalEarnings: realTimeEarnings > 0 ? realTimeEarnings : (user.totalEarnings || 0),
+      jobsCompleted: completedBookings.length > 0 ? completedBookings.length : (user.completedJobs || 0),
+      averageRating: ratingStats.averageRating || user.averageRating || 0,
+      activeClients: uniqueCustomerIds.length > 0 ? uniqueCustomerIds.length : (user.activeClients?.length || 0),
+      totalRatings: ratingStats.totalRatings || user.reviewCount || 0
     };
 
-    console.log('📈 Final dashboard stats:', stats);
+    console.log('📈 Final dashboard stats (real-time):', stats);
 
-    // Generate recent jobs from completed bookings
+    // Generate recent jobs
     const recentJobs = completedBookings
       .slice(0, 5)
       .map(booking => ({
@@ -2885,19 +3010,21 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
           'Completed'
       }));
 
-    // Generate upcoming tasks from confirmed/pending bookings
-    const upcomingTasks = allBookings
-      .filter(booking => booking.status === 'confirmed' || booking.status === 'pending')
-      .slice(0, 3)
-      .map(booking => ({
-        id: booking._id,
-        title: booking.serviceType,
-        client: booking.customerId?.name || booking.customerName || 'Unknown Client',
-        category: booking.serviceType.toLowerCase().includes('clean') ? 'cleaning' : 'handyman',
-        time: '10:00 AM',
-        duration: '2 hours',
-        priority: 'medium'
-      }));
+    // Generate upcoming tasks
+    const upcomingBookings = await Booking.find({ 
+      providerId: userId,
+      status: { $in: ['confirmed', 'pending'] }
+    }).limit(3);
+
+    const upcomingTasks = upcomingBookings.map(booking => ({
+      id: booking._id,
+      title: booking.serviceType,
+      client: booking.customerName || 'Unknown Client',
+      category: booking.serviceType.toLowerCase().includes('clean') ? 'cleaning' : 'handyman',
+      time: '10:00 AM',
+      duration: '2 hours',
+      priority: 'medium'
+    }));
 
     const responseData = {
       user: {
@@ -2910,7 +3037,7 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
       businessHours: user.businessHours || [],
       recentJobs,
       upcomingTasks,
-      bookings: allBookings.slice(0, 10),
+      bookings: upcomingBookings.slice(0, 10),
       schedule: user.schedule || [],
       stats
     };
@@ -2920,9 +3047,6 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
     res.json(responseData);
   } catch (error) {
     console.error('❌ Dashboard API error:', error);
-    console.error('Error details:', error.message);
-    console.error('Error stack:', error.stack);
-    
     res.status(500).json({
       success: false,
       message: 'Failed to fetch dashboard data',
@@ -2930,7 +3054,8 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
     });
   }
 });
-2
+
+
 
 
 function extractBudgetAmount(budget) {
@@ -2978,6 +3103,90 @@ app.get('/api/debug/user-stats/:userId', authenticateToken, async (req, res) => 
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+//Business Hours
+app.post('/api/business-hours/bulk', authenticateToken, async (req, res) => {
+  try {
+    const { businessHours } = req.body;
+    const userId = req.user.id;
+
+    console.log('💼 Saving business hours for user:', userId);
+
+    if (!businessHours || !Array.isArray(businessHours)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Business hours array is required'
+      });
+    }
+
+    // Update user's business hours
+    const user = await User.findByIdAndUpdate(
+      userId,
+      { 
+        businessHours: businessHours.map(hours => ({
+          dayOfWeek: hours.dayOfWeek,
+          startTime: hours.startTime,
+          endTime: hours.endTime,
+          isAvailable: hours.isAvailable !== undefined ? hours.isAvailable : true,
+          serviceTypes: hours.serviceTypes || [],
+          notes: hours.notes || ''
+        }))
+      },
+      { new: true }
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    console.log('✅ Business hours saved successfully');
+
+    res.json({
+      success: true,
+      message: 'Business hours saved successfully',
+      data: {
+        businessHours: user.businessHours
+      }
+    });
+  } catch (error) {
+    console.error('Business hours save error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to save business hours',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+app.get('/api/business-hours', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('businessHours');
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        businessHours: user.businessHours || []
+      }
+    });
+  } catch (error) {
+    console.error('Get business hours error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch business hours'
+    });
   }
 });
 
@@ -5335,9 +5544,45 @@ app.post('/api/schedule', authenticateToken, async (req, res) => {
   try {
     const scheduleData = req.body;
     
-    // Save to your database (adjust based on your schema)
-    const newScheduleEntry = new Schedule(scheduleData);
+    console.log('📋 Received schedule data:', scheduleData);
+    
+    // Validate required fields
+    const requiredFields = ['providerId', 'customerId', 'bookingId'];
+    const missingFields = requiredFields.filter(field => !scheduleData[field]);
+    
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Missing required fields: ${missingFields.join(', ')}`,
+        missingFields
+      });
+    }
+    
+    // Validate status enum
+    const validStatuses = ['pending', 'confirmed', 'completed', 'cancelled'];
+    if (scheduleData.status && !validStatuses.includes(scheduleData.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status: ${scheduleData.status}. Must be one of: ${validStatuses.join(', ')}`,
+        validStatuses
+      });
+    }
+    
+    // Ensure status is set to a valid value
+    const finalScheduleData = {
+      ...scheduleData,
+      status: scheduleData.status && validStatuses.includes(scheduleData.status) 
+        ? scheduleData.status 
+        : 'confirmed'
+    };
+    
+    console.log('💾 Saving schedule entry:', finalScheduleData);
+    
+    // Save to database
+    const newScheduleEntry = new Schedule(finalScheduleData);
     await newScheduleEntry.save();
+    
+    console.log('✅ Schedule entry created successfully:', newScheduleEntry._id);
     
     res.json({
       success: true,
@@ -5345,10 +5590,27 @@ app.post('/api/schedule', authenticateToken, async (req, res) => {
       data: newScheduleEntry
     });
   } catch (error) {
-    console.error('Add to schedule error:', error);
+    console.error('❌ Add to schedule error:', error);
+    
+    // Provide more specific error messages
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.keys(error.errors).map(key => ({
+        field: key,
+        message: error.errors[key].message,
+        value: error.errors[key].value
+      }));
+      
+      return res.status(400).json({
+        success: false,
+        message: 'Schedule validation failed',
+        errors: validationErrors
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      message: 'Failed to add booking to schedule'
+      message: 'Failed to add booking to schedule',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 });
@@ -5405,6 +5667,70 @@ app.get('/api/bookings/customer', authenticateToken, async (req, res) => {
 
 // Update booking status
 // Update booking status and add to schedule when confirmed
+async function updateProviderStatsOnCompletion(bookingId) {
+  try {
+    console.log('🔄 Updating provider stats for completed booking:', bookingId);
+    
+    const booking = await Booking.findById(bookingId)
+      .populate('providerId')
+      .populate('customerId');
+    
+    if (!booking || booking.status !== 'completed') {
+      console.log('❌ Booking not found or not completed');
+      return;
+    }
+
+    const provider = await User.findById(booking.providerId);
+    if (!provider) {
+      console.log('❌ Provider not found');
+      return;
+    }
+
+    // Extract numeric value from budget
+    const extractBudgetAmount = (budget) => {
+      if (!budget) return 0;
+      const numericString = budget.replace(/[^\d.]/g, '');
+      return parseFloat(numericString) || 0;
+    };
+
+    const earningsAmount = extractBudgetAmount(booking.budget);
+    console.log('💰 Earnings amount:', earningsAmount);
+
+    // Update provider stats
+    provider.completedJobs = (provider.completedJobs || 0) + 1;
+    provider.totalEarnings = (provider.totalEarnings || 0) + earningsAmount;
+    
+    // Update active clients (unique customers)
+    if (!provider.activeClients) {
+      provider.activeClients = [];
+    }
+    
+    const customerIdStr = booking.customerId._id.toString();
+    if (!provider.activeClients.includes(customerIdStr)) {
+      provider.activeClients.push(customerIdStr);
+    }
+
+    // Update average rating
+    const ratingStats = await Rating.getProviderAverageRating(provider._id);
+    provider.averageRating = ratingStats.averageRating;
+    provider.reviewCount = ratingStats.totalRatings;
+
+    await provider.save();
+    
+    console.log('✅ Provider stats updated:', {
+      provider: provider.name,
+      completedJobs: provider.completedJobs,
+      totalEarnings: provider.totalEarnings,
+      activeClients: provider.activeClients.length,
+      averageRating: provider.averageRating
+    });
+
+  } catch (error) {
+    console.error('❌ Error updating provider stats:', error);
+  }
+}
+
+
 app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
   try {
     let { status } = req.body;
@@ -5465,15 +5791,10 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     if (backendStatus === 'completed') {
       booking.status = 'completed';
       booking.completedAt = new Date();
-      booking.ratingPrompted = true; // Flag to prompt for ratings
+      booking.ratingPrompted = true;
       
-      // Send notification to customer to rate provider
-      try {
-        const { sendRatingPromptToCustomer } = await import('./utils/emailService.js');
-        await sendRatingPromptToCustomer(booking);
-      } catch (emailError) {
-        console.error('Failed to send rating prompt email:', emailError);
-      }
+      // ✅ ADDED: Update provider stats when booking is completed
+      await updateProviderStatsOnCompletion(bookingId);
     } else {
       booking.status = backendStatus;
     }
@@ -5484,12 +5805,20 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     if (backendStatus === 'confirmed' && oldStatus !== 'confirmed') {
       booking.acceptedAt = new Date();
       
-      // Add to schedule when confirmed
-      try {
-        await addBookingToSchedule(booking);
-      } catch (scheduleError) {
-        console.error('⚠️ Failed to add to schedule:', scheduleError);
-        // Don't fail the booking update if schedule fails
+      // CHECK IF SCHEDULE ENTRY ALREADY EXISTS BEFORE CREATING
+      const existingSchedule = await Schedule.findOne({ bookingId: booking._id });
+      
+      if (existingSchedule) {
+        console.log('📅 Schedule entry already exists, skipping creation:', existingSchedule._id);
+      } else {
+        // ADD TO SCHEDULE WHEN CONFIRMED - with error handling
+        try {
+          const scheduleEntry = await addBookingToSchedule(booking);
+          console.log('✅ Booking added to schedule:', scheduleEntry._id);
+        } catch (scheduleError) {
+          console.error('⚠️ Failed to add to schedule (non-critical):', scheduleError.message);
+          // Don't fail the booking update if schedule fails
+        }
       }
     }
 
@@ -5523,6 +5852,135 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
       success: false,
       message: 'Failed to update booking status',
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+
+
+//Shedule
+
+app.post('/api/debug/cleanup-duplicate-schedules', authenticateToken, async (req, res) => {
+  try {
+    // Find and remove schedule entries with missing required fields
+    const result = await Schedule.deleteMany({
+      $or: [
+        { providerId: { $exists: false } },
+        { customerId: { $exists: false } },
+        { bookingId: { $exists: false } },
+        { providerId: null },
+        { customerId: null },
+        { bookingId: null }
+      ]
+    });
+    
+    console.log('🧹 Cleaned up invalid schedule entries:', result.deletedCount);
+    
+    res.json({
+      success: true,
+      message: `Cleaned up ${result.deletedCount} invalid schedule entries`
+    });
+  } catch (error) {
+    console.error('Cleanup error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to cleanup schedule entries',
+      error: error.message
+    });
+  }
+});
+
+
+app.use('/api/schedule', (req, res, next) => {
+  console.log('📨 Schedule API Request:', {
+    method: req.method,
+    url: req.url,
+    body: req.body,
+    headers: req.headers
+  });
+  next();
+});
+
+app.get('/api/schedule', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { date } = req.query; // Optional: filter by specific date
+
+    let filter = { providerId: userId };
+    
+    if (date) {
+      filter.date = date; // Filter by specific date
+    }
+
+    const scheduleEntries = await Schedule.find(filter)
+      .sort({ date: 1, time: 1 })
+      .populate('customerId', 'name email phoneNumber')
+      .populate('bookingId', 'serviceType status');
+
+    res.json({
+      success: true,
+      data: {
+        schedule: scheduleEntries
+      }
+    });
+  } catch (error) {
+    console.error('Get schedule error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch schedule',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.post('/api/debug/test-schedule-validation', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.body;
+    
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+
+    // Test schedule creation
+    const testScheduleData = {
+      title: booking.serviceType,
+      client: booking.customerName,
+      phone: booking.customerPhone || 'Not provided',
+      location: booking.location,
+      date: new Date().toISOString().split('T')[0],
+      time: '10:00 AM',
+      endTime: '12:00 PM',
+      duration: '2 hours',
+      payment: booking.budget,
+      status: 'confirmed',
+      notes: booking.description,
+      category: 'cleaning',
+      priority: 'medium',
+      providerId: booking.providerId,
+      customerId: booking.customerId,
+      bookingId: booking._id
+    };
+
+    console.log('🧪 Testing schedule validation with:', testScheduleData);
+
+    const testSchedule = new Schedule(testScheduleData);
+    await testSchedule.validate(); // This will throw if validation fails
+
+    res.json({
+      success: true,
+      message: 'Schedule validation passed',
+      data: testScheduleData
+    });
+
+  } catch (error) {
+    console.error('❌ Schedule validation test failed:', error);
+    res.status(400).json({
+      success: false,
+      message: 'Schedule validation failed',
+      error: error.message,
+      errors: error.errors
     });
   }
 });
@@ -6214,9 +6672,25 @@ app.patch('/api/debug/test-booking-status/:id', authenticateToken, async (req, r
 
 async function addBookingToSchedule(booking) {
   try {
-    const Schedule = mongoose.model('Schedule');
-    
-    // Calculate end time
+    console.log('📅 Adding booking to schedule:', booking._id);
+    console.log('📋 Booking data:', {
+      bookingId: booking._id,
+      providerId: booking.providerId,
+      customerId: booking.customerId,
+      serviceType: booking.serviceType
+    });
+
+    // Validate required fields
+    if (!booking.providerId || !booking.customerId || !booking._id) {
+      console.error('❌ Missing required fields for schedule:', {
+        providerId: booking.providerId,
+        customerId: booking.customerId,
+        bookingId: booking._id
+      });
+      throw new Error('Missing required fields for schedule creation');
+    }
+
+    // Calculate end time based on service type
     const calculateEndTime = (startTime, serviceType) => {
       const [time, modifier] = startTime.split(' ');
       let [hours, minutes] = time.split(':').map(Number);
@@ -6224,9 +6698,11 @@ async function addBookingToSchedule(booking) {
       if (modifier === 'PM' && hours !== 12) hours += 12;
       if (modifier === 'AM' && hours === 12) hours = 0;
       
-      let durationHours = 2; // default
+      // Add duration based on service type
+      let durationHours = 2; // default 2 hours
       if (serviceType.includes('Cleaning')) durationHours = 3;
       if (serviceType.includes('Maintenance')) durationHours = 4;
+      if (serviceType.includes('Repair')) durationHours = 2;
       
       const totalMinutes = hours * 60 + minutes + durationHours * 60;
       let endHours = Math.floor(totalMinutes / 60) % 24;
@@ -6241,42 +6717,91 @@ async function addBookingToSchedule(booking) {
 
     // Parse timeframe to get date
     let scheduleDate = new Date();
-    let scheduleTime = '10:00 AM';
+    let scheduleTime = '10:00 AM'; // Default time
     
     if (booking.timeframe.toLowerCase().includes('tomorrow')) {
       scheduleDate.setDate(scheduleDate.getDate() + 1);
     } else if (booking.timeframe.toLowerCase().includes('next week')) {
       scheduleDate.setDate(scheduleDate.getDate() + 7);
+    } else if (booking.timeframe.toLowerCase().includes('today')) {
+      // Use today's date
+    } else {
+      // Try to parse specific date from timeframe
+      const dateMatch = booking.timeframe.match(/\d{1,2}\/\d{1,2}\/\d{4}/);
+      if (dateMatch) {
+        scheduleDate = new Date(dateMatch[0]);
+      }
     }
 
+    // Check if schedule entry already exists for this booking
+    const existingSchedule = await Schedule.findOne({ bookingId: booking._id });
+    if (existingSchedule) {
+      console.log('📅 Schedule entry already exists for booking:', booking._id);
+      return existingSchedule;
+    }
+
+    // Create schedule data with ALL required fields
     const scheduleData = {
       title: booking.serviceType,
-      client: booking.customerName,
-      phone: booking.customerPhone,
-      location: booking.location,
-      date: scheduleDate.toISOString().split('T')[0],
+      client: booking.customerName || 'Unknown Client',
+      phone: booking.customerPhone || 'Not provided',
+      location: booking.location || 'Location not specified',
+      date: scheduleDate.toISOString().split('T')[0], // YYYY-MM-DD format
       time: scheduleTime,
       endTime: calculateEndTime(scheduleTime, booking.serviceType),
       duration: '2 hours',
-      payment: booking.budget,
-      status: 'confirmed',
-      notes: booking.specialRequests || booking.description,
-      category: booking.serviceType.toLowerCase().includes('clean') ? 'cleaning' : 'handyman',
+      payment: booking.budget || 'Not specified',
+      status: 'confirmed', // FIXED: Use valid enum value
+      notes: booking.specialRequests || booking.description || '',
+      category: booking.serviceType.toLowerCase().includes('clean') ? 'cleaning' : 
+               booking.serviceType.toLowerCase().includes('garden') ? 'gardening' : 'handyman',
       priority: 'medium',
+      
+      // REQUIRED FIELDS - ensure these are properly set
       providerId: booking.providerId,
       customerId: booking.customerId,
       bookingId: booking._id
     };
 
+    console.log('📋 Final schedule data:', scheduleData);
+
     const newSchedule = new Schedule(scheduleData);
     await newSchedule.save();
     
+    console.log('✅ Booking added to schedule successfully:', newSchedule._id);
     return newSchedule;
   } catch (error) {
-    console.error('Error in addBookingToSchedule:', error);
+    console.error('❌ Error adding booking to schedule:', error);
     throw error;
   }
 }
+
+
+
+app.get('/api/debug/schedule', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    const scheduleEntries = await Schedule.find({ providerId: userId })
+      .populate('customerId', 'name email')
+      .populate('providerId', 'name email')
+      .populate('bookingId', 'serviceType status timeframe');
+    
+    res.json({
+      success: true,
+      data: {
+        count: scheduleEntries.length,
+        schedule: scheduleEntries
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 
 // Test endpoint - add to server.js
 app.get('/api/test-booking-update', authenticateToken, async (req, res) => {

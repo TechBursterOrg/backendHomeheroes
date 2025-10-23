@@ -11,7 +11,7 @@ const scheduleSchema = new mongoose.Schema({
   },
   phone: {
     type: String,
-    required: true
+    default: 'Not provided' // Make optional with default
   },
   location: {
     type: String,
@@ -39,7 +39,7 @@ const scheduleSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['confirmed', 'pending', 'cancelled'],
+    enum: ['confirmed', 'pending','confirmed', 'cancelled'], // FIXED: Remove 'accepted'
     default: 'confirmed'
   },
   notes: {

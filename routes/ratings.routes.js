@@ -69,29 +69,26 @@ function authenticateToken(req, res, next) {
 router.post('/customer', authenticateToken, async (req, res) => {
   try {
     console.log('📝 Customer rating request received');
-    console.log('Request body:', req.body);
-    console.log('Request headers:', req.headers);
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('User:', req.user.id);
 
-    // ADD THIS: Check if body is completely missing
+    // Check if body exists
     if (!req.body) {
-      console.log('❌ Request body is completely undefined');
       return res.status(400).json({
         success: false,
         message: 'Request body is required'
       });
     }
 
-    // Safely access request body with defaults
-    const body = req.body || {};
-    const bookingId = body.booking || body.bookingId || body.booking_id;
-    const rating = body.rating || body.score || body.rating_value;
-    const comment = body.review || body.feedback || body.comment || body.comment_text;
+    // Support multiple field name variations
+    const bookingId = req.body.bookingId || req.body.booking || req.body.booking_id;
+    const rating = req.body.rating || req.body.score || req.body.rating_value;
+    const comment = req.body.comment || req.body.review || req.body.feedback || '';
 
-    const customerId = req.user.id;
+    console.log('📋 Parsed fields:', { bookingId, rating, comment });
 
-    // Validate input with better error messages
+    // Validate required fields
     if (!bookingId) {
-      console.log('❌ Missing bookingId from body:', body);
       return res.status(400).json({
         success: false,
         message: 'Booking ID is required'
@@ -99,24 +96,115 @@ router.post('/customer', authenticateToken, async (req, res) => {
     }
 
     if (!rating) {
-      console.log('❌ Missing rating from body:', body);
       return res.status(400).json({
         success: false,
         message: 'Rating is required'
       });
     }
 
-    // Rest of your existing validation and logic...
-    console.log('✅ Valid request received:', { 
-      bookingId, 
-      rating, 
-      comment, 
-      customerId 
+    if (rating < 1 || rating > 5) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rating must be between 1 and 5'
+      });
+    }
+
+    // Find the booking
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Check if user is the customer for this booking
+    if (booking.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to rate this booking'
+      });
+    }
+
+    // Check if booking is completed
+    if (booking.status !== 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Can only rate completed bookings'
+      });
+    }
+
+    // Check if customer has already rated this booking
+    if (booking.ratingStatus?.customerRated) {
+      return res.status(400).json({
+        success: false,
+        message: 'You have already rated this provider for this booking'
+      });
+    }
+
+    // Find or create rating document
+    let ratingDoc = await Rating.findOne({ bookingId });
+    
+    if (!ratingDoc) {
+      ratingDoc = new Rating({
+        bookingId,
+        providerId: booking.providerId,
+        customerId: booking.customerId,
+        serviceType: booking.serviceType,
+        providerRating: rating,
+        providerComment: comment,
+        customerRated: true,
+        ratedAt: new Date()
+      });
+    } else {
+      ratingDoc.providerRating = rating;
+      ratingDoc.providerComment = comment;
+      ratingDoc.customerRated = true;
+      ratingDoc.ratedAt = new Date();
+    }
+
+    await ratingDoc.save();
+
+    // Update booking rating status
+    booking.ratingStatus = booking.ratingStatus || {};
+    booking.ratingStatus.customerRated = true;
+    await booking.save();
+
+    // Update provider's average rating
+    await updateProviderAverageRating(booking.providerId);
+
+    // Create notification for provider
+    try {
+      await Notification.createNotification({
+        userId: booking.providerId,
+        type: 'rating_received',
+        title: 'New Rating Received!',
+        message: `A customer rated you ${rating} stars for ${booking.serviceType}`,
+        relatedId: booking._id,
+        relatedType: 'booking',
+        priority: 'medium'
+      });
+    } catch (notificationError) {
+      console.error('Failed to create provider notification:', notificationError);
+    }
+
+    console.log('✅ Customer rating submitted successfully:', {
+      bookingId,
+      rating,
+      providerId: booking.providerId
     });
 
-    // Continue with your existing code...
+    res.json({
+      success: true,
+      message: 'Rating submitted successfully',
+      data: { 
+        rating: ratingDoc,
+        averageRating: await Rating.getProviderAverageRating(booking.providerId)
+      }
+    });
+
   } catch (error) {
-    console.error('💥 Customer rating error:', error);
+    console.error('❌ Customer rating error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to submit rating',
@@ -124,6 +212,7 @@ router.post('/customer', authenticateToken, async (req, res) => {
     });
   }
 });
+
 
 router.post('/test-body', (req, res) => {
   console.log('🧪 Test body endpoint hit');
