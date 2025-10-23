@@ -65,3 +65,4 @@ typings/
 .env.production
 .env.local
 .env
+google-cloud-key.json
