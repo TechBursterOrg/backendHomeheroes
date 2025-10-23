@@ -22,6 +22,9 @@ import jobRoutes from './routes/jobs.js';
 import bcrypt from 'bcryptjs';
 import Notification from './models/Notification.js';
 import Rating from './models/Rating.js';
+import { Storage } from '@google-cloud/storage';
+import ratingRoutes from './routes/ratings.routes.js';
+
 
 
 // Add to your imports in server.js
@@ -57,6 +60,80 @@ const PORT = process.env.PORT || 3001;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://homehero:7cuMFr33u7jhrbOh@homehero.b4bixqd.mongodb.net/homehero?retryWrites=true&w=majority';
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secure-jwt-secret-key-change-in-production-2025';
 
+const storage = new Storage({
+  keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS || path.join(__dirname, 'google-cloud-key.json'),
+  projectId: process.env.GCLOUD_PROJECT_ID
+});
+
+
+
+
+const bucketName = process.env.GCLOUD_BUCKET_NAME || 'homehero-gallery';
+const bucket = storage.bucket(bucketName);
+
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed!'), false);
+    }
+  }
+});
+
+const uploadToGCS = (file, folder = 'gallery') => {
+  return new Promise((resolve, reject) => {
+    try {
+      // Generate unique filename
+      const extension = path.extname(file.originalname);
+      const filename = `${folder}/${Date.now()}-${Math.round(Math.random() * 1E9)}${extension}`;
+      
+      // Create file reference in bucket
+      const blob = bucket.file(filename);
+      
+      // Create write stream
+      const blobStream = blob.createWriteStream({
+        metadata: {
+          contentType: file.mimetype,
+        },
+        resumable: false
+      });
+
+      blobStream.on('error', (error) => {
+        console.error('GCS Upload Error:', error);
+        reject(new Error('Unable to upload image'));
+      });
+
+      blobStream.on('finish', async () => {
+        try {
+          // Make the file public
+          await blob.makePublic();
+          
+          // Get public URL
+          const publicUrl = `https://storage.googleapis.com/${bucket.name}/${blob.name}`;
+          resolve({
+            filename: blob.name,
+            url: publicUrl,
+            bucket: bucket.name
+          });
+        } catch (error) {
+          console.error('GCS Make Public Error:', error);
+          reject(new Error('Unable to make image public'));
+        }
+      });
+
+      blobStream.end(file.buffer);
+    } catch (error) {
+      reject(error);
+    }
+  });
+};
+
 
 
 // Initialize email transporter
@@ -72,6 +149,216 @@ initializeEmailTransporter().then(success => {
 
 
 // ==================== UPLOAD DIRECTORY SETUP ====================
+
+app.post('/api/gallery/upload', authenticateToken, upload.single('image'), async (req, res) => {
+  try {
+    console.log('=== GALLERY UPLOAD TO GOOGLE CLOUD STORAGE ===');
+    
+    if (!req.file) {
+      console.log('No image file uploaded');
+      return res.status(400).json({
+        success: false,
+        message: 'No image file provided. Please select an image.'
+      });
+    }
+
+    const { title, description, category, tags, featured } = req.body;
+
+    // Validate required fields
+    if (!title || !title.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Title is required'
+      });
+    }
+
+    // Upload to Google Cloud Storage
+    console.log('Uploading to Google Cloud Storage...');
+    const uploadResult = await uploadToGCS(req.file, 'gallery');
+    
+    console.log('✅ Image uploaded to GCS:', uploadResult.url);
+
+    // Create gallery entry with GCS URL
+    const newImage = new Gallery({
+      title: title.trim(),
+      description: description ? description.trim() : '',
+      category: category || 'other',
+      imageUrl: uploadResult.url, // Store GCS URL
+      fullImageUrl: uploadResult.url, // Same URL for GCS
+      userId: req.user.id,
+      tags: tags ? tags.split(',').map(tag => tag.trim()).filter(tag => tag) : [],
+      featured: featured === 'true' || featured === true
+    });
+
+    // Save to database
+    const savedImage = await newImage.save();
+    await savedImage.populate('userId', 'name profileImage');
+
+    console.log('Image saved to database:', savedImage._id);
+
+    res.status(201).json({
+      success: true,
+      message: 'Image uploaded successfully to cloud storage',
+      data: savedImage
+    });
+    
+  } catch (error) {
+    console.error('Gallery upload error:', error);
+    
+    let errorMessage = 'Failed to upload image';
+    let statusCode = 500;
+    
+    if (error.name === 'ValidationError') {
+      errorMessage = 'Invalid data: ' + Object.values(error.errors).map(e => e.message).join(', ');
+      statusCode = 400;
+    } else if (error.message.includes('Only image files')) {
+      errorMessage = 'Only image files are allowed (jpg, png, gif, etc.)';
+      statusCode = 400;
+    } else if (error.message.includes('File too large')) {
+      errorMessage = 'File size must be less than 5MB';
+      statusCode = 400;
+    }
+    
+    res.status(statusCode).json({
+      success: false,
+      message: errorMessage,
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
+
+app.post('/api/auth/profile/image', authenticateToken, upload.single('profileImage'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No image file provided'
+      });
+    }
+
+    console.log('Uploading profile image to Google Cloud Storage...');
+    
+    // Upload to Google Cloud Storage
+    const uploadResult = await uploadToGCS(req.file, 'profiles');
+    
+    console.log('✅ Profile image uploaded to GCS:', uploadResult.url);
+
+    // Update user profile with the GCS URL
+    await User.findByIdAndUpdate(req.user.id, { 
+      profileImage: uploadResult.url
+    });
+
+    res.json({
+      success: true,
+      message: 'Profile image uploaded successfully to cloud storage',
+      data: { 
+        imageUrl: uploadResult.url
+      }
+    });
+  } catch (error) {
+    console.error('Profile image upload error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to upload profile image',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+app.use('/api/ratings', (req, res, next) => {
+  const origin = req.headers.origin;
+  
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+  }
+  
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
+  next();
+});
+
+
+
+app.get('/api/providers/:id/rating', async (req, res) => {
+  try {
+    const providerId = req.params.id;
+    
+    const ratingStats = await Rating.getProviderAverageRating(providerId);
+    
+    res.json({
+      success: true,
+      data: ratingStats
+    });
+  } catch (error) {
+    console.error('Get provider rating error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch provider rating'
+    });
+  }
+});
+
+
+
+app.delete('/api/gallery/:id', authenticateToken, async (req, res) => {
+  try {
+    const imageId = req.params.id;
+    
+    // Find the image first to get the file path
+    const image = await Gallery.findById(imageId);
+    
+    if (!image) {
+      return res.status(404).json({
+        success: false,
+        message: 'Image not found'
+      });
+    }
+    
+    // Check if the user owns this image or is an admin
+    if (image.userId.toString() !== req.user.id && req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'You can only delete your own images'
+      });
+    }
+    
+    // Delete from Google Cloud Storage if it's a GCS URL
+    if (image.imageUrl && image.imageUrl.includes('storage.googleapis.com')) {
+      try {
+        // Extract the filename from the GCS URL
+        const urlParts = image.imageUrl.split('/');
+        const filename = urlParts.slice(3).join('/'); // Remove https://storage.googleapis.com/bucket-name/
+        
+        await bucket.file(filename).delete();
+        console.log(`✅ Deleted file from GCS: ${filename}`);
+      } catch (gcsError) {
+        console.error('❌ GCS delete error (non-critical):', gcsError);
+        // Continue with database deletion even if GCS delete fails
+      }
+    }
+    
+    // Delete the database record
+    await Gallery.findByIdAndDelete(imageId);
+    
+    res.json({
+      success: true,
+      message: 'Image deleted successfully'
+    });
+    
+  } catch (error) {
+    console.error('Delete image error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete image',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
 
 // Check and create upload directories with proper permissions
 const setupUploadDirectories = () => {
@@ -257,7 +544,67 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
       'http://127.0.0.1:5173',
       'http://localhost:4173',
       'http://localhost:5174',
+      'http://localhost:5175', // Add more if needed
     ];
+
+
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.log('CORS blocked origin:', origin);
+      callback(new Error('Not allowed by CORS'), false);
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-Requested-With', 
+    'Accept', 
+    'Origin',
+    'Cache-Control',
+    'Pragma'
+  ],
+  exposedHeaders: [
+    'Content-Length',
+    'Content-Type',
+    'Authorization'
+  ],
+  maxAge: 86400, // 24 hours
+  preflightContinue: false,
+  optionsSuccessStatus: 204
+};
+
+
+app.use(express.json({ 
+  limit: '10mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
+
+app.use(express.urlencoded({ 
+  extended: true, 
+  limit: '10mb' 
+}));
+
+
+app.use(cors(corsOptions));
+
+
+
+app.use('/api/ratings', express.json({ limit: '10mb' }));
+app.use('/api/ratings', express.urlencoded({ extended: true }));
+app.use('/api/ratings', ratingRoutes);
+
+app.options('*', cors(corsOptions));
 
 app.use(cors({
   origin: function (origin, callback) {
@@ -370,6 +717,27 @@ app.options('*', cors());
 // Handle preflight requests
 app.options('*', cors());
 // Middleware
+
+
+
+// Add this specific middleware for ratings routes
+app.use('/api/ratings', express.json({ limit: '10mb' }));
+app.use('/api/ratings', express.urlencoded({ extended: true }));
+
+// Debug middleware to log request bodies
+app.use((req, res, next) => {
+  if (req.originalUrl.includes('/api/ratings')) {
+    console.log('📦 Ratings Request Body:', {
+      method: req.method,
+      url: req.originalUrl,
+      body: req.body,
+      contentType: req.headers['content-type']
+    });
+  }
+  next();
+});
+
+
 if (process.env.NODE_ENV === 'production') {
   app.use(morgan('combined'));
 } else {
@@ -714,13 +1082,97 @@ app.get('/api/auth/preferences', authenticateToken, async (req, res) => {
 app.get('/api/providers/:id/reviews', async (req, res) => {
   try {
     const providerId = req.params.id;
-    // Fetch reviews from your database
-    const reviews = await Review.find({ providerId }).populate('customer');
-    res.json({ success: true, data: reviews });
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const reviews = await Rating.find({
+      providerId: providerId,
+      customerRated: true,
+      providerRating: { $exists: true, $ne: null },
+      providerComment: { $exists: true, $ne: '' }
+    })
+    .populate('customerId', 'name profileImage')
+    .populate('bookingId', 'serviceType requestedAt')
+    .sort({ ratedAt: -1 })
+    .skip(skip)
+    .limit(limit);
+
+    const totalReviews = await Rating.countDocuments({
+      providerId: providerId,
+      customerRated: true,
+      providerRating: { $exists: true, $ne: null },
+      providerComment: { $exists: true, $ne: '' }
+    });
+
+    const formattedReviews = reviews.map(review => ({
+      id: review._id,
+      customerName: review.customerId?.name || 'Anonymous',
+      customerImage: review.customerId?.profileImage || '',
+      rating: review.providerRating,
+      comment: review.providerComment,
+      serviceType: review.bookingId?.serviceType || 'Service',
+      date: review.ratedAt,
+      bookingId: review.bookingId?._id
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        reviews: formattedReviews,
+        pagination: {
+          currentPage: page,
+          totalPages: Math.ceil(totalReviews / limit),
+          totalReviews: totalReviews,
+          hasNextPage: page < Math.ceil(totalReviews / limit),
+          hasPrevPage: page > 1
+        }
+      }
+    });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    console.error('Get provider reviews error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch provider reviews'
+    });
   }
 });
+async function updateProviderAverageRating(providerId) {
+  try {
+    const ratings = await Rating.aggregate([
+      {
+        $match: {
+          providerId: new mongoose.Types.ObjectId(providerId),
+          customerRated: true,
+          providerRating: { $exists: true, $ne: null }
+        }
+      },
+      {
+        $group: {
+          _id: '$providerId',
+          averageRating: { $avg: '$providerRating' },
+          totalRatings: { $sum: 1 }
+        }
+      }
+    ]);
+
+    if (ratings.length > 0) {
+      const ratingData = ratings[0];
+      const averageRating = Math.round(ratingData.averageRating * 10) / 10;
+      
+      await User.findByIdAndUpdate(providerId, {
+        averageRating: averageRating,
+        reviewCount: ratingData.totalRatings
+      });
+
+      console.log(`✅ Updated provider ${providerId} rating: ${averageRating} from ${ratingData.totalRatings} reviews`);
+    }
+  } catch (error) {
+    console.error('Error updating provider average rating:', error);
+  }
+}
+
+
 app.post('/api/test-email-simple', async (req, res) => {
   const transporter = nodemailer.createTransport({
     service: 'gmail',
@@ -4906,6 +5358,22 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
       });
     }
 
+    if (status === 'completed') {
+      booking.status = 'completed';
+      booking.completedAt = new Date();
+      booking.ratingPrompted = true; // Flag to prompt for ratings
+      
+      // Send notification to customer to rate provider
+      try {
+        const { sendRatingPromptToCustomer } = await import('./utils/emailService.js');
+        await sendRatingPromptToCustomer(booking);
+      } catch (emailError) {
+        console.error('Failed to send rating prompt email:', emailError);
+      }
+    }
+
+    await booking.save();
+
     const booking = await Booking.findById(bookingId);
     if (!booking) {
       return res.status(404).json({
@@ -5070,7 +5538,7 @@ app.post('/api/ratings/customer', authenticateToken, async (req, res) => {
     await booking.save();
 
     // Update provider's average rating
-    await updateProviderRating(booking.providerId);
+    await updateProviderAverageRating(booking.providerId);
 
     console.log('✅ Customer rating submitted successfully for booking:', bookingId);
 
@@ -8205,18 +8673,25 @@ app.use((err, req, res, next) => {
 // Debug middleware for file uploads
 // 
 app.use((req, res, next) => {
-  // Security headers
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  const origin = req.headers.origin;
+  console.log('CORS Debug:', {
+    method: req.method,
+    url: req.url,
+    origin: origin,
+    allowed: allowedOrigins.includes(origin)
+  });
   
-  if (process.env.NODE_ENV === 'production') {
-    res.setHeader('Content-Security-Policy', "default-src 'self'");
+  // Add CORS headers to all responses
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, Pragma');
   }
   
   next();
 });
+
 
 
 

@@ -422,25 +422,14 @@ const sendBookingAcceptedEmailViaMailjet = async (customerEmail, bookingData, pr
   }
 };
 
+
+
 export const sendRatingPromptToCustomer = async (booking) => {
   try {
-    const transporter = getEmailTransporter();
-    
-    if (!transporter) {
-      console.log('📧 Email transporter not available, simulating rating prompt email');
-      return { 
-        success: true, 
-        simulated: true,
-        message: 'Rating prompt email would be sent to: ' + booking.customerEmail
-      };
-    }
-
-    const ratingUrl = `${process.env.FRONTEND_URL}/rate-provider?bookingId=${booking._id}`;
-
     const mailOptions = {
       from: process.env.EMAIL_USER,
       to: booking.customerEmail,
-      subject: 'Rate Your Service Provider - HomeHero',
+      subject: 'Rate Your Service Experience - HomeHero',
       html: `
         <!DOCTYPE html>
         <html>
@@ -448,9 +437,9 @@ export const sendRatingPromptToCustomer = async (booking) => {
           <style>
             body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
             .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 30px; text-align: center; color: white; border-radius: 10px 10px 0 0; }
+            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; color: white; border-radius: 10px 10px 0 0; }
             .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
-            .button { display: inline-block; padding: 12px 30px; background: #f59e0b; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0; }
+            .button { display: inline-block; padding: 12px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0; }
             .footer { text-align: center; margin-top: 30px; color: #666; font-size: 12px; }
           </style>
         </head>
@@ -465,7 +454,9 @@ export const sendRatingPromptToCustomer = async (booking) => {
               <p>Your recent service with <strong>${booking.providerName}</strong> has been completed. We'd love to hear about your experience!</p>
               
               <div style="text-align: center; margin: 30px 0;">
-                <a href="${ratingUrl}" class="button">Rate Your Provider</a>
+                <a href="${process.env.FRONTEND_URL}/bookings?rate=${booking._id}" class="button">
+                  Rate Your Experience
+                </a>
               </div>
 
               <p>Your feedback helps us maintain quality standards and helps other customers make informed decisions.</p>
@@ -481,12 +472,71 @@ export const sendRatingPromptToCustomer = async (booking) => {
       `
     };
 
-    const result = await transporter.sendMail(mailOptions);
+    const result = await emailTransporter.sendMail(mailOptions);
     console.log('✅ Rating prompt email sent to customer:', booking.customerEmail);
-    
     return { success: true, messageId: result.messageId };
   } catch (error) {
     console.error('❌ Failed to send rating prompt email:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+
+export const sendNewRatingNotificationToProvider = async (providerEmail, rating, booking) => {
+  try {
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: providerEmail,
+      subject: 'New Rating Received - HomeHero',
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 30px; text-align: center; color: white; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .rating { color: #f59e0b; font-size: 24px; text-align: center; margin: 20px 0; }
+            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 12px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>⭐ New Rating Received</h1>
+              <p>You've received a new rating from a customer</p>
+            </div>
+            <div class="content">
+              <p>Great news! You've received a new ${rating}/5 star rating.</p>
+              
+              <div class="rating">
+                ${'⭐'.repeat(rating)}${'☆'.repeat(5 - rating)}
+                <br>
+                <strong>${rating} out of 5 stars</strong>
+              </div>
+
+              <p><strong>Service:</strong> ${booking.serviceType}</p>
+              <p><strong>Customer:</strong> ${booking.customerName}</p>
+              
+              <p>Keep up the great work! Your ratings help build trust with potential customers.</p>
+              
+              <div class="footer">
+                <p>This is an automated message. Please do not reply to this email.</p>
+                <p>© 2024 HomeHero. All rights reserved.</p>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `
+    };
+
+    const result = await emailTransporter.sendMail(mailOptions);
+    console.log('✅ New rating notification sent to provider:', providerEmail);
+    return { success: true, messageId: result.messageId };
+  } catch (error) {
+    console.error('❌ Failed to send new rating notification:', error);
     return { success: false, error: error.message };
   }
 };
