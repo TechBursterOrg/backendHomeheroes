@@ -2783,6 +2783,8 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     
+    console.log('📊 Fetching dashboard data for user:', userId);
+
     // Fetch user data
     const user = await User.findById(userId).select('-password');
     if (!user) {
@@ -2793,112 +2795,134 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
     }
 
     // Fetch provider rating stats
-    const ratingStats = await Rating.getProviderAverageRating(userId);
+    let ratingStats;
+    try {
+      ratingStats = await Rating.getProviderAverageRating(userId);
+    } catch (ratingError) {
+      console.log('⚠️ Rating stats not available, using defaults');
+      ratingStats = {
+        averageRating: 0,
+        totalRatings: 0
+      };
+    }
 
-    // Fetch availability slots
-    const availabilitySlots = user.availability || [];
-    
-    // Fetch recent jobs
-    const recentJobs = await Job.find({ providerId: userId })
-      .sort({ date: -1 })
-      .limit(3)
-      .populate('clientId', 'name');
-    
-    // Fetch upcoming tasks
-    const upcomingTasks = await Job.find({ 
-      providerId: userId, 
-      status: { $in: ['confirmed', 'upcoming'] },
-      date: { $gte: new Date() }
-    })
-    .sort({ date: 1 })
-    .limit(2)
-    .populate('clientId', 'name');
-    
-    // Fetch recent bookings for the provider
-    const bookings = await Booking.find({ providerId: userId })
-      .sort({ requestedAt: -1 })
-      .limit(5)
+    // Fetch all bookings for this provider
+    const allBookings = await Booking.find({ providerId: userId })
+      .sort({ updatedAt: -1 })
       .populate('customerId', 'name email phoneNumber');
+
+    // Helper function to extract budget amount
+    const extractBudgetAmount = (budget) => {
+      if (!budget) return 0;
+      const numericString = budget.replace(/[^\d.]/g, '');
+      return parseFloat(numericString) || 0;
+    };
+
+    // Calculate stats from completed bookings
+    const completedBookings = allBookings.filter(booking => booking.status === 'completed');
     
-    // Calculate stats
-    const completedJobs = await Job.countDocuments({ 
-      providerId: userId, 
-      status: 'completed' 
-    });
+    let totalEarnings = user.totalEarnings || 0;
+    let jobsCompleted = user.completedJobs || 0;
     
-    const totalEarnings = await Job.aggregate([
-      { $match: { providerId: new mongoose.Types.ObjectId(userId), status: 'completed' } },
-      { $group: { _id: null, total: { $sum: '$payment' } } }
-    ]);
+    // Calculate active clients from unique customers in completed bookings
+    const uniqueCustomerIds = [...new Set(completedBookings
+      .map(booking => booking.customerId ? booking.customerId.toString() : null)
+      .filter(id => id !== null)
+    )];
     
-    const activeClients = await Job.distinct('clientId', { 
-      providerId: userId, 
-      status: 'completed',
-      date: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } // Last 30 days
-    });
+    let activeClients = user.activeClients ? user.activeClients.length : uniqueCustomerIds.length;
+
+    // If user stats are 0, calculate from completed bookings and update user
+    let needsUserUpdate = false;
     
-    res.json({
+    if (totalEarnings === 0 && completedBookings.length > 0) {
+      totalEarnings = completedBookings.reduce((sum, booking) => {
+        return sum + extractBudgetAmount(booking.budget);
+      }, 0);
+      user.totalEarnings = totalEarnings;
+      needsUserUpdate = true;
+      console.log('💰 Calculated total earnings from bookings:', totalEarnings);
+    }
+
+    if (jobsCompleted === 0 && completedBookings.length > 0) {
+      jobsCompleted = completedBookings.length;
+      user.completedJobs = jobsCompleted;
+      needsUserUpdate = true;
+      console.log('📊 Calculated jobs completed from bookings:', jobsCompleted);
+    }
+
+    if (needsUserUpdate) {
+      await user.save();
+      console.log('✅ Updated user stats in database');
+    }
+
+    const stats = {
+      totalEarnings,
+      jobsCompleted,
+      averageRating: ratingStats.averageRating || 0,
+      activeClients,
+      totalRatings: ratingStats.totalRatings || 0
+    };
+
+    console.log('📈 Final dashboard stats:', stats);
+
+    // Generate recent jobs from completed bookings
+    const recentJobs = completedBookings
+      .slice(0, 5)
+      .map(booking => ({
+        id: booking._id,
+        title: booking.serviceType,
+        client: booking.customerId?.name || booking.customerName || 'Unknown Client',
+        category: booking.serviceType.toLowerCase().includes('clean') ? 'cleaning' : 'handyman',
+        payment: extractBudgetAmount(booking.budget),
+        status: booking.status,
+        location: booking.location || 'Location not specified',
+        date: booking.completedAt ? 
+          new Date(booking.completedAt).toISOString().split('T')[0] : 
+          new Date(booking.updatedAt).toISOString().split('T')[0],
+        time: booking.completedAt ? 
+          new Date(booking.completedAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) : 
+          'Completed'
+      }));
+
+    // Generate upcoming tasks from confirmed/pending bookings
+    const upcomingTasks = allBookings
+      .filter(booking => booking.status === 'confirmed' || booking.status === 'pending')
+      .slice(0, 3)
+      .map(booking => ({
+        id: booking._id,
+        title: booking.serviceType,
+        client: booking.customerId?.name || booking.customerName || 'Unknown Client',
+        category: booking.serviceType.toLowerCase().includes('clean') ? 'cleaning' : 'handyman',
+        time: '10:00 AM',
+        duration: '2 hours',
+        priority: 'medium'
+      }));
+
+    const responseData = {
       user: {
         name: user.name,
         email: user.email,
         id: user._id,
         country: user.country,
-        profileImage: user.profilePicture || ''
+        phoneNumber: user.phoneNumber
       },
-      availabilitySlots,
-      recentJobs: recentJobs.map(job => ({
-        id: job._id,
-        title: job.serviceType,
-        client: job.clientId?.name || 'Unknown Client',
-        location: job.location,
-        date: job.date.toISOString().split('T')[0],
-        time: job.startTime,
-        payment: job.payment,
-        status: job.status,
-        category: job.category || 'other'
-      })),
-      upcomingTasks: upcomingTasks.map(task => ({
-        id: task._id,
-        title: task.serviceType,
-        time: task.startTime,
-        duration: task.duration,
-        client: task.clientId?.name || 'Unknown Client',
-        priority: task.priority || 'medium',
-        category: task.category || 'other'
-      })),
-      // Include bookings in the response
-      bookings: bookings.map(booking => ({
-        _id: booking._id,
-        providerId: booking.providerId,
-        providerName: booking.providerName,
-        providerEmail: booking.providerEmail,
-        customerId: booking.customerId?._id,
-        customerName: booking.customerId?.name || booking.customerName,
-        customerEmail: booking.customerId?.email || booking.customerEmail,
-        customerPhone: booking.customerId?.phoneNumber || booking.customerPhone,
-        serviceType: booking.serviceType,
-        description: booking.description,
-        location: booking.location,
-        timeframe: booking.timeframe,
-        budget: booking.budget,
-        specialRequests: booking.specialRequests,
-        bookingType: booking.bookingType,
-        status: booking.status,
-        requestedAt: booking.requestedAt,
-        acceptedAt: booking.acceptedAt,
-        completedAt: booking.completedAt,
-        updatedAt: booking.updatedAt
-      })),
-      stats: {
-        totalEarnings: totalEarnings.length > 0 ? totalEarnings[0].total : 0,
-        jobsCompleted: completedJobs,
-        averageRating: ratingStats.averageRating,
-        activeClients: activeClients.length,
-        totalRatings: ratingStats.totalRatings
-      }
-    });
+      businessHours: user.businessHours || [],
+      recentJobs,
+      upcomingTasks,
+      bookings: allBookings.slice(0, 10),
+      schedule: user.schedule || [],
+      stats
+    };
+
+    console.log('✅ Dashboard data prepared successfully');
+
+    res.json(responseData);
   } catch (error) {
-    console.error('Dashboard API error:', error);
+    console.error('❌ Dashboard API error:', error);
+    console.error('Error details:', error.message);
+    console.error('Error stack:', error.stack);
+    
     res.status(500).json({
       success: false,
       message: 'Failed to fetch dashboard data',
@@ -2906,6 +2930,59 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
     });
   }
 });
+2
+
+
+function extractBudgetAmount(budget) {
+  if (!budget) return 0;
+  const numericString = budget.replace(/[^\d.]/g, '');
+  return parseFloat(numericString) || 0;
+}
+
+
+app.get('/api/debug/user-stats/:userId', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    
+    const user = await User.findById(userId).select('totalEarnings completedJobs activeClients');
+    const bookings = await Booking.find({ providerId: userId, status: 'completed' });
+    
+    const calculatedEarnings = bookings.reduce((sum, booking) => {
+      const amount = booking.budget ? parseFloat(booking.budget.replace(/[^\d.]/g, '')) || 0 : 0;
+      return sum + amount;
+    }, 0);
+    
+    const uniqueClients = [...new Set(bookings.map(b => b.customerId.toString()))];
+    
+    res.json({
+      success: true,
+      data: {
+        userStats: {
+          totalEarnings: user?.totalEarnings,
+          completedJobs: user?.completedJobs,
+          activeClients: user?.activeClients?.length
+        },
+        calculatedFromBookings: {
+          totalEarnings: calculatedEarnings,
+          completedJobs: bookings.length,
+          activeClients: uniqueClients.length
+        },
+        bookingsCount: bookings.length,
+        bookingsSample: bookings.slice(0, 3).map(b => ({
+          id: b._id,
+          budget: b.budget,
+          customer: b.customerId,
+          status: b.status
+        }))
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
+
 
 // ==================== MESSAGING ENDPOINTS ====================
 
@@ -5451,6 +5528,9 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
 });
 
 
+
+
+
 app.post('/api/ratings/customer', authenticateToken, async (req, res) => {
   try {
     const { bookingId, rating, comment } = req.body;
@@ -5660,6 +5740,379 @@ async function updateProviderRating(providerId) {
     console.error('Error updating provider rating:', error);
   }
 }
+
+app.get('/api/provider/dashboard/stats', authenticateToken, async (req, res) => {
+  try {
+    const providerId = req.user.id;
+    
+    console.log('📊 Fetching provider stats for:', providerId);
+
+    // Calculate total earnings from completed bookings
+    const earningsResult = await Booking.aggregate([
+      {
+        $match: {
+          providerId: new mongoose.Types.ObjectId(providerId),
+          status: 'completed'
+        }
+      },
+      {
+        $addFields: {
+          // Extract numeric value from budget string (e.g., "₦15,000" -> 15000)
+          numericBudget: {
+            $convert: {
+              input: {
+                $replaceAll: {
+                  input: {
+                    $replaceAll: {
+                      input: { 
+                        $arrayElemAt: [
+                          { 
+                            $split: ["$budget", "₦"] 
+                          }, 
+                          1 
+                        ] 
+                      },
+                      find: ",",
+                      replacement: ""
+                    }
+                  },
+                  find: " ",
+                  replacement: ""
+                }
+              },
+              to: "double",
+              onError: 0,
+              onNull: 0
+            }
+          }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalEarnings: { $sum: "$numericBudget" },
+          jobsCompleted: { $sum: 1 }
+        }
+      }
+    ]);
+
+    console.log('💰 Earnings result:', earningsResult);
+
+    // Count unique active clients (customers who have completed bookings in last 90 days)
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+    const activeClients = await Booking.aggregate([
+      {
+        $match: {
+          providerId: new mongoose.Types.ObjectId(providerId),
+          status: 'completed',
+          completedAt: { $gte: ninetyDaysAgo }
+        }
+      },
+      {
+        $group: {
+          _id: "$customerId"
+        }
+      },
+      {
+        $count: "totalActiveClients"
+      }
+    ]);
+
+    console.log('👥 Active clients result:', activeClients);
+
+    // Get recent completed jobs (last 5)
+    const recentJobs = await Booking.find({
+      providerId: providerId,
+      status: 'completed'
+    })
+    .sort({ completedAt: -1 })
+    .limit(5)
+    .populate('customerId', 'name email')
+    .lean();
+
+    console.log('📅 Recent jobs count:', recentJobs.length);
+
+    // Get average rating
+    const ratingStats = await Rating.aggregate([
+      {
+        $match: {
+          providerId: new mongoose.Types.ObjectId(providerId),
+          customerRated: true,
+          providerRating: { $exists: true, $ne: null }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          averageRating: { $avg: "$providerRating" },
+          totalRatings: { $sum: 1 }
+        }
+      }
+    ]);
+
+    console.log('⭐ Rating stats:', ratingStats);
+
+    const stats = {
+      totalEarnings: earningsResult.length > 0 ? earningsResult[0].totalEarnings : 0,
+      activeClients: activeClients.length > 0 ? activeClients[0].totalActiveClients : 0,
+      jobsCompleted: earningsResult.length > 0 ? earningsResult[0].jobsCompleted : 0,
+      averageRating: ratingStats.length > 0 ? Math.round(ratingStats[0].averageRating * 10) / 10 : 0,
+      totalRatings: ratingStats.length > 0 ? ratingStats[0].totalRatings : 0,
+      recentJobs: recentJobs.map(job => ({
+        id: job._id,
+        serviceType: job.serviceType,
+        customerName: job.customerId?.name || 'Unknown Customer',
+        completedAt: job.completedAt,
+        budget: job.budget,
+        location: job.location
+      }))
+    };
+
+    console.log('✅ Final stats:', stats);
+
+    res.json({
+      success: true,
+      data: stats
+    });
+  } catch (error) {
+    console.error('❌ Dashboard stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch dashboard stats',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+app.patch('/api/bookings/:id/complete', authenticateToken, async (req, res) => {
+  try {
+    const bookingId = req.params.id;
+    
+    console.log('✅ Completing booking:', bookingId);
+
+    // Find and update booking
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Verify the user is the provider for this booking
+    if (booking.providerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to complete this booking'
+      });
+    }
+
+    // Update booking status to completed
+    booking.status = 'completed';
+    booking.completedAt = new Date();
+    await booking.save();
+
+    console.log('📊 Booking marked as completed');
+
+    res.json({
+      success: true,
+      message: 'Booking marked as completed successfully',
+      data: booking
+    });
+  } catch (error) {
+    console.error('❌ Complete booking error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to complete booking',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.post('/api/bookings/:id/complete', authenticateToken, async (req, res) => {
+  try {
+    const bookingId = req.params.id;
+    
+    console.log('🔄 Completing booking and updating dashboard:', bookingId);
+
+    // Find the booking
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Verify the user is the provider for this booking
+    if (booking.providerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to complete this booking'
+      });
+    }
+
+    // Extract numeric value from budget (e.g., "₦15,000" -> 15000)
+    const extractBudgetAmount = (budget) => {
+      if (!budget) return 0;
+      const numericString = budget.replace(/[^\d.]/g, '');
+      return parseFloat(numericString) || 0;
+    };
+
+    const earningsAmount = extractBudgetAmount(booking.budget);
+    console.log('💰 Extracted earnings amount:', earningsAmount, 'from budget:', booking.budget);
+
+    // Update provider stats
+    const provider = await User.findById(booking.providerId);
+    if (provider) {
+      // Increment jobs completed
+      provider.completedJobs = (provider.completedJobs || 0) + 1;
+      
+      // Add to total earnings
+      provider.totalEarnings = (provider.totalEarnings || 0) + earningsAmount;
+      
+      // Add to active clients (unique customers)
+      if (!provider.activeClients) {
+        provider.activeClients = [];
+      }
+      
+      const customerIdStr = booking.customerId.toString();
+      if (!provider.activeClients.includes(customerIdStr)) {
+        provider.activeClients.push(customerIdStr);
+      }
+      
+      await provider.save();
+      console.log('✅ Updated provider stats:', {
+        completedJobs: provider.completedJobs,
+        totalEarnings: provider.totalEarnings,
+        activeClients: provider.activeClients.length
+      });
+    } else {
+      console.log('❌ Provider not found:', booking.providerId);
+    }
+
+    res.json({
+      success: true,
+      message: 'Booking completed and dashboard updated successfully',
+      data: {
+        earningsAdded: earningsAmount,
+        completedJobs: provider?.completedJobs,
+        totalEarnings: provider?.totalEarnings,
+        activeClients: provider?.activeClients?.length
+      }
+    });
+  } catch (error) {
+    console.error('❌ Complete booking error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to complete booking',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+app.get('/api/client/dashboard/stats', authenticateToken, async (req, res) => {
+  try {
+    const clientId = req.user.id;
+    
+    console.log('📊 Fetching client stats for:', clientId);
+
+    // Count completed jobs for this client
+    const jobsCompleted = await Booking.countDocuments({
+      customerId: clientId,
+      status: 'completed'
+    });
+
+    // Get total spent
+    const spendingResult = await Booking.aggregate([
+      {
+        $match: {
+          customerId: new mongoose.Types.ObjectId(clientId),
+          status: 'completed'
+        }
+      },
+      {
+        $addFields: {
+          numericBudget: {
+            $convert: {
+              input: {
+                $replaceAll: {
+                  input: {
+                    $replaceAll: {
+                      input: { 
+                        $arrayElemAt: [
+                          { 
+                            $split: ["$budget", "₦"] 
+                          }, 
+                          1 
+                        ] 
+                      },
+                      find: ",",
+                      replacement: ""
+                    }
+                  },
+                  find: " ",
+                  replacement: ""
+                }
+              },
+              to: "double",
+              onError: 0,
+              onNull: 0
+            }
+          }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalSpent: { $sum: "$numericBudget" }
+        }
+      }
+    ]);
+
+    // Get recent completed jobs
+    const recentJobs = await Booking.find({
+      customerId: clientId,
+      status: 'completed'
+    })
+    .sort({ completedAt: -1 })
+    .limit(5)
+    .populate('providerId', 'name email')
+    .lean();
+
+    const stats = {
+      jobsCompleted: jobsCompleted,
+      totalSpent: spendingResult.length > 0 ? spendingResult[0].totalSpent : 0,
+      recentJobs: recentJobs.map(job => ({
+        id: job._id,
+        serviceType: job.serviceType,
+        providerName: job.providerId?.name || 'Unknown Provider',
+        completedAt: job.completedAt,
+        budget: job.budget,
+        location: job.location
+      }))
+    };
+
+    console.log('✅ Client stats:', stats);
+
+    res.json({
+      success: true,
+      data: stats
+    });
+  } catch (error) {
+    console.error('❌ Client dashboard stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch client dashboard stats',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
 
 
 app.post('/api/debug/test-booking-accepted-email', authenticateToken, async (req, res) => {

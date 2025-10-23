@@ -30,6 +30,18 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  totalEarnings: {
+    type: Number,
+    default: 0
+  },
+  completedJobs: {
+    type: Number,
+    default: 0
+  },
+  activeClients: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
   userType: {
     type: String,
     enum: ['customer', 'provider', 'both'],
