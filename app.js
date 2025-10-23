@@ -283,7 +283,6 @@ app.use('/api/ratings', (req, res, next) => {
 });
 
 
-
 app.get('/api/providers/:id/rating', async (req, res) => {
   try {
     const providerId = req.params.id;
@@ -302,6 +301,7 @@ app.get('/api/providers/:id/rating', async (req, res) => {
     });
   }
 });
+
 
 
 
@@ -2792,6 +2792,9 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
       });
     }
 
+    // Fetch provider rating stats
+    const ratingStats = await Rating.getProviderAverageRating(userId);
+
     // Fetch availability slots
     const availabilitySlots = user.availability || [];
     
@@ -2811,7 +2814,7 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
     .limit(2)
     .populate('clientId', 'name');
     
-    // NEW: Fetch recent bookings for the provider
+    // Fetch recent bookings for the provider
     const bookings = await Booking.find({ providerId: userId })
       .sort({ requestedAt: -1 })
       .limit(5)
@@ -2826,11 +2829,6 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
     const totalEarnings = await Job.aggregate([
       { $match: { providerId: new mongoose.Types.ObjectId(userId), status: 'completed' } },
       { $group: { _id: null, total: { $sum: '$payment' } } }
-    ]);
-    
-    const averageRating = await Review.aggregate([
-      { $match: { providerId: new mongoose.Types.ObjectId(userId) } },
-      { $group: { _id: null, average: { $avg: '$rating' } } }
     ]);
     
     const activeClients = await Job.distinct('clientId', { 
@@ -2868,7 +2866,7 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
         priority: task.priority || 'medium',
         category: task.category || 'other'
       })),
-      // NEW: Include bookings in the response
+      // Include bookings in the response
       bookings: bookings.map(booking => ({
         _id: booking._id,
         providerId: booking.providerId,
@@ -2894,8 +2892,9 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
       stats: {
         totalEarnings: totalEarnings.length > 0 ? totalEarnings[0].total : 0,
         jobsCompleted: completedJobs,
-        averageRating: averageRating.length > 0 ? Math.round(averageRating[0].average * 10) / 10 : 0,
-        activeClients: activeClients.length
+        averageRating: ratingStats.averageRating,
+        activeClients: activeClients.length,
+        totalRatings: ratingStats.totalRatings
       }
     });
   } catch (error) {
@@ -5358,22 +5357,7 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
       });
     }
 
-    if (status === 'completed') {
-      booking.status = 'completed';
-      booking.completedAt = new Date();
-      booking.ratingPrompted = true; // Flag to prompt for ratings
-      
-      // Send notification to customer to rate provider
-      try {
-        const { sendRatingPromptToCustomer } = await import('./utils/emailService.js');
-        await sendRatingPromptToCustomer(booking);
-      } catch (emailError) {
-        console.error('Failed to send rating prompt email:', emailError);
-      }
-    }
-
-    await booking.save();
-
+    // Find the booking first
     const booking = await Booking.findById(bookingId);
     if (!booking) {
       return res.status(404).json({
@@ -5400,7 +5384,23 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
       });
     }
 
-    booking.status = backendStatus;
+    // Handle status-specific logic
+    if (backendStatus === 'completed') {
+      booking.status = 'completed';
+      booking.completedAt = new Date();
+      booking.ratingPrompted = true; // Flag to prompt for ratings
+      
+      // Send notification to customer to rate provider
+      try {
+        const { sendRatingPromptToCustomer } = await import('./utils/emailService.js');
+        await sendRatingPromptToCustomer(booking);
+      } catch (emailError) {
+        console.error('Failed to send rating prompt email:', emailError);
+      }
+    } else {
+      booking.status = backendStatus;
+    }
+
     booking.updatedAt = new Date();
 
     // Set timestamps based on status changes
@@ -5413,19 +5413,6 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
       } catch (scheduleError) {
         console.error('⚠️ Failed to add to schedule:', scheduleError);
         // Don't fail the booking update if schedule fails
-      }
-    } else if (backendStatus === 'completed' && oldStatus !== 'completed') {
-      booking.completedAt = new Date();
-      
-      // Set flag to prompt customer for rating
-      booking.ratingPrompted = true;
-      
-      // Send completion notification to customer
-      try {
-        const { sendBookingCompletionNotification } = await import('./utils/emailService.js');
-        await sendBookingCompletionNotification(booking);
-      } catch (emailError) {
-        console.error('⚠️ Failed to send completion email:', emailError);
       }
     }
 
@@ -5462,6 +5449,7 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     });
   }
 });
+
 
 app.post('/api/ratings/customer', authenticateToken, async (req, res) => {
   try {

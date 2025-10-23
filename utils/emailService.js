@@ -424,62 +424,73 @@ const sendBookingAcceptedEmailViaMailjet = async (customerEmail, bookingData, pr
 
 
 
-export const sendRatingPromptToCustomer = async (booking) => {
+const sendRatingPromptViaMailjet = async (booking) => {
   try {
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: booking.customerEmail,
-      subject: 'Rate Your Service Experience - HomeHero',
-      html: `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; color: white; border-radius: 10px 10px 0 0; }
-            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
-            .button { display: inline-block; padding: 12px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 10px 0; }
-            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 12px; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>⭐ Rate Your Experience</h1>
-              <p>How was your service with ${booking.providerName}?</p>
-            </div>
-            <div class="content">
-              <p>Hello ${booking.customerName},</p>
-              <p>Your recent service with <strong>${booking.providerName}</strong> has been completed. We'd love to hear about your experience!</p>
-              
-              <div style="text-align: center; margin: 30px 0;">
-                <a href="${process.env.FRONTEND_URL}/bookings?rate=${booking._id}" class="button">
-                  Rate Your Experience
-                </a>
-              </div>
+    console.log('📧 [MAILJET] Sending rating prompt to:', booking.customerEmail);
 
-              <p>Your feedback helps us maintain quality standards and helps other customers make informed decisions.</p>
-              
-              <div class="footer">
-                <p>This is an automated message. Please do not reply to this email.</p>
-                <p>© 2024 HomeHero. All rights reserved.</p>
-              </div>
-            </div>
-          </div>
-        </body>
-        </html>
-      `
+    const response = await fetch('https://api.mailjet.com/v3.1/send', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + Buffer.from(
+          `${process.env.MAILJET_API_KEY}:${process.env.MAILJET_SECRET_KEY}`
+        ).toString('base64')
+      },
+      body: JSON.stringify({
+        Messages: [
+          {
+            From: {
+              Email: process.env.MAILJET_FROM_EMAIL || "noreply@homeheroes.help",
+              Name: process.env.MAILJET_FROM_NAME || "HomeHero"
+            },
+            To: [
+              {
+                Email: booking.customerEmail,
+                Name: booking.customerName || 'Customer'
+              }
+            ],
+            Subject: 'Rate Your Service Experience - HomeHero',
+            HTMLPart: generateRatingPromptHTML(booking),
+            TextPart: generateRatingPromptText(booking),
+            CustomID: `rating_prompt_${Date.now()}`
+          }
+        ]
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('❌ Mailjet API error:', response.status, errorText);
+      
+      return {
+        success: false,
+        error: `Mailjet API error: ${response.status}`,
+        provider: 'mailjet-failed'
+      };
+    }
+
+    const result = await response.json();
+    console.log('✅ [MAILJET] Rating prompt sent successfully');
+    
+    return {
+      success: true,
+      messageId: result.Messages?.[0]?.To?.[0]?.MessageID,
+      provider: 'mailjet'
     };
 
-    const result = await emailTransporter.sendMail(mailOptions);
-    console.log('✅ Rating prompt email sent to customer:', booking.customerEmail);
-    return { success: true, messageId: result.messageId };
   } catch (error) {
-    console.error('❌ Failed to send rating prompt email:', error);
-    return { success: false, error: error.message };
+    console.error('❌ [MAILJET] Failed to send rating prompt:', error.message);
+    
+    return {
+      success: false,
+      error: error.message,
+      provider: 'mailjet-error'
+    };
   }
 };
+
+
+
 
 
 export const sendNewRatingNotificationToProvider = async (providerEmail, rating, booking) => {
