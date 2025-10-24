@@ -25,6 +25,8 @@ import Rating from './models/Rating.js';
 import { Storage } from '@google-cloud/storage';
 import ratingRoutes from './routes/ratings.routes.js';
 import Schedule from './models/Schedule.js'; // Adjust path as needed
+import providerRoutes from './routes/providers.routes.js';
+
 
 // Add to your imports in server.js
 
@@ -1124,9 +1126,14 @@ app.post('/api/debug/test-email', async (req, res) => {
 
 app.get('/api/providers/:id', async (req, res) => {
   try {
-    const provider = await User.findById(req.params.id)
-      .select('name email services hourlyRate averageRating city state country profileImage isAvailableNow experience phoneNumber address reviewCount completedJobs isVerified isTopRated responseTime createdAt');
+    const providerId = req.params.id;
     
+    console.log('👤 Fetching provider profile:', providerId);
+
+    const provider = await User.findById(providerId)
+      .select('name email services hourlyRate averageRating city state country profileImage isAvailableNow experience phoneNumber address reviewCount completedJobs isVerified isTopRated responseTime createdAt')
+      .lean();
+
     if (!provider) {
       return res.status(404).json({
         success: false,
@@ -1134,28 +1141,299 @@ app.get('/api/providers/:id', async (req, res) => {
       });
     }
 
+    // Calculate REAL completed jobs from bookings
+    const completedJobsCount = await Booking.countDocuments({
+      providerId: providerId,
+      status: 'completed'
+    });
+
+    console.log('📊 Completed jobs count:', completedJobsCount);
+
+    // Calculate REAL rating stats
+    const ratingStats = await Rating.aggregate([
+      {
+        $match: {
+          providerId: new mongoose.Types.ObjectId(providerId),
+          customerRated: true,
+          providerRating: { $exists: true, $ne: null, $gte: 1, $lte: 5 }
+        }
+      },
+      {
+        $group: {
+          _id: '$providerId',
+          averageRating: { $avg: '$providerRating' },
+          totalRatings: { $sum: 1 }
+        }
+      }
+    ]);
+
+    console.log('⭐ Rating stats:', ratingStats);
+
+    const stats = ratingStats.length > 0 ? ratingStats[0] : {
+      averageRating: 0,
+      totalRatings: 0
+    };
+
+    // Get gallery count
+    const galleryCount = await Gallery.countDocuments({ userId: providerId });
+
+    // Format the response with REAL data
+    const providerProfile = {
+      ...provider,
+      completedJobs: completedJobsCount, // Use REAL count from bookings
+      averageRating: Math.round(stats.averageRating * 10) / 10 || 0,
+      reviewCount: stats.totalRatings || 0,
+      isAvailableNow: provider.isAvailableNow || false,
+      isVerified: provider.isVerified || false,
+      isTopRated: provider.isTopRated || false,
+      responseTime: provider.responseTime || 'within 1 hour',
+      joinedDate: provider.createdAt ? new Date(provider.createdAt).toLocaleDateString() : 'Recently',
+      galleryCount: galleryCount
+    };
+
+    console.log('✅ Final provider profile:', {
+      name: providerProfile.name,
+      completedJobs: providerProfile.completedJobs,
+      averageRating: providerProfile.averageRating,
+      reviewCount: providerProfile.reviewCount,
+      galleryCount: providerProfile.galleryCount
+    });
+
     res.json({
       success: true,
-      data: provider
+      data: providerProfile
     });
   } catch (error) {
-    console.error('Provider fetch error:', error);
+    console.error('❌ Get provider profile error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch provider'
+      message: 'Failed to fetch provider profile'
     });
   }
 });
 
 
+
 app.get('/api/providers/:id/gallery', async (req, res) => {
   try {
     const providerId = req.params.id;
-    // Fetch gallery from your database
-    const gallery = await Gallery.find({ providerId });
-    res.json({ success: true, data: gallery });
+    const { page = 1, limit = 100 } = req.query;
+
+    console.log('🖼️ Fetching gallery for provider:', providerId);
+
+    // Try multiple gallery endpoints
+    let galleryData = null;
+    
+    // First try the direct user-based gallery
+    try {
+      const gallery = await Gallery.find({ userId: providerId })
+        .sort({ createdAt: -1 })
+        .limit(parseInt(limit))
+        .populate('userId', 'name profileImage')
+        .lean();
+      
+      if (gallery && gallery.length > 0) {
+        galleryData = gallery;
+        console.log('✅ Found gallery via userId:', galleryData.length);
+      }
+    } catch (error) {
+      console.log('❌ Gallery fetch via userId failed:', error.message);
+    }
+
+    // If no gallery found, try other endpoints
+    if (!galleryData || galleryData.length === 0) {
+      console.log('🔄 Trying alternative gallery endpoints...');
+      
+      // Try general gallery endpoint
+      try {
+        const response = await Gallery.find({})
+          .sort({ createdAt: -1 })
+          .limit(parseInt(limit))
+          .populate('userId', 'name profileImage')
+          .lean();
+        
+        if (response && response.length > 0) {
+          galleryData = response;
+          console.log('✅ Found gallery via general query:', galleryData.length);
+        }
+      } catch (error) {
+        console.log('❌ General gallery fetch failed:', error.message);
+      }
+    }
+
+    const galleryImages = galleryData || [];
+
+    console.log('📸 Final gallery images found:', galleryImages.length);
+
+    // Format images with proper URLs
+    const imagesWithFullUrl = galleryImages.map(image => {
+      const imageObj = image;
+      
+      console.log('🔍 Processing image:', {
+        _id: imageObj._id,
+        imageUrl: imageObj.imageUrl,
+        fullImageUrl: imageObj.fullImageUrl
+      });
+
+      // Handle image URLs - try multiple approaches
+      let finalImageUrl = '';
+      
+      if (imageObj.fullImageUrl) {
+        finalImageUrl = imageObj.fullImageUrl;
+      } else if (imageObj.imageUrl) {
+        // Handle relative URLs
+        if (imageObj.imageUrl.startsWith('/')) {
+          finalImageUrl = `${req.protocol}://${req.get('host')}${imageObj.imageUrl}`;
+        } else if (imageObj.imageUrl.startsWith('http')) {
+          finalImageUrl = imageObj.imageUrl;
+        } else {
+          finalImageUrl = `${req.protocol}://${req.get('host')}/uploads/gallery/${imageObj.imageUrl}`;
+        }
+      }
+
+      console.log('🖼️ Final image URL:', finalImageUrl);
+
+      return {
+        ...imageObj,
+        imageUrl: finalImageUrl,
+        fullImageUrl: finalImageUrl
+      };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        docs: imagesWithFullUrl,
+        totalDocs: imagesWithFullUrl.length,
+        limit: parseInt(limit),
+        totalPages: 1,
+        page: 1,
+        pagingCounter: 1,
+        hasPrevPage: false,
+        hasNextPage: false,
+        prevPage: null,
+        nextPage: null
+      }
+    });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    console.error('❌ Get provider gallery error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch provider gallery'
+    });
+  }
+});
+
+app.get('/api/debug/all-ratings', async (req, res) => {
+  try {
+    const ratings = await Rating.find({})
+      .populate('customerId', 'name email')
+      .populate('providerId', 'name email')
+      .populate('bookingId', 'serviceType customerName providerName')
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+
+    console.log('📊 All ratings in database:', ratings.length);
+
+    const formattedRatings = ratings.map(rating => ({
+      _id: rating._id,
+      providerId: rating.providerId?._id,
+      providerName: rating.providerId?.name,
+      customerId: rating.customerId?._id,
+      customerName: rating.customerId?.name || rating.bookingId?.customerName,
+      providerRating: rating.providerRating,
+      providerComment: rating.providerComment,
+      customerRated: rating.customerRated,
+      providerRated: rating.providerRated,
+      serviceType: rating.bookingId?.serviceType,
+      createdAt: rating.createdAt
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        totalRatings: ratings.length,
+        ratings: formattedRatings
+      }
+    });
+  } catch (error) {
+    console.error('Debug ratings error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Debug endpoint to check all gallery images
+app.get('/api/debug/all-gallery', async (req, res) => {
+  try {
+    const gallery = await Gallery.find({})
+      .populate('userId', 'name email')
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+
+    console.log('🖼️ All gallery images in database:', gallery.length);
+
+    const formattedGallery = gallery.map(image => ({
+      _id: image._id,
+      userId: image.userId?._id,
+      userName: image.userId?.name,
+      title: image.title,
+      imageUrl: image.imageUrl,
+      fullImageUrl: image.fullImageUrl,
+      category: image.category,
+      createdAt: image.createdAt
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        totalImages: gallery.length,
+        images: formattedGallery
+      }
+    });
+  } catch (error) {
+    console.error('Debug gallery error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Debug endpoint to test image URL construction
+app.get('/api/debug/test-image-urls', async (req, res) => {
+  try {
+    const testImages = await Gallery.find().limit(5).lean();
+    
+    const urlTests = testImages.map(image => {
+      const originalUrl = image.imageUrl;
+      let constructedUrl = '';
+      
+      if (image.fullImageUrl) {
+        constructedUrl = image.fullImageUrl;
+      } else if (image.imageUrl) {
+        if (image.imageUrl.startsWith('/')) {
+          constructedUrl = `${req.protocol}://${req.get('host')}${image.imageUrl}`;
+        } else if (image.imageUrl.startsWith('http')) {
+          constructedUrl = image.imageUrl;
+        } else {
+          constructedUrl = `${req.protocol}://${req.get('host')}/uploads/gallery/${image.imageUrl}`;
+        }
+      }
+      
+      return {
+        _id: image._id,
+        title: image.title,
+        originalUrl: originalUrl,
+        constructedUrl: constructedUrl,
+        hasFullImageUrl: !!image.fullImageUrl
+      };
+    });
+
+    res.json({
+      success: true,
+      data: urlTests
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -1232,38 +1510,79 @@ app.get('/api/providers/:id/reviews', async (req, res) => {
   try {
     const providerId = req.params.id;
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
+    const limit = parseInt(req.query.limit) || 50;
     const skip = (page - 1) * limit;
 
-    const reviews = await Rating.find({
+    console.log('📝 Fetching REAL reviews for provider:', providerId);
+
+    // Get ALL ratings where customer rated the provider
+    const ratings = await Rating.find({
       providerId: providerId,
       customerRated: true,
-      providerRating: { $exists: true, $ne: null },
-      providerComment: { $exists: true, $ne: '' }
+      providerRating: { $exists: true, $ne: null, $gte: 1, $lte: 5 }
     })
     .populate('customerId', 'name profileImage')
     .populate('bookingId', 'serviceType requestedAt')
-    .sort({ ratedAt: -1 })
+    .sort({ ratedAt: -1, createdAt: -1 })
     .skip(skip)
-    .limit(limit);
+    .limit(limit)
+    .lean();
+
+    console.log('📊 Raw ratings found:', ratings.length);
+    console.log('🔍 Sample rating:', ratings[0]);
 
     const totalReviews = await Rating.countDocuments({
       providerId: providerId,
       customerRated: true,
-      providerRating: { $exists: true, $ne: null },
-      providerComment: { $exists: true, $ne: '' }
+      providerRating: { $exists: true, $ne: null, $gte: 1, $lte: 5 }
     });
 
-    const formattedReviews = reviews.map(review => ({
-      id: review._id,
-      customerName: review.customerId?.name || 'Anonymous',
-      customerImage: review.customerId?.profileImage || '',
-      rating: review.providerRating,
-      comment: review.providerComment,
-      serviceType: review.bookingId?.serviceType || 'Service',
-      date: review.ratedAt,
-      bookingId: review.bookingId?._id
-    }));
+    // Format reviews properly - handle different data structures
+    const formattedReviews = ratings.map(rating => {
+      console.log('🔍 Processing rating:', {
+        _id: rating._id,
+        customerId: rating.customerId,
+        providerRating: rating.providerRating,
+        providerComment: rating.providerComment,
+        bookingId: rating.bookingId
+      });
+
+      // Get customer name from multiple possible sources
+      const customerName = 
+        rating.customerId?.name ||
+        rating.bookingId?.customerName ||
+        'Customer';
+
+      const customerProfileImage = 
+        rating.customerId?.profileImage || null;
+
+      const customerId = 
+        rating.customerId?._id || 'unknown';
+
+      // Get service type from multiple possible sources
+      const serviceType = 
+        rating.bookingId?.serviceType ||
+        rating.serviceType ||
+        'General Service';
+
+      return {
+        _id: rating._id,
+        customerId: {
+          _id: customerId,
+          name: customerName,
+          profileImage: customerProfileImage
+        },
+        rating: rating.providerRating,
+        comment: rating.providerComment || '',
+        serviceType: serviceType,
+        createdAt: rating.ratedAt || rating.createdAt || new Date(),
+        helpful: rating.helpful || 0,
+        verified: rating.verified || false
+      };
+    }).filter(review => review.rating && review.rating >= 1); // Only include valid ratings
+
+    console.log('✅ Formatted reviews:', formattedReviews.length);
+    console.log('📋 Sample formatted review:', formattedReviews[0]);
 
     res.json({
       success: true,
@@ -1279,13 +1598,14 @@ app.get('/api/providers/:id/reviews', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Get provider reviews error:', error);
+    console.error('❌ Get provider reviews error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch provider reviews'
     });
   }
 });
+
 async function updateProviderAverageRating(providerId) {
   try {
     const ratings = await Rating.aggregate([
@@ -2943,6 +3263,21 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
       });
     }
 
+    // Fetch ALL bookings for this provider with proper population
+    const allBookings = await Booking.find({ providerId: userId })
+      .populate('customerId', 'name email phoneNumber profileImage')
+      .sort({ requestedAt: -1 })
+      .limit(20);
+
+    console.log('📋 All bookings found for provider:', allBookings.length);
+    console.log('📋 Booking status breakdown:', {
+      pending: allBookings.filter(b => b.status === 'pending').length,
+      confirmed: allBookings.filter(b => b.status === 'confirmed').length,
+      accepted: allBookings.filter(b => b.status === 'accepted').length,
+      completed: allBookings.filter(b => b.status === 'completed').length,
+      cancelled: allBookings.filter(b => b.status === 'cancelled').length
+    });
+
     // Fetch provider rating stats
     let ratingStats;
     try {
@@ -2956,13 +3291,13 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
     }
 
     // Calculate real-time stats from completed bookings
-    const completedBookings = await Booking.find({ 
+    const completedBookingsFromDB = await Booking.find({ 
       providerId: userId, 
       status: 'completed' 
     }).populate('customerId', 'name email phoneNumber');
 
     // Calculate real-time earnings
-    const realTimeEarnings = completedBookings.reduce((total, booking) => {
+    const realTimeEarnings = completedBookingsFromDB.reduce((total, booking) => {
       const amount = extractBudgetAmount(booking.budget);
       return total + amount;
     }, 0);
@@ -2971,7 +3306,7 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
     const ninetyDaysAgo = new Date();
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
     
-    const recentCompletedBookings = completedBookings.filter(booking => 
+    const recentCompletedBookings = completedBookingsFromDB.filter(booking => 
       booking.completedAt && new Date(booking.completedAt) >= ninetyDaysAgo
     );
     
@@ -2983,7 +3318,7 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
     // Use real-time calculated stats or fallback to stored stats
     const stats = {
       totalEarnings: realTimeEarnings > 0 ? realTimeEarnings : (user.totalEarnings || 0),
-      jobsCompleted: completedBookings.length > 0 ? completedBookings.length : (user.completedJobs || 0),
+      jobsCompleted: completedBookingsFromDB.length > 0 ? completedBookingsFromDB.length : (user.completedJobs || 0),
       averageRating: ratingStats.averageRating || user.averageRating || 0,
       activeClients: uniqueCustomerIds.length > 0 ? uniqueCustomerIds.length : (user.activeClients?.length || 0),
       totalRatings: ratingStats.totalRatings || user.reviewCount || 0
@@ -2991,7 +3326,10 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
 
     console.log('📈 Final dashboard stats (real-time):', stats);
 
-    // Generate recent jobs
+    // Generate recent jobs from COMPLETED bookings in the allBookings array
+    const completedBookings = allBookings.filter(booking => booking.status === 'completed');
+    console.log('🔍 Completed bookings for recent jobs:', completedBookings.length);
+
     const recentJobs = completedBookings
       .slice(0, 5)
       .map(booking => ({
@@ -3010,11 +3348,12 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
           'Completed'
       }));
 
-    // Generate upcoming tasks
-    const upcomingBookings = await Booking.find({ 
-      providerId: userId,
-      status: { $in: ['confirmed', 'pending'] }
-    }).limit(3);
+    console.log('📋 Recent jobs prepared:', recentJobs.length);
+
+    // Generate upcoming tasks from pending and confirmed/accepted bookings
+    const upcomingBookings = allBookings.filter(booking => 
+      ['pending', 'confirmed', 'accepted'].includes(booking.status)
+    ).slice(0, 3);
 
     const upcomingTasks = upcomingBookings.map(booking => ({
       id: booking._id,
@@ -3026,6 +3365,12 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
       priority: 'medium'
     }));
 
+    // Get schedule entries
+    const scheduleEntries = await Schedule.find({ providerId: userId })
+      .sort({ date: 1, time: 1 })
+      .populate('customerId', 'name email phoneNumber')
+      .populate('bookingId', 'serviceType status');
+
     const responseData = {
       user: {
         name: user.name,
@@ -3035,14 +3380,21 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
         phoneNumber: user.phoneNumber
       },
       businessHours: user.businessHours || [],
-      recentJobs,
+      recentJobs, // Only completed jobs go here
       upcomingTasks,
-      bookings: upcomingBookings.slice(0, 10),
-      schedule: user.schedule || [],
+      bookings: allBookings, // ALL bookings for the "Recent Bookings" section
+      schedule: scheduleEntries,
       stats
     };
 
     console.log('✅ Dashboard data prepared successfully');
+    console.log('📦 Sending to frontend:', {
+      totalBookings: allBookings.length,
+      upcomingBookings: allBookings.filter(b => ['pending', 'confirmed', 'accepted'].includes(b.status)).length,
+      completedBookings: allBookings.filter(b => b.status === 'completed').length,
+      recentJobsCount: recentJobs.length,
+      recentJobsDetails: recentJobs.map(job => ({ id: job.id, client: job.client, status: job.status }))
+    });
 
     res.json(responseData);
   } catch (error) {
@@ -3064,6 +3416,189 @@ function extractBudgetAmount(budget) {
   return parseFloat(numericString) || 0;
 }
 
+app.get('/api/providers/:id/stats', async (req, res) => {
+  try {
+    const providerId = req.params.id;
+    
+    // Calculate real performance stats from bookings and ratings
+    const completedJobs = await Booking.countDocuments({ 
+      providerId, 
+      status: 'completed' 
+    });
+    
+    // Calculate on-time delivery rate
+    const onTimeJobs = await Booking.countDocuments({
+      providerId,
+      status: 'completed',
+      completedAt: { $lte: '$scheduledEndTime' } // Assuming you have scheduled times
+    });
+    
+    const onTimeDelivery = completedJobs > 0 ? Math.round((onTimeJobs / completedJobs) * 100) : 95;
+    
+    // Calculate response rate (you might need a different metric)
+    const respondedBookings = await Booking.countDocuments({
+      providerId,
+      respondedAt: { $exists: true }
+    });
+    
+    const totalBookings = await Booking.countDocuments({ providerId });
+    const responseRate = totalBookings > 0 ? Math.round((respondedBookings / totalBookings) * 100) : 98;
+    
+    // Calculate total earnings
+    const earningsResult = await Booking.aggregate([
+      {
+        $match: {
+          providerId: new mongoose.Types.ObjectId(providerId),
+          status: 'completed'
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalEarnings: { $sum: { $toDouble: '$budget' } }
+        }
+      }
+    ]);
+    
+    const totalEarnings = earningsResult.length > 0 ? earningsResult[0].totalEarnings : 0;
+    
+    // Count active clients (last 90 days)
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+    
+    const activeClients = await Booking.distinct('customerId', {
+      providerId,
+      status: 'completed',
+      completedAt: { $gte: ninetyDaysAgo }
+    });
+    
+    res.json({
+      success: true,
+      data: {
+        completedJobs,
+        onTimeDelivery,
+        responseRate,
+        totalEarnings,
+        activeClients: activeClients.length,
+        repeatClients: 0 // You can calculate this based on customer repeat bookings
+      }
+    });
+  } catch (error) {
+    console.error('Get provider stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch provider stats'
+    });
+  }
+});
+
+// Performance stats endpoint
+app.get('/api/providers/:id/stats', async (req, res) => {
+  try {
+    const providerId = req.params.id;
+    
+    console.log('📊 Fetching performance stats for provider:', providerId);
+
+    // Calculate completed jobs
+    const completedJobs = await Booking.countDocuments({ 
+      providerId, 
+      status: 'completed' 
+    });
+
+    // Calculate on-time delivery (simplified for now)
+    const onTimeJobs = await Booking.countDocuments({
+      providerId,
+      status: 'completed',
+      // You can add actual on-time logic here based on your booking model
+    });
+    
+    const onTimeDelivery = completedJobs > 0 ? Math.round((onTimeJobs / completedJobs) * 100) : 95;
+
+    // Calculate response rate (based on accepted bookings)
+    const respondedBookings = await Booking.countDocuments({
+      providerId,
+      status: { $in: ['accepted', 'confirmed', 'completed'] }
+    });
+    
+    const totalBookings = await Booking.countDocuments({ providerId });
+    const responseRate = totalBookings > 0 ? Math.round((respondedBookings / totalBookings) * 100) : 98;
+
+    // Calculate total earnings
+    const earningsResult = await Booking.aggregate([
+      {
+        $match: {
+          providerId: new mongoose.Types.ObjectId(providerId),
+          status: 'completed'
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalEarnings: { 
+            $sum: { 
+              $convert: {
+                input: {
+                  $replaceAll: {
+                    input: {
+                      $replaceAll: {
+                        input: { 
+                          $arrayElemAt: [
+                            { 
+                              $split: ["$budget", "₦"] 
+                            }, 
+                            1 
+                          ] 
+                        },
+                        find: ",",
+                        replacement: ""
+                      }
+                    },
+                    find: " ",
+                    replacement: ""
+                  }
+                },
+                to: "double",
+                onError: 0,
+                onNull: 0
+              }
+            } 
+          }
+        }
+      }
+    ]);
+    
+    const totalEarnings = earningsResult.length > 0 ? earningsResult[0].totalEarnings : 0;
+
+    // Count active clients (last 90 days)
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+    
+    const activeClients = await Booking.distinct('customerId', {
+      providerId,
+      status: 'completed',
+      completedAt: { $gte: ninetyDaysAgo }
+    });
+
+    res.json({
+      success: true,
+      data: {
+        completedJobs,
+        onTimeDelivery,
+        responseRate,
+        totalEarnings,
+        activeClients: activeClients.length,
+        repeatClients: 0 // You can calculate this based on customer repeat bookings
+      }
+    });
+  } catch (error) {
+    console.error('❌ Get provider stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch provider stats',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
 
 app.get('/api/debug/user-stats/:userId', authenticateToken, async (req, res) => {
   try {
@@ -4481,7 +5016,11 @@ app.get('/api/providers', async (req, res) => {
           score += 20;
         }
       }
-      
+      //customer provider profile 
+      app.use('/api/providers', providerRoutes);
+
+
+
       // Rating scoring
       const rating = provider.averageRating || provider.rating || 4.0;
       score += rating * 10;
@@ -5260,6 +5799,21 @@ app.post('/api/bookings', authenticateToken, async (req, res) => {
       bookingType
     } = req.body;
 
+    console.log('📝 Creating booking with providerId:', providerId);
+    console.log('📝 Booking details:', {
+      providerId,
+      providerName,
+      providerEmail,
+      serviceType,
+      customerName: contactInfo?.name,
+      customerEmail: contactInfo?.email,
+      customerPhone: contactInfo?.phone,
+      location,
+      budget,
+      timeframe,
+      bookingType
+    });
+
     // Validate required fields
     if (!providerId || !serviceType || !location || !contactInfo) {
       return res.status(400).json({
@@ -5268,11 +5822,26 @@ app.post('/api/bookings', authenticateToken, async (req, res) => {
       });
     }
 
+    // Validate provider exists
+    const provider = await User.findById(providerId);
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider not found'
+      });
+    }
+
+    console.log('✅ Provider found:', {
+      id: provider._id,
+      name: provider.name,
+      email: provider.email
+    });
+
     // Create new booking
     const newBooking = new Booking({
       providerId,
-      providerName: providerName || 'Unknown Provider',
-      providerEmail: providerEmail || '',
+      providerName: providerName || provider.name || 'Unknown Provider',
+      providerEmail: providerEmail || provider.email || '',
       customerId: req.user.id,
       customerName: contactInfo.name || 'Unknown Customer',
       customerEmail: contactInfo.email || '',
@@ -5289,10 +5858,21 @@ app.post('/api/bookings', authenticateToken, async (req, res) => {
     });
 
     const savedBooking = await newBooking.save();
+    console.log('✅ Booking created successfully:', {
+      bookingId: savedBooking._id,
+      providerId: savedBooking.providerId,
+      customerId: savedBooking.customerId,
+      status: savedBooking.status
+    });
 
     // Populate customer and provider info
     await savedBooking.populate('customerId', 'name email phoneNumber');
     await savedBooking.populate('providerId', 'name email phoneNumber');
+
+    console.log('✅ Booking populated:', {
+      customer: savedBooking.customerId?.name,
+      provider: savedBooking.providerId?.name
+    });
 
     // ✅ RENDER PRODUCTION: SEND EMAIL NOTIFICATION TO PROVIDER
     try {
@@ -5342,23 +5922,62 @@ app.post('/api/bookings', authenticateToken, async (req, res) => {
     }
 
     // Create notification in database
-    await Notification.createNotification({
-      userId: providerId,
-      type: 'booking',
-      title: 'New Booking Request',
-      message: `You have a new booking request for ${serviceType}`,
-      relatedId: savedBooking._id,
-      relatedType: 'booking',
-      priority: 'high'
-    });
+    try {
+      await Notification.createNotification({
+        userId: providerId,
+        type: 'booking',
+        title: 'New Booking Request',
+        message: `You have a new booking request for ${serviceType} from ${contactInfo.name}`,
+        relatedId: savedBooking._id,
+        relatedType: 'booking',
+        priority: 'high'
+      });
+      console.log('✅ Notification created for provider');
+    } catch (notificationError) {
+      console.error('⚠️ Notification creation failed (non-critical):', notificationError);
+    }
+
+    // Also create notification for customer
+    try {
+      await Notification.createNotification({
+        userId: req.user.id,
+        type: 'booking',
+        title: 'Booking Request Sent',
+        message: `Your booking request for ${serviceType} has been sent to ${providerName}`,
+        relatedId: savedBooking._id,
+        relatedType: 'booking',
+        priority: 'medium'
+      });
+      console.log('✅ Notification created for customer');
+    } catch (notificationError) {
+      console.error('⚠️ Customer notification creation failed (non-critical):', notificationError);
+    }
+
+    // Debug: Check if booking is retrievable immediately
+    try {
+      const verifyBooking = await Booking.findById(savedBooking._id)
+        .populate('customerId', 'name email')
+        .populate('providerId', 'name email');
+      
+      console.log('🔍 Booking verification - found:', {
+        id: verifyBooking._id,
+        providerId: verifyBooking.providerId?._id,
+        customerId: verifyBooking.customerId?._id,
+        status: verifyBooking.status,
+        serviceType: verifyBooking.serviceType
+      });
+    } catch (verifyError) {
+      console.error('❌ Booking verification failed:', verifyError);
+    }
 
     res.status(201).json({
       success: true,
       message: 'Booking request sent successfully! The provider has been notified.',
       data: savedBooking
     });
+
   } catch (error) {
-    console.error('Create booking error:', error);
+    console.error('❌ Create booking error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to create booking',

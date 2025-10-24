@@ -20,7 +20,7 @@ title: {
   category: {
     type: String,
     required: true,
-    enum: ['cleaning', 'handyman', 'gardening', 'other'],
+    enum: ['cleaning', 'handyman', 'gardening','barber','hair stylist', 'other'],
     default: 'other'
   },
   imageUrl: {

@@ -213,6 +213,57 @@ router.post('/customer', authenticateToken, async (req, res) => {
   }
 });
 
+router.get('/provider', authenticateToken, async (req, res) => {
+  try {
+    const providerId = req.user.id;
+    
+    console.log('📊 Fetching ratings for provider:', providerId);
+
+    // Find all ratings for this provider where customer has rated
+    const ratings = await Rating.find({ 
+      providerId,
+      customerRated: true 
+    })
+      .populate('customerId', 'name email profileImage')
+      .sort({ ratedAt: -1 });
+
+    console.log(`✅ Found ${ratings.length} ratings for provider ${providerId}`);
+
+    // Transform the data to match the frontend expected format
+    const transformedRatings = ratings.map(rating => ({
+      _id: rating._id,
+      providerId: rating.providerId,
+      customerId: {
+        _id: rating.customerId._id,
+        name: rating.customerId.name,
+        email: rating.customerId.email,
+        profileImage: rating.customerId.profileImage
+      },
+      bookingId: rating.bookingId,
+      rating: rating.providerRating || 5, // Use providerRating field
+      comment: rating.providerComment || '',
+      serviceType: rating.serviceType,
+      createdAt: rating.ratedAt,
+      updatedAt: rating.updatedAt
+    }));
+
+    res.json({
+      success: true,
+      data: transformedRatings,
+      message: `Found ${ratings.length} ratings`
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching provider ratings:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch ratings',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
 
 router.post('/test-body', (req, res) => {
   console.log('🧪 Test body endpoint hit');
