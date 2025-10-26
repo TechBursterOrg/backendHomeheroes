@@ -2836,6 +2836,17 @@ app.patch('/api/admin/verify-identity/:userId', authenticateToken, async (req, r
       data: user.identityVerification
     });
 
+    await Notification.createNotification({
+      userId: userId,
+      type: 'system',
+      title: 'Identity Verified!',
+      message: 'Your identity verification has been approved. You can now apply for jobs.',
+      relatedId: userId,
+      relatedType: 'user',
+      roleContext: 'both', // Show to both customer and provider views
+      priority: 'high'
+    });
+
   } catch (error) {
     console.error('Admin verification error:', error);
     res.status(500).json({
@@ -3278,6 +3289,46 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
       cancelled: allBookings.filter(b => b.status === 'cancelled').length
     });
 
+    // CRITICAL FIX: Get schedule entries and actively filter out completed ones
+    const scheduleEntries = await Schedule.find({ 
+      providerId: userId
+    })
+    .sort({ date: 1, time: 1 })
+    .populate('customerId', 'name email phoneNumber')
+    .populate('bookingId', 'serviceType status');
+
+    console.log('📅 Raw schedule entries from DB:', scheduleEntries.length);
+
+    // ENHANCED FILTERING: Remove schedule entries for completed bookings
+    const activeScheduleEntries = [];
+    const completedScheduleEntries = [];
+
+    for (const entry of scheduleEntries) {
+      if (entry.bookingId) {
+        // If schedule entry has a linked booking, check its status
+        if (entry.bookingId.status === 'completed') {
+          completedScheduleEntries.push(entry);
+          console.log('🔍 Filtering out completed booking from schedule:', entry.bookingId._id);
+          
+          // AUTO-DELETE completed schedule entries in background
+          try {
+            await Schedule.findByIdAndDelete(entry._id);
+            console.log('🗑️ Auto-deleted completed schedule entry:', entry._id);
+          } catch (deleteError) {
+            console.error('⚠️ Failed to auto-delete schedule entry:', deleteError.message);
+          }
+        } else {
+          activeScheduleEntries.push(entry);
+        }
+      } else {
+        // If no booking linked, keep it in schedule (manual entries)
+        activeScheduleEntries.push(entry);
+      }
+    }
+
+    console.log('📅 Active schedule entries (non-completed):', activeScheduleEntries.length);
+    console.log('📅 Completed schedule entries filtered out:', completedScheduleEntries.length);
+
     // Fetch provider rating stats
     let ratingStats;
     try {
@@ -3365,12 +3416,6 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
       priority: 'medium'
     }));
 
-    // Get schedule entries
-    const scheduleEntries = await Schedule.find({ providerId: userId })
-      .sort({ date: 1, time: 1 })
-      .populate('customerId', 'name email phoneNumber')
-      .populate('bookingId', 'serviceType status');
-
     const responseData = {
       user: {
         name: user.name,
@@ -3383,7 +3428,7 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
       recentJobs, // Only completed jobs go here
       upcomingTasks,
       bookings: allBookings, // ALL bookings for the "Recent Bookings" section
-      schedule: scheduleEntries,
+      schedule: activeScheduleEntries, // Schedule without completed entries
       stats
     };
 
@@ -3393,7 +3438,7 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
       upcomingBookings: allBookings.filter(b => ['pending', 'confirmed', 'accepted'].includes(b.status)).length,
       completedBookings: allBookings.filter(b => b.status === 'completed').length,
       recentJobsCount: recentJobs.length,
-      recentJobsDetails: recentJobs.map(job => ({ id: job.id, client: job.client, status: job.status }))
+      scheduleEntriesCount: activeScheduleEntries.length
     });
 
     res.json(responseData);
@@ -3406,6 +3451,9 @@ app.get('/api/user/dashboard', authenticateToken, async (req, res) => {
     });
   }
 });
+
+
+
 
 
 
@@ -6364,7 +6412,7 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     const statusMapping = {
       'pending': 'pending',
       'accepted': 'confirmed',
-      'confirmed': 'confirmed',
+      'confirmed': 'confirmed', 
       'completed': 'completed',
       'cancelled': 'cancelled',
       'rejected': 'cancelled'
@@ -6397,7 +6445,7 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     }
 
     const oldStatus = booking.status;
-    
+
     // Prevent moving from completed back to other statuses
     if (booking.status === 'completed' && backendStatus !== 'completed') {
       return res.status(400).json({
@@ -6412,35 +6460,65 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
       booking.completedAt = new Date();
       booking.ratingPrompted = true;
       
-      // ✅ ADDED: Update provider stats when booking is completed
+      // ✅ FORCEFUL SCHEDULE REMOVAL - MULTIPLE APPROACHES
+      try {
+        // Approach 1: Remove by bookingId
+        const result1 = await Schedule.deleteMany({ bookingId: bookingId });
+        console.log(`🗑️ Removed ${result1.deletedCount} schedule entries by bookingId`);
+        
+        // Approach 2: Remove by customer and service matching (backup)
+        const result2 = await Schedule.deleteMany({
+          providerId: req.user.id,
+          client: booking.customerName,
+          title: booking.serviceType
+        });
+        console.log(`🗑️ Removed ${result2.deletedCount} schedule entries by customer/service match`);
+        
+        // Approach 3: Remove any schedule entries that might be related
+        const allScheduleEntries = await Schedule.find({ providerId: req.user.id });
+        let manualRemovalCount = 0;
+        for (const entry of allScheduleEntries) {
+          if (entry.client === booking.customerName && entry.title === booking.serviceType) {
+            await Schedule.findByIdAndDelete(entry._id);
+            manualRemovalCount++;
+          }
+        }
+        console.log(`🗑️ Manually removed ${manualRemovalCount} matching schedule entries`);
+        
+        console.log('✅ Completed forceful schedule cleanup for booking:', bookingId);
+      } catch (scheduleError) {
+        console.error('⚠️ Schedule removal error (non-critical):', scheduleError);
+        // Continue even if schedule removal fails
+      }
+      
+      // Update provider stats when booking is completed
       await updateProviderStatsOnCompletion(bookingId);
     } else {
       booking.status = backendStatus;
-    }
-
-    booking.updatedAt = new Date();
-
-    // Set timestamps based on status changes
-    if (backendStatus === 'confirmed' && oldStatus !== 'confirmed') {
-      booking.acceptedAt = new Date();
       
-      // CHECK IF SCHEDULE ENTRY ALREADY EXISTS BEFORE CREATING
-      const existingSchedule = await Schedule.findOne({ bookingId: booking._id });
-      
-      if (existingSchedule) {
-        console.log('📅 Schedule entry already exists, skipping creation:', existingSchedule._id);
-      } else {
-        // ADD TO SCHEDULE WHEN CONFIRMED - with error handling
-        try {
-          const scheduleEntry = await addBookingToSchedule(booking);
-          console.log('✅ Booking added to schedule:', scheduleEntry._id);
-        } catch (scheduleError) {
-          console.error('⚠️ Failed to add to schedule (non-critical):', scheduleError.message);
-          // Don't fail the booking update if schedule fails
+      // Add to schedule when confirmed/accepted
+      if (backendStatus === 'confirmed' && oldStatus !== 'confirmed') {
+        booking.acceptedAt = new Date();
+        
+        // CHECK IF SCHEDULE ENTRY ALREADY EXISTS BEFORE CREATING
+        const existingSchedule = await Schedule.findOne({ bookingId: booking._id });
+        
+        if (existingSchedule) {
+          console.log('📅 Schedule entry already exists, skipping creation:', existingSchedule._id);
+        } else {
+          // ADD TO SCHEDULE WHEN CONFIRMED - with error handling
+          try {
+            const scheduleEntry = await addBookingToSchedule(booking);
+            console.log('✅ Booking added to schedule:', scheduleEntry._id);
+          } catch (scheduleError) {
+            console.error('⚠️ Failed to add to schedule (non-critical):', scheduleError.message);
+            // Don't fail the booking update if schedule fails
+          }
         }
       }
     }
 
+    booking.updatedAt = new Date();
     const updatedBooking = await booking.save();
     
     // Populate for response
@@ -6476,9 +6554,100 @@ app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
 });
 
 
+app.post('/api/schedule/force-cleanup-completed', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    console.log('🚨 FORCE CLEANUP: Removing all completed bookings from schedule for user:', userId);
+
+    // Get all completed bookings
+    const completedBookings = await Booking.find({ 
+      providerId: userId, 
+      status: 'completed' 
+    });
+
+    console.log(`📋 Found ${completedBookings.length} completed bookings`);
+
+    let totalRemoved = 0;
+
+    // Remove schedule entries for each completed booking using multiple methods
+    for (const booking of completedBookings) {
+      console.log(`🧹 Cleaning up schedule for completed booking: ${booking._id}`);
+      
+      // Method 1: Remove by bookingId
+      const result1 = await Schedule.deleteMany({ bookingId: booking._id });
+      console.log(`   Removed ${result1.deletedCount} by bookingId`);
+      
+      // Method 2: Remove by customer/service match
+      const result2 = await Schedule.deleteMany({
+        providerId: userId,
+        client: booking.customerName,
+        title: booking.serviceType
+      });
+      console.log(`   Removed ${result2.deletedCount} by customer/service match`);
+      
+      totalRemoved += (result1.deletedCount + result2.deletedCount);
+    }
+
+    // Final verification
+    const remainingSchedule = await Schedule.find({ providerId: userId })
+      .populate('bookingId', 'status');
+    
+    const remainingCompleted = remainingSchedule.filter(entry => 
+      entry.bookingId && entry.bookingId.status === 'completed'
+    );
+
+    console.log(`✅ Force cleanup completed. Total removed: ${totalRemoved}`);
+    console.log(`📊 Remaining schedule entries: ${remainingSchedule.length}`);
+    console.log(`📊 Remaining completed in schedule: ${remainingCompleted.length}`);
+
+    res.json({
+      success: true,
+      message: `Force cleanup completed! Removed ${totalRemoved} schedule entries for completed bookings.`,
+      data: {
+        removedCount: totalRemoved,
+        remainingScheduleCount: remainingSchedule.length,
+        remainingCompletedCount: remainingCompleted.length
+      }
+    });
+  } catch (error) {
+    console.error('❌ Force cleanup error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to force cleanup schedule',
+      error: error.message
+    });
+  }
+});
+
+
 
 
 //Shedule
+
+async function removeCompletedBookingFromSchedule(bookingId) {
+  try {
+    console.log('🗑️ Removing completed booking from schedule:', bookingId);
+    
+    const result = await Schedule.findOneAndDelete({
+      bookingId: bookingId
+    });
+    
+    if (result) {
+      console.log('✅ Successfully removed booking from schedule:', bookingId);
+    } else {
+      console.log('ℹ️ No schedule entry found for booking:', bookingId);
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('❌ Error removing booking from schedule:', error);
+    throw error;
+  }
+}
+
+
+
 
 app.post('/api/debug/cleanup-duplicate-schedules', authenticateToken, async (req, res) => {
   try {
@@ -6509,6 +6678,44 @@ app.post('/api/debug/cleanup-duplicate-schedules', authenticateToken, async (req
     });
   }
 });
+
+app.post('/api/schedule/cleanup-completed', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    console.log('🧹 Cleaning up completed bookings from schedule for user:', userId);
+
+    // Find all schedule entries for this provider
+    const scheduleEntries = await Schedule.find({ providerId: userId })
+      .populate('bookingId', 'status');
+
+    let removedCount = 0;
+    
+    // Remove schedule entries for completed bookings
+    for (const entry of scheduleEntries) {
+      if (entry.bookingId && entry.bookingId.status === 'completed') {
+        await Schedule.findByIdAndDelete(entry._id);
+        removedCount++;
+        console.log('🗑️ Removed completed booking from schedule:', entry.bookingId._id);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Cleaned up ${removedCount} completed bookings from schedule`,
+      data: { removedCount }
+    });
+  } catch (error) {
+    console.error('Schedule cleanup error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to cleanup schedule',
+      error: error.message
+    });
+  }
+});
+
+
 
 
 app.use('/api/schedule', (req, res, next) => {
@@ -6687,6 +6894,31 @@ app.post('/api/ratings/customer', authenticateToken, async (req, res) => {
 
     console.log('✅ Customer rating submitted successfully for booking:', bookingId);
 
+    // Create notification for PROVIDER
+    await Notification.createNotification({
+      userId: booking.providerId,
+      type: 'rating_received',
+      title: 'New Rating Received',
+      message: `You've received a ${rating} star rating from ${booking.customerName}`,
+      relatedId: booking._id,
+      relatedType: 'rating',
+      roleContext: 'provider', // Only show to provider
+      priority: 'low'
+    });
+
+    // Create notification for CUSTOMER
+    await Notification.createNotification({
+      userId: req.user.id,
+      type: 'rating_received',
+      title: 'Rating Submitted',
+      message: `You rated ${booking.providerName} ${rating} stars`,
+      relatedId: booking._id,
+      relatedType: 'rating',
+      roleContext: 'customer', // Only show to customer
+      priority: 'low'
+    });
+
+
     res.json({
       success: true,
       message: 'Rating submitted successfully',
@@ -6782,6 +7014,30 @@ app.post('/api/ratings/provider', authenticateToken, async (req, res) => {
       success: true,
       message: 'Customer rating submitted successfully',
       data: { rating: ratingDoc }
+    });
+
+    // Create notification for CUSTOMER
+    await Notification.createNotification({
+      userId: booking.customerId,
+      type: 'rating_received',
+      title: 'New Rating Received',
+      message: `You've received a ${rating} star rating from ${booking.providerName}`,
+      relatedId: booking._id,
+      relatedType: 'rating',
+      roleContext: 'customer', // Only show to customer
+      priority: 'low'
+    });
+
+    // Create notification for PROVIDER
+    await Notification.createNotification({
+      userId: req.user.id,
+      type: 'rating_received',
+      title: 'Rating Submitted',
+      message: `You rated ${booking.customerName} ${rating} stars`,
+      relatedId: booking._id,
+      relatedType: 'rating',
+      roleContext: 'provider', // Only show to provider
+      priority: 'low'
     });
 
   } catch (error) {
@@ -6968,7 +7224,7 @@ app.patch('/api/bookings/:id/complete', authenticateToken, async (req, res) => {
   try {
     const bookingId = req.params.id;
     
-    console.log('✅ Completing booking:', bookingId);
+    console.log('✅ Completing booking and removing from schedule:', bookingId);
 
     // Find and update booking
     const booking = await Booking.findById(bookingId);
@@ -6992,11 +7248,26 @@ app.patch('/api/bookings/:id/complete', authenticateToken, async (req, res) => {
     booking.completedAt = new Date();
     await booking.save();
 
-    console.log('📊 Booking marked as completed');
+    // Remove from schedule
+    try {
+      const scheduleRemoval = await Schedule.findOneAndDelete({
+        bookingId: booking._id
+      });
+      
+      if (scheduleRemoval) {
+        console.log('🗑️ Removed completed booking from schedule:', booking._id);
+      } else {
+        console.log('ℹ️ No schedule entry found for booking:', booking._id);
+      }
+    } catch (scheduleError) {
+      console.error('⚠️ Schedule removal error (non-critical):', scheduleError);
+    }
+
+    console.log('📊 Booking marked as completed and removed from schedule');
 
     res.json({
       success: true,
-      message: 'Booking marked as completed successfully',
+      message: 'Booking marked as completed successfully and removed from schedule',
       data: booking
     });
   } catch (error) {
@@ -7090,6 +7361,8 @@ app.post('/api/bookings/:id/complete', authenticateToken, async (req, res) => {
     });
   }
 });
+
+
 
 
 app.get('/api/client/dashboard/stats', authenticateToken, async (req, res) => {
@@ -7244,6 +7517,46 @@ app.post('/api/debug/test-booking-accepted-email', authenticateToken, async (req
   }
 });
 
+// Add this endpoint to your server.js
+app.delete('/api/schedule/booking/:bookingId', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const userId = req.user.id;
+
+    console.log('🗑️ Removing schedule entry for booking:', bookingId);
+
+    // Find and delete the schedule entry for this booking
+    const result = await Schedule.findOneAndDelete({
+      bookingId: bookingId,
+      providerId: userId
+    });
+
+    if (!result) {
+      console.log('📅 No schedule entry found for booking:', bookingId);
+      return res.json({
+        success: true,
+        message: 'No schedule entry found to remove'
+      });
+    }
+
+    console.log('✅ Schedule entry removed:', result._id);
+
+    res.json({
+      success: true,
+      message: 'Booking removed from schedule successfully',
+      data: { deletedScheduleId: result._id }
+    });
+
+  } catch (error) {
+    console.error('❌ Remove from schedule error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to remove booking from schedule',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
 
 app.patch('/api/debug/test-booking-status/:id', authenticateToken, async (req, res) => {
   try {
@@ -7292,21 +7605,12 @@ app.patch('/api/debug/test-booking-status/:id', authenticateToken, async (req, r
 async function addBookingToSchedule(booking) {
   try {
     console.log('📅 Adding booking to schedule:', booking._id);
-    console.log('📋 Booking data:', {
-      bookingId: booking._id,
-      providerId: booking.providerId,
-      customerId: booking.customerId,
-      serviceType: booking.serviceType
-    });
-
-    // Validate required fields
-    if (!booking.providerId || !booking.customerId || !booking._id) {
-      console.error('❌ Missing required fields for schedule:', {
-        providerId: booking.providerId,
-        customerId: booking.customerId,
-        bookingId: booking._id
-      });
-      throw new Error('Missing required fields for schedule creation');
+    
+    // Check if schedule entry already exists for this booking
+    const existingSchedule = await Schedule.findOne({ bookingId: booking._id });
+    if (existingSchedule) {
+      console.log('📅 Schedule entry already exists for booking:', booking._id);
+      return existingSchedule;
     }
 
     // Calculate end time based on service type
@@ -7350,13 +7654,6 @@ async function addBookingToSchedule(booking) {
       if (dateMatch) {
         scheduleDate = new Date(dateMatch[0]);
       }
-    }
-
-    // Check if schedule entry already exists for this booking
-    const existingSchedule = await Schedule.findOne({ bookingId: booking._id });
-    if (existingSchedule) {
-      console.log('📅 Schedule entry already exists for booking:', booking._id);
-      return existingSchedule;
     }
 
     // Create schedule data with ALL required fields
@@ -7557,19 +7854,17 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
     const unreadOnly = req.query.unreadOnly === 'true';
-
-    let filter = { userId: req.user.id };
-    if (unreadOnly) {
-      filter.isRead = false;
-    }
-
+    
+    // Get current user role from path or user data
+    const userRole = req.path.includes('/provider/') ? 'provider' : 'customer';
+    
     const options = {
       page,
       limit,
-      sort: { createdAt: -1 }
+      unreadOnly
     };
 
-    const result = await Notification.paginate(filter, options);
+    const result = await Notification.getNotificationsByRole(req.user.id, userRole, options);
 
     res.json({
       success: true,
@@ -7591,12 +7886,14 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
   }
 });
 
+
+
 app.get('/api/notifications/unread-count', authenticateToken, async (req, res) => {
   try {
-    const count = await Notification.countDocuments({
-      userId: req.user.id,
-      isRead: false
-    });
+    // Get current user role from path or user data
+    const userRole = req.path.includes('/provider/') ? 'provider' : 'customer';
+    
+    const count = await Notification.getUnreadCountByRole(req.user.id, userRole);
 
     res.json({
       success: true,
@@ -7610,6 +7907,8 @@ app.get('/api/notifications/unread-count', authenticateToken, async (req, res) =
     });
   }
 });
+
+
 
 // Mark notification as read
 app.patch('/api/notifications/:id/read', authenticateToken, async (req, res) => {
@@ -7642,10 +7941,20 @@ app.patch('/api/notifications/:id/read', authenticateToken, async (req, res) => 
   }
 });
 
+
 app.patch('/api/notifications/mark-all-read', authenticateToken, async (req, res) => {
   try {
+    const userRole = req.path.includes('/provider/') ? 'provider' : 'customer';
+    
     await Notification.updateMany(
-      { userId: req.user.id, isRead: false },
+      { 
+        userId: req.user.id,
+        isRead: false,
+        $or: [
+          { roleContext: 'both' },
+          { roleContext: userRole }
+        ]
+      },
       { isRead: true }
     );
 
@@ -7661,6 +7970,7 @@ app.patch('/api/notifications/mark-all-read', authenticateToken, async (req, res
     });
   }
 });
+
 
 
 app.post('/api/notifications', authenticateToken, async (req, res) => {
@@ -7879,6 +8189,29 @@ app.post('/api/jobs/:id/apply', authenticateToken, async (req, res) => {
       message: 'Successfully applied for the job',
       data: job
     });
+
+    await Notification.createNotification({
+      userId: job.customerId,
+      type: 'job_applied',
+      title: 'New Job Application',
+      message: `A provider has applied for your ${job.serviceType} job`,
+      relatedId: job._id,
+      relatedType: 'job',
+      roleContext: 'customer', // Only show to customer
+      priority: 'medium'
+    });
+
+    await Notification.createNotification({
+      userId: req.user.id,
+      type: 'job_applied',
+      title: 'Application Sent',
+      message: `You applied for the ${job.serviceType} job`,
+      relatedId: job._id,
+      relatedType: 'job',
+      roleContext: 'provider', // Only show to provider
+      priority: 'medium'
+    });
+
   } catch (error) {
     console.error('Apply for job error:', error);
     res.status(500).json({
@@ -7899,13 +8232,25 @@ app.patch('/api/jobs/:id/accept', authenticateToken, async (req, res) => {
 
     // Create notification for the provider who applied
     await Notification.createNotification({
-      userId: req.user.id, // or the provider ID
+      userId: job.providerId,
       type: 'job_accepted',
       title: 'Job Application Accepted!',
       message: `Your application for ${job.serviceType} has been accepted`,
       relatedId: job._id,
       relatedType: 'job',
+      roleContext: 'provider', // Only show to provider
       priority: 'high'
+    });
+
+    await Notification.createNotification({
+      userId: job.customerId,
+      type: 'job_accepted',
+      title: 'Provider Hired',
+      message: `You hired a provider for your ${job.serviceType} job`,
+      relatedId: job._id,
+      relatedType: 'job',
+      roleContext: 'customer', // Only show to customer
+      priority: 'medium'
     });
 
     res.json({
@@ -8469,6 +8814,20 @@ app.post('/api/service-requests', authenticateToken, async (req, res) => {
       message: 'Service request created successfully',
       data: savedRequest
     });
+
+    await Notification.createNotification({
+      userId: req.user.id,
+      type: 'job_posted',
+      title: 'Job Posted Successfully',
+      message: `Your ${serviceType} job has been posted and is now visible to providers`,
+      relatedId: savedRequest._id,
+      relatedType: 'job',
+      roleContext: 'customer', // Only show to customer
+      priority: 'medium'
+    });
+
+
+
   } catch (error) {
     console.error('Create service request error:', error);
     res.status(500).json({

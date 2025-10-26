@@ -11,7 +11,7 @@ const notificationSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['message', 'booking', 'job_accepted', 'job_applied', 'system'],
+    enum: ['message', 'booking', 'job_accepted', 'job_applied', 'job_posted', 'rating_received', 'booking_request', 'system'],
     required: true
   },
   title: {
@@ -29,8 +29,14 @@ const notificationSchema = new mongoose.Schema({
   },
   relatedType: {
     type: String,
-    enum: ['conversation', 'booking', 'job', 'user'],
+    enum: ['conversation', 'booking', 'job', 'user', 'rating'],
     required: false
+  },
+  roleContext: {
+    type: String,
+    enum: ['customer', 'provider', 'both'],
+    default: 'both',
+    required: true
   },
   isRead: {
     type: Boolean,
@@ -51,7 +57,7 @@ const notificationSchema = new mongoose.Schema({
 
 notificationSchema.plugin(mongoosePaginate);
 
-// Static method to create notifications
+// Static method to create notifications with role context
 notificationSchema.statics.createNotification = async function(notificationData) {
   try {
     const notification = new this(notificationData);
@@ -65,6 +71,55 @@ notificationSchema.statics.createNotification = async function(notificationData)
     return notification;
   } catch (error) {
     console.error('Error creating notification:', error);
+    throw error;
+  }
+};
+
+// Method to get notifications filtered by role context
+notificationSchema.statics.getNotificationsByRole = async function(userId, userRole, options = {}) {
+  try {
+    const { page = 1, limit = 20, unreadOnly = false } = options;
+    
+    let filter = { 
+      userId,
+      $or: [
+        { roleContext: 'both' },
+        { roleContext: userRole }
+      ]
+    };
+    
+    if (unreadOnly) {
+      filter.isRead = false;
+    }
+
+    const result = await this.paginate(filter, {
+      page,
+      limit,
+      sort: { createdAt: -1 }
+    });
+
+    return result;
+  } catch (error) {
+    console.error('Error getting notifications by role:', error);
+    throw error;
+  }
+};
+
+// Method to get unread count by role
+notificationSchema.statics.getUnreadCountByRole = async function(userId, userRole) {
+  try {
+    const count = await this.countDocuments({
+      userId,
+      isRead: false,
+      $or: [
+        { roleContext: 'both' },
+        { roleContext: userRole }
+      ]
+    });
+    
+    return count;
+  } catch (error) {
+    console.error('Error getting unread count by role:', error);
     throw error;
   }
 };
