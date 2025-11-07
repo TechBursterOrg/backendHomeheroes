@@ -2247,6 +2247,18 @@ app.use(cookieParser());
 // Serve static files for uploaded images
 // app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+app.use((req, res, next) => {
+  console.log('🔍 Incoming Request:', {
+    method: req.method,
+    url: req.url,
+    path: req.path,
+    originalUrl: req.originalUrl,
+    origin: req.headers.origin,
+    timestamp: new Date().toISOString()
+  });
+  next();
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/verification', verificationRoutes);
 app.use('/api/jobs', jobRoutes);
