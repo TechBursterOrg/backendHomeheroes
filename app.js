@@ -26,9 +26,11 @@ import { Storage } from '@google-cloud/storage';
 import ratingRoutes from './routes/ratings.routes.js';
 import Schedule from './models/Schedule.js'; // Adjust path as needed
 import providerRoutes from './routes/providers.routes.js';
+import cron from 'node-cron';
 
 
-// Add to your imports in server.js
+
+
 
 // Import models
 import User from './models/User.js';
@@ -50,6 +52,79 @@ const envFile = process.env.NODE_ENV === 'production'
   ? '.env.production'  // Correct file name with dot
   : '.env';
 
+console.log('🔍 Searching for service account key files...\n');
+
+// Common locations to check
+const searchLocations = [
+  __dirname, // Current directory
+  path.join(__dirname, '..'), // Parent directory
+  path.join(process.env.HOME, 'Downloads'), // Downloads folder
+  path.join(process.env.HOME, 'Desktop'), // Desktop
+  path.join(process.env.HOME), // Home directory
+];
+
+const filePatterns = [
+  '*.json',
+  'service-account*.json',
+  'google*.json',
+  'key*.json',
+  'gcs*.json',
+  'lofty-object*.json',
+  'decent-carving*.json'
+];
+
+let foundFiles = [];
+
+searchLocations.forEach(location => {
+  if (fs.existsSync(location)) {
+    console.log(`📁 Searching: ${location}`);
+    
+    try {
+      const files = fs.readdirSync(location);
+      
+      files.forEach(file => {
+        const filePath = path.join(location, file);
+        const stat = fs.statSync(filePath);
+        
+        if (stat.isFile() && file.endsWith('.json')) {
+          // Check if it looks like a service account key
+          try {
+            const content = fs.readFileSync(filePath, 'utf8');
+            const jsonData = JSON.parse(content);
+            
+            if (jsonData.type === 'service_account' && 
+                jsonData.project_id && 
+                jsonData.private_key) {
+              console.log(`✅ FOUND SERVICE ACCOUNT KEY: ${filePath}`);
+              foundFiles.push({
+                path: filePath,
+                project: jsonData.project_id,
+                email: jsonData.client_email
+              });
+            }
+          } catch (e) {
+            // Not a valid JSON or service account file
+          }
+        }
+      });
+    } catch (error) {
+      console.log(`   Cannot read directory: ${error.message}`);
+    }
+  }
+});
+console.log('\n📊 Search Results:');
+if (foundFiles.length > 0) {
+  foundFiles.forEach((file, index) => {
+    console.log(`${index + 1}. ${file.path}`);
+    console.log(`   Project: ${file.project}`);
+    console.log(`   Email: ${file.email}\n`);
+  });
+} else {
+  console.log('❌ No service account key files found.');
+  console.log('\n💡 You need to download a service account key from Google Cloud Console.');
+}
+const envFiles = ['.env', '.env.production', '.env.development'];
+
 console.log(`Loading environment from: ${envFile}`);
 console.log(`Current directory: ${__dirname}`);
 console.log(`File exists: ${fs.existsSync(path.resolve(__dirname, envFile))}`);
@@ -62,16 +137,63 @@ const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://homehero:7cuMFr33u
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secure-jwt-secret-key-change-in-production-2025';
 
 const storage = new Storage({
-  keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS || path.join(__dirname, 'google-cloud-key.json'),
-  projectId: process.env.GCLOUD_PROJECT_ID
+  keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+  projectId: 'decent-carving-474920-v0' // This must match your service account file
+});
+
+console.log('🔍 Environment Diagnostic Report:');
+console.log('================================');
+
+
+envFiles.forEach(envFile => {
+  const envPath = path.join(__dirname, envFile);
+  if (fs.existsSync(envPath)) {
+    console.log(`\n📁 Found: ${envFile}`);
+    const envContent = fs.readFileSync(envPath, 'utf8');
+    const lines = envContent.split('\n').filter(line => 
+      line.trim() && !line.startsWith('#') && line.includes('=')
+    );
+    
+    lines.forEach(line => {
+      const [key] = line.split('=');
+      if (key.includes('GOOGLE') || key.includes('GCLOUD') || key.includes('BUCKET')) {
+        console.log(`   ${line}`);
+      }
+    });
+  }
 });
 
 
+console.log('\n🔧 Current Process Environment:');
+console.log('GOOGLE_APPLICATION_CREDENTIALS:', process.env.GOOGLE_APPLICATION_CREDENTIALS || 'NOT SET');
+console.log('GCLOUD_PROJECT_ID:', process.env.GCLOUD_PROJECT_ID || 'NOT SET');
+console.log('GCLOUD_BUCKET_NAME:', process.env.GCLOUD_BUCKET_NAME || 'NOT SET');
+console.log('NODE_ENV:', process.env.NODE_ENV || 'NOT SET');
+
+// Check if the key file exists
+if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+  const keyExists = fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+  console.log('\n🔑 Service Account Key File:');
+  console.log('Exists:', keyExists);
+  if (keyExists) {
+    try {
+      const keyContent = fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, 'utf8');
+      const keyData = JSON.parse(keyContent);
+      console.log('Project ID in key:', keyData.project_id);
+      console.log('Client Email:', keyData.client_email);
+      console.log('Key Type:', keyData.type);
+    } catch (error) {
+      console.log('❌ Error reading key file:', error.message);
+    }
+  }
+}
 
 
-const bucketName = process.env.GCLOUD_BUCKET_NAME || 'homehero-gallery';
+
+
+
+const bucketName = process.env.GCLOUD_BUCKET_NAME || 'home-heroes-bucket';
 const bucket = storage.bucket(bucketName);
-
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -90,70 +212,324 @@ const upload = multer({
 const uploadToGCS = (file, folder = 'gallery') => {
   return new Promise((resolve, reject) => {
     try {
-      // Generate unique filename
-      const extension = path.extname(file.originalname);
-      const filename = `${folder}/${Date.now()}-${Math.round(Math.random() * 1E9)}${extension}`;
-      
-      // Create file reference in bucket
-      const blob = bucket.file(filename);
-      
-      // Create write stream
-      const blobStream = blob.createWriteStream({
-        metadata: {
-          contentType: file.mimetype,
-        },
-        resumable: false
+      console.log('📤 Starting GCS upload...', {
+        originalName: file.originalname,
+        mimetype: file.mimetype,
+        size: file.size,
+        folder: folder,
+        bucket: bucketName
       });
 
+      if (!file || !file.buffer) {
+        throw new Error('Invalid file object');
+      }
+
+      const extension = path.extname(file.originalname) || '.jpg';
+      const filename = `${folder}/${Date.now()}-${Math.round(Math.random() * 1E9)}${extension}`;
+      
+      console.log('📝 Generated filename:', filename);
+
+      const blob = bucket.file(filename);
+      
+      // Remove ALL ACL-related settings
+      const blobStream = blob.createWriteStream({
+        metadata: {
+          contentType: file.mimetype || 'application/octet-stream',
+          metadata: {
+            originalName: file.originalname,
+            uploadedAt: new Date().toISOString(),
+            uploadedBy: 'homehero-app'
+          }
+        },
+        resumable: false,
+        validation: 'md5'
+      });
+
+      let uploadSuccess = false;
+
       blobStream.on('error', (error) => {
-        console.error('GCS Upload Error:', error);
-        reject(new Error('Unable to upload image'));
+        console.error('❌ GCS Upload Stream Error:', error);
+        if (!uploadSuccess) {
+          reject(new Error(`Unable to upload image: ${error.message}`));
+        }
       });
 
       blobStream.on('finish', async () => {
         try {
-          // Make the file public
-          await blob.makePublic();
+          uploadSuccess = true;
+          console.log('✅ File uploaded successfully, verifying...');
           
-          // Get public URL
+          // Verify the file was uploaded
+          const [exists] = await blob.exists();
+          if (!exists) {
+            throw new Error('File upload verification failed');
+          }
+
+          // REMOVED: blob.makePublic() - No ACL operations!
+          
+          // If bucket is public, this URL will work
           const publicUrl = `https://storage.googleapis.com/${bucket.name}/${blob.name}`;
+          
+          console.log('✅ File available at:', publicUrl);
+          
           resolve({
             filename: blob.name,
             url: publicUrl,
-            bucket: bucket.name
+            bucket: bucket.name,
+            size: file.size,
+            contentType: file.mimetype,
+            uploadedAt: new Date().toISOString()
           });
         } catch (error) {
-          console.error('GCS Make Public Error:', error);
-          reject(new Error('Unable to make image public'));
+          console.error('❌ GCS Upload Verification Error:', error);
+          try {
+            await blob.delete();
+          } catch (deleteError) {
+            console.error('❌ Failed to cleanup file:', deleteError);
+          }
+          reject(new Error('Unable to verify file upload'));
         }
       });
 
+      console.log('🚀 Starting file upload to GCS...');
       blobStream.end(file.buffer);
+      
     } catch (error) {
+      console.error('❌ GCS Upload Setup Error:', error);
       reject(error);
     }
   });
 };
 
 
+app.get('/api/debug/gcs-setup', async (req, res) => {
+  try {
+    const keyFilePath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    const keyFileExists = fs.existsSync(keyFilePath);
+    
+    let serviceAccountInfo = null;
+    if (keyFileExists) {
+      const keyFileContent = fs.readFileSync(keyFilePath, 'utf8');
+      serviceAccountInfo = JSON.parse(keyFileContent);
+    }
+
+    const config = {
+      keyFilePath: keyFilePath,
+      keyFileExists: keyFileExists,
+      projectId: process.env.GCLOUD_PROJECT_ID,
+      bucketName: process.env.GCLOUD_BUCKET_NAME,
+      serviceAccount: serviceAccountInfo ? {
+        project_id: serviceAccountInfo.project_id,
+        client_email: serviceAccountInfo.client_email,
+        private_key_id: serviceAccountInfo.private_key_id ? 'Set' : 'Missing'
+      } : 'No service account file found'
+    };
+
+    console.log('🔧 GCS Setup Debug:', config);
+    
+    res.json({
+      success: true,
+      data: config
+    });
+  } catch (error) {
+    console.error('GCS setup debug error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Test bucket connectivity
+app.get('/api/debug/gcs-test', async (req, res) => {
+  try {
+    console.log('🧪 Testing GCS connectivity...');
+    
+    // Test 1: Check if we can access the storage API
+    const [buckets] = await storage.getBuckets();
+    console.log('✅ Can list buckets');
+    
+    // Test 2: Check if our specific bucket exists
+    const [exists] = await bucket.exists();
+    if (!exists) {
+      throw new Error(`Bucket ${bucketName} does not exist in project decent-carving-474920-v0`);
+    }
+    console.log('✅ Bucket exists:', bucketName);
+    
+    // Test 3: Try to get bucket metadata
+    const [metadata] = await bucket.getMetadata();
+    console.log('✅ Can access bucket metadata');
+    
+    res.json({
+      success: true,
+      message: 'GCS connectivity test passed',
+      data: {
+        bucketExists: exists,
+        bucketName: bucketName,
+        location: metadata.location,
+        storageClass: metadata.storageClass
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ GCS test failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'GCS test failed',
+      error: error.message,
+      suggestion: 'Make sure the service account has access to the bucket in the Google Cloud Console'
+    });
+  }
+});
+
+app.get('/api/debug/service-account-info', (req, res) => {
+  try {
+    const keyFilePath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    const keyFileContent = fs.readFileSync(keyFilePath, 'utf8');
+    const serviceAccount = JSON.parse(keyFileContent);
+    
+    const info = {
+      serviceAccountProject: serviceAccount.project_id,
+      clientEmail: serviceAccount.client_email,
+      privateKeyId: serviceAccount.private_key_id,
+      envProjectId: process.env.GCLOUD_PROJECT_ID,
+      bucketName: process.env.GCLOUD_BUCKET_NAME,
+      projectMatch: serviceAccount.project_id === process.env.GCLOUD_PROJECT_ID
+    };
+    
+    console.log('🔍 Service Account Analysis:', info);
+    
+    res.json({
+      success: true,
+      data: info
+    });
+  } catch (error) {
+    console.error('Service account analysis error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+
 const deleteFromGCS = async (fileUrl) => {
   try {
-    if (fileUrl && fileUrl.includes('storage.googleapis.com')) {
-      // Extract the filename from the GCS URL
-      const urlParts = fileUrl.split('/');
-      const filename = urlParts.slice(3).join('/'); // Remove https://storage.googleapis.com/bucket-name/
-      
-      await bucket.file(filename).delete();
-      console.log(`✅ Deleted file from GCS: ${filename}`);
-      return true;
+    if (!fileUrl) {
+      console.log('⚠️ No file URL provided for deletion');
+      return false;
     }
-    return false;
+
+    console.log('🗑️ Attempting to delete from GCS:', fileUrl);
+
+    let filename;
+    
+    // Extract filename from different URL formats
+    if (fileUrl.includes('storage.googleapis.com')) {
+      // https://storage.googleapis.com/bucket-name/folder/filename.jpg
+      const urlParts = fileUrl.split('/');
+      filename = urlParts.slice(4).join('/'); // Remove https://storage.googleapis.com/bucket-name/
+    } else if (fileUrl.includes(bucketName)) {
+      // Direct bucket reference
+      filename = fileUrl.split(`${bucketName}/`)[1];
+    } else {
+      // Assume it's already a filename
+      filename = fileUrl;
+    }
+
+    if (!filename) {
+      console.log('⚠️ Could not extract filename from URL');
+      return false;
+    }
+
+    console.log('📝 Extracted filename for deletion:', filename);
+
+    const file = bucket.file(filename);
+    const [exists] = await file.exists();
+
+    if (!exists) {
+      console.log('⚠️ File does not exist in GCS:', filename);
+      return false;
+    }
+
+    await file.delete();
+    console.log('✅ Successfully deleted file from GCS:', filename);
+    return true;
+
   } catch (error) {
     console.error('❌ GCS delete error:', error);
+    
+    // Don't throw error for delete failures in production
+    if (process.env.NODE_ENV === 'production') {
+      console.log('⚠️ Delete failed but continuing...');
+      return false;
+    }
     throw error;
   }
 };
 
+
+app.get('/api/debug/gcs-quick-test', async (req, res) => {
+  try {
+    console.log('🧪 Quick GCS Test...');
+    
+    // Test basic authentication
+    const [buckets] = await storage.getBuckets();
+    console.log('✅ Authentication successful');
+    
+    // Test specific bucket access
+    const [bucketExists] = await bucket.exists();
+    console.log('✅ Bucket exists:', bucketExists);
+    
+    res.json({
+      success: true,
+      message: 'GCS connection successful!',
+      projectId: 'decent-carving-474920-v0',
+      bucketName: bucketName,
+      bucketExists: bucketExists
+    });
+    
+  } catch (error) {
+    console.error('❌ Quick test failed:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'GCS test failed',
+      error: error.message,
+      currentProject: 'decent-carving-474920-v0',
+      suggestion: 'Check if bucket exists in this project and service account has permissions'
+    });
+  }
+});
+
+// Service account verification endpoint
+app.get('/api/debug/verify-service-account', (req, res) => {
+  try {
+    const keyFilePath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    const keyFileContent = fs.readFileSync(keyFilePath, 'utf8');
+    const serviceAccount = JSON.parse(keyFileContent);
+    
+    const config = {
+      serviceAccountProject: serviceAccount.project_id,
+      configuredProject: 'decent-carving-474920-v0',
+      clientEmail: serviceAccount.client_email,
+      matches: serviceAccount.project_id === 'decent-carving-474920-v0'
+    };
+    
+    console.log('🔍 Service Account Verification:', config);
+    
+    res.json({
+      success: true,
+      data: config,
+      message: config.matches ? '✅ Project IDs match!' : '❌ Project IDs do not match!'
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 
 
 // Initialize email transporter
@@ -166,6 +542,56 @@ initializeEmailTransporter().then(success => {
   }
 });
 
+app.use(cors({
+  origin: 'http://localhost:5173',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
+}));
+
+app.options('*', cors());
+
+// Then body parsers - CRITICAL FIX
+app.use(express.json({ 
+  limit: '10mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
+
+app.use(express.urlencoded({ 
+  extended: true, 
+  limit: '10mb' 
+}));
+
+// Then other middleware
+app.use(morgan('dev'));
+app.use(cookieParser());
+
+// Debug middleware to check body parsing
+app.use((req, res, next) => {
+  if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+    console.log('📦 Request Body Debug:', {
+      method: req.method,
+      url: req.url,
+      contentType: req.headers['content-type'],
+      hasBody: !!req.body,
+      bodyKeys: req.body ? Object.keys(req.body) : 'No body'
+    });
+  }
+  next();
+});
+
+app.use((error, req, res, next) => {
+  console.error('🚨 Unhandled Error:', {
+    url: req.url,
+    method: req.method,
+    error: error.message,
+    stack: error.stack,
+    body: req.body
+  });
+  next(error);
+});
 
 
 // ==================== UPLOAD DIRECTORY SETUP ====================
@@ -175,7 +601,7 @@ app.post('/api/gallery/upload', authenticateToken, upload.single('image'), async
     console.log('=== GALLERY UPLOAD TO GOOGLE CLOUD STORAGE ===');
     
     if (!req.file) {
-      console.log('No image file uploaded');
+      console.log('❌ No image file uploaded');
       return res.status(400).json({
         success: false,
         message: 'No image file provided. Please select an image.'
@@ -192,29 +618,60 @@ app.post('/api/gallery/upload', authenticateToken, upload.single('image'), async
       });
     }
 
-    // Upload to Google Cloud Storage
-    console.log('Uploading to Google Cloud Storage...');
-    const uploadResult = await uploadToGCS(req.file, 'gallery');
+    // Validate file
+    if (!req.file.mimetype.startsWith('image/')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Only image files are allowed'
+      });
+    }
+
+    if (req.file.size > 5 * 1024 * 1024) {
+      return res.status(400).json({
+        success: false,
+        message: 'File size must be less than 5MB'
+      });
+    }
+
+    console.log('📤 Uploading to Google Cloud Storage...');
     
-    console.log('✅ Image uploaded to GCS:', uploadResult.url);
+    // Upload to Google Cloud Storage with retry logic
+    let uploadResult;
+    try {
+      uploadResult = await uploadToGCS(req.file, 'gallery');
+      console.log('✅ Image uploaded to GCS:', uploadResult.url);
+    } catch (uploadError) {
+      console.error('❌ GCS upload failed:', uploadError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to upload image to cloud storage',
+        error: process.env.NODE_ENV === 'development' ? uploadError.message : 'Storage service error'
+      });
+    }
 
     // Create gallery entry with GCS URL
     const newImage = new Gallery({
       title: title.trim(),
       description: description ? description.trim() : '',
       category: category || 'other',
-      imageUrl: uploadResult.url, // Store GCS URL
-      fullImageUrl: uploadResult.url, // Same URL for GCS
+      imageUrl: uploadResult.url,
+      fullImageUrl: uploadResult.url,
       userId: req.user.id,
       tags: tags ? tags.split(',').map(tag => tag.trim()).filter(tag => tag) : [],
-      featured: featured === 'true' || featured === true
+      featured: featured === 'true' || featured === true,
+      storageInfo: {
+        provider: 'gcs',
+        bucket: uploadResult.bucket,
+        filename: uploadResult.filename,
+        uploadedAt: uploadResult.uploadedAt
+      }
     });
 
     // Save to database
     const savedImage = await newImage.save();
     await savedImage.populate('userId', 'name profileImage');
 
-    console.log('Image saved to database:', savedImage._id);
+    console.log('💾 Image saved to database:', savedImage._id);
 
     res.status(201).json({
       success: true,
@@ -223,7 +680,7 @@ app.post('/api/gallery/upload', authenticateToken, upload.single('image'), async
     });
     
   } catch (error) {
-    console.error('Gallery upload error:', error);
+    console.error('❌ Gallery upload error:', error);
     
     let errorMessage = 'Failed to upload image';
     let statusCode = 500;
@@ -257,16 +714,25 @@ app.post('/api/auth/profile/image', authenticateToken, upload.single('profileIma
       });
     }
 
-    console.log('Uploading profile image to Google Cloud Storage...');
+    console.log('📤 Uploading profile image to Google Cloud Storage...');
     
     // Upload to Google Cloud Storage
-    const uploadResult = await uploadToGCS(req.file, 'profiles');
-    
-    console.log('✅ Profile image uploaded to GCS:', uploadResult.url);
+    let uploadResult;
+    try {
+      uploadResult = await uploadToGCS(req.file, 'profiles');
+      console.log('✅ Profile image uploaded to GCS:', uploadResult.url);
+    } catch (uploadError) {
+      console.error('❌ Profile image upload failed:', uploadError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to upload profile image to cloud storage'
+      });
+    }
 
     // Update user profile with the GCS URL
     await User.findByIdAndUpdate(req.user.id, { 
-      profileImage: uploadResult.url
+      profileImage: uploadResult.url,
+      profileImageFull: uploadResult.url
     });
 
     res.json({
@@ -277,12 +743,888 @@ app.post('/api/auth/profile/image', authenticateToken, upload.single('profileIma
       }
     });
   } catch (error) {
-    console.error('Profile image upload error:', error);
+    console.error('❌ Profile image upload error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to upload profile image',
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
+  }
+});
+
+app.get('/api/gcs/stats', authenticateToken, async (req, res) => {
+  try {
+    const [files] = await bucket.getFiles({ 
+      prefix: 'gallery/',
+      maxResults: 1000 
+    });
+    
+    const [profileFiles] = await bucket.getFiles({
+      prefix: 'profiles/',
+      maxResults: 1000
+    });
+
+    const galleryCount = files.length;
+    const profileCount = profileFiles.length;
+
+    // Calculate total size
+    let totalSize = 0;
+    files.forEach(file => totalSize += file.metadata.size || 0);
+    profileFiles.forEach(file => totalSize += file.metadata.size || 0);
+
+    res.json({
+      success: true,
+      data: {
+        bucket: bucketName,
+        totalFiles: galleryCount + profileCount,
+        galleryFiles: galleryCount,
+        profileFiles: profileCount,
+        totalSize: totalSize,
+        totalSizeMB: (totalSize / (1024 * 1024)).toFixed(2)
+      }
+    });
+  } catch (error) {
+    console.error('GCS stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get storage statistics'
+    });
+  }
+});
+
+app.post('/api/gcs/cleanup', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    const [allFiles] = await bucket.getFiles();
+    const galleryImages = await Gallery.find({});
+    const users = await User.find({ profileImage: { $ne: '' } });
+
+    // Extract URLs from database
+    const dbImageUrls = new Set();
+    galleryImages.forEach(img => {
+      if (img.imageUrl) dbImageUrls.add(img.imageUrl);
+      if (img.fullImageUrl) dbImageUrls.add(img.fullImageUrl);
+    });
+    users.forEach(user => {
+      if (user.profileImage) dbImageUrls.add(user.profileImage);
+      if (user.profileImageFull) dbImageUrls.add(user.profileImageFull);
+    });
+
+    let deletedCount = 0;
+    const deletionErrors = [];
+
+    for (const file of allFiles) {
+      const fileUrl = `https://storage.googleapis.com/${bucketName}/${file.name}`;
+      
+      if (!dbImageUrls.has(fileUrl)) {
+        try {
+          await file.delete();
+          deletedCount++;
+          console.log(`🗑️ Deleted orphaned file: ${file.name}`);
+        } catch (error) {
+          deletionErrors.push({ file: file.name, error: error.message });
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Cleanup completed. Deleted ${deletedCount} orphaned files.`,
+      data: {
+        deletedCount,
+        errors: deletionErrors
+      }
+    });
+
+  } catch (error) {
+    console.error('GCS cleanup error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to cleanup storage'
+    });
+  }
+});
+
+//payment
+
+app.post('/api/test-body-parsing', (req, res) => {
+  console.log('🧪 Body Parsing Test:', {
+    body: req.body,
+    headers: req.headers,
+    contentType: req.headers['content-type']
+  });
+  
+  res.json({
+    success: true,
+    message: 'Body parsing test',
+    bodyReceived: req.body,
+    contentType: req.headers['content-type']
+  });
+});
+
+app.post('/api/payments/create-intent', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId, amount, currency, customerCountry } = req.body;
+
+    // Validate booking
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Determine payment processor based on customer country
+    const isNigeria = customerCountry === 'NG' || customerCountry === 'Nigeria';
+    const isUK = customerCountry === 'GB' || customerCountry === 'UK';
+
+    if (isNigeria) {
+      // Use Paystack for Nigeria
+      const paystackResponse = await paystack.transaction.initialize({
+        amount: amount * 100, // Convert to kobo
+        email: req.user.email,
+        currency: 'NGN',
+        metadata: {
+          bookingId: bookingId,
+          customerId: req.user.id,
+          paymentType: 'escrow'
+        },
+        callback_url: `${process.env.FRONTEND_URL}/payment-verify`
+      });
+
+      // Store payment intent in booking
+      booking.payment = {
+        processor: 'paystack',
+        paymentIntentId: paystackResponse.data.reference,
+        amount: amount,
+        currency: 'NGN',
+        status: 'requires_payment_method',
+        autoRefundAt: new Date(Date.now() + 4 * 60 * 60 * 1000) // 4 hours from now
+      };
+
+      await booking.save();
+
+      res.json({
+        success: true,
+        processor: 'paystack',
+        authorizationUrl: paystackResponse.data.authorization_url,
+        reference: paystackResponse.data.reference
+      });
+
+    } else {
+      // Use Stripe for UK and other countries
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: Math.round(amount * 100), // Convert to cents/pence
+        currency: isUK ? 'gbp' : 'usd',
+        capture_method: 'manual', // This holds the payment until manually captured
+        metadata: {
+          bookingId: bookingId,
+          customerId: req.user.id,
+          paymentType: 'escrow'
+        }
+      });
+
+      // Store payment intent in booking
+      booking.payment = {
+        processor: 'stripe',
+        paymentIntentId: paymentIntent.id,
+        amount: amount,
+        currency: isUK ? 'GBP' : 'USD',
+        status: 'requires_payment_method',
+        autoRefundAt: new Date(Date.now() + 4 * 60 * 60 * 1000) // 4 hours from now
+      };
+
+      await booking.save();
+
+      res.json({
+        success: true,
+        processor: 'stripe',
+        clientSecret: paymentIntent.client_secret,
+        paymentIntentId: paymentIntent.id
+      });
+    }
+
+  } catch (error) {
+    console.error('Create payment intent error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create payment intent'
+    });
+  }
+});
+
+app.post('/api/payments/verify-paystack', authenticateToken, async (req, res) => {
+  try {
+    const { reference, bookingId } = req.body;
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Verify payment with Paystack
+    const verification = await paystack.transaction.verify(reference);
+
+    if (verification.data.status === 'success') {
+      // Update booking payment status
+      booking.payment.status = 'held';
+      booking.payment.heldAt = new Date();
+      await booking.save();
+
+      // Send notification to provider
+      await Notification.createNotification({
+        userId: booking.providerId,
+        type: 'payment_received',
+        title: 'Payment Received',
+        message: `A customer has made a payment of ${booking.payment.currency}${booking.payment.amount} for your service`,
+        relatedId: booking._id,
+        relatedType: 'booking',
+        priority: 'high'
+      });
+
+      res.json({
+        success: true,
+        message: 'Payment verified successfully',
+        paymentStatus: 'held'
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        message: 'Payment verification failed'
+      });
+    }
+
+  } catch (error) {
+    console.error('Verify payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to verify payment'
+    });
+  }
+});
+
+
+app.post('/api/payments/confirm-stripe', authenticateToken, async (req, res) => {
+  try {
+    const { paymentIntentId, bookingId } = req.body;
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // For Stripe, payment is automatically held when created with capture_method: 'manual'
+    booking.payment.status = 'held';
+    booking.payment.heldAt = new Date();
+    await booking.save();
+
+    // Send notification to provider
+    await Notification.createNotification({
+      userId: booking.providerId,
+      type: 'payment_received',
+      title: 'Payment Received',
+      message: `A customer has made a payment of ${booking.payment.currency}${booking.payment.amount} for your service`,
+      relatedId: booking._id,
+      relatedType: 'booking',
+      priority: 'high'
+    });
+
+    res.json({
+      success: true,
+      message: 'Payment confirmed successfully',
+      paymentStatus: 'held'
+    });
+
+  } catch (error) {
+    console.error('Confirm payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to confirm payment'
+    });
+  }
+});
+
+app.post('/api/payments/release', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.body;
+
+    const booking = await Booking.findById(bookingId).populate('providerId');
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Verify user is authorized to release payment
+    if (booking.customerId.toString() !== req.user.id && req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to release this payment'
+      });
+    }
+
+    if (booking.payment.status !== 'held') {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment is not in held status'
+      });
+    }
+
+    if (booking.status !== 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking must be completed before releasing payment'
+      });
+    }
+
+    const provider = booking.providerId;
+
+    if (booking.payment.processor === 'stripe') {
+      // Capture the held Stripe payment
+      await stripe.paymentIntents.capture(booking.payment.paymentIntentId);
+
+      // Calculate platform commission (20%)
+      const commission = booking.payment.amount * 0.20;
+      const providerAmount = booking.payment.amount * 0.80;
+
+      // Update provider earnings
+      provider.totalEarnings = (provider.totalEarnings || 0) + providerAmount;
+      await provider.save();
+
+      // Update payment status
+      booking.payment.status = 'released';
+      booking.payment.commission = commission;
+      booking.payment.providerAmount = providerAmount;
+      booking.payment.releasedAt = new Date();
+
+    } else if (booking.payment.processor === 'paystack') {
+      // For Paystack, you would initiate a transfer to the provider's bank account
+      // This requires the provider to have set up their bank account details
+      
+      if (!provider.paystackRecipientCode) {
+        return res.status(400).json({
+          success: false,
+          message: 'Provider has not set up their bank account for payments'
+        });
+      }
+
+      // Calculate amounts
+      const commission = booking.payment.amount * 0.20;
+      const providerAmount = booking.payment.amount * 0.80;
+
+      // Initiate transfer to provider (you need to implement this based on your Paystack setup)
+      const transfer = await paystack.transfer.create({
+        source: 'balance',
+        amount: Math.round(providerAmount * 100), // Convert to kobo
+        recipient: provider.paystackRecipientCode,
+        reason: `Payment for ${booking.serviceType} service`
+      });
+
+      // Update provider earnings
+      provider.totalEarnings = (provider.totalEarnings || 0) + providerAmount;
+      await provider.save();
+
+      // Update payment status
+      booking.payment.status = 'released';
+      booking.payment.commission = commission;
+      booking.payment.providerAmount = providerAmount;
+      booking.payment.releasedAt = new Date();
+    }
+
+    await booking.save();
+
+    // Notify provider
+    await Notification.createNotification({
+      userId: booking.providerId,
+      type: 'payment_released',
+      title: 'Payment Released',
+      message: `Payment of ${booking.payment.currency}${booking.payment.providerAmount} has been released to your account`,
+      relatedId: booking._id,
+      relatedType: 'booking',
+      priority: 'high'
+    });
+
+    res.json({
+      success: true,
+      message: 'Payment released to provider successfully',
+      data: {
+        providerAmount: booking.payment.providerAmount,
+        commission: booking.payment.commission
+      }
+    });
+
+  } catch (error) {
+    console.error('Release payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to release payment'
+    });
+  }
+});
+
+
+app.post('/api/payments/auto-refund-expired', async (req, res) => {
+  try {
+    // This would typically be called by a cron job
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000);
+    
+    const expiredBookings = await Booking.find({
+      status: 'pending',
+      'payment.status': 'held',
+      'payment.autoRefundAt': { $lte: new Date() }
+    });
+
+    for (const booking of expiredBookings) {
+      try {
+        if (booking.payment.processor === 'stripe') {
+          // Refund the Stripe payment
+          await stripe.refunds.create({
+            payment_intent: booking.payment.paymentIntentId
+          });
+        } else if (booking.payment.processor === 'paystack') {
+          // For Paystack, you might need to implement refund logic
+          // This depends on your Paystack integration
+          console.log(`Would refund Paystack payment: ${booking.payment.paymentIntentId}`);
+        }
+
+        // Update booking status
+        booking.payment.status = 'refunded';
+        booking.payment.refundedAt = new Date();
+        booking.status = 'cancelled';
+        await booking.save();
+
+        // Notify customer
+        await Notification.createNotification({
+          userId: booking.customerId,
+          type: 'payment_refunded',
+          title: 'Payment Refunded',
+          message: `Your payment has been refunded as the provider didn't accept the booking within 4 hours`,
+          relatedId: booking._id,
+          relatedType: 'booking',
+          priority: 'medium'
+        });
+
+      } catch (error) {
+        console.error(`Failed to refund booking ${booking._id}:`, error);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Processed ${expiredBookings.length} expired bookings`
+    });
+
+  } catch (error) {
+    console.error('Auto refund error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to process auto refunds'
+    });
+  }
+});
+
+
+app.post('/api/payments/confirm-service-completion', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.body;
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Verify user is the customer for this booking
+    if (booking.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to confirm service completion'
+      });
+    }
+
+    // Mark service as confirmed by customer
+    booking.serviceConfirmedByCustomer = true;
+    booking.serviceConfirmedAt = new Date();
+    
+    // If payment is held, automatically release it
+    if (booking.payment.status === 'held') {
+      // You can either auto-release here or require manual release
+      // For now, we'll auto-release when customer confirms service completion
+      booking.payment.status = 'released';
+      booking.payment.releasedAt = new Date();
+    }
+
+    await booking.save();
+
+    res.json({
+      success: true,
+      message: 'Service completion confirmed successfully'
+    });
+
+  } catch (error) {
+    console.error('Confirm service completion error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to confirm service completion'
+    });
+  }
+});
+
+cron.schedule('0 * * * *', async () => {
+  try {
+    console.log('🔄 Running auto-refund check...');
+    
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000);
+    
+    const expiredBookings = await Booking.find({
+      status: 'pending',
+      'payment.status': 'held',
+      'payment.autoRefundAt': { $lte: new Date() }
+    });
+
+    for (const booking of expiredBookings) {
+      try {
+        console.log(`🔄 Auto-refunding booking ${booking._id}`);
+        
+        if (booking.payment.processor === 'stripe') {
+          await stripe.refunds.create({
+            payment_intent: booking.payment.paymentIntentId
+          });
+        }
+        // Add Paystack refund logic here
+
+        booking.payment.status = 'refunded';
+        booking.payment.refundedAt = new Date();
+        booking.status = 'cancelled';
+        await booking.save();
+
+        console.log(`✅ Auto-refunded booking ${booking._id}`);
+        
+      } catch (error) {
+        console.error(`❌ Failed to auto-refund booking ${booking._id}:`, error);
+      }
+    }
+    
+    console.log(`✅ Auto-refund check completed. Processed ${expiredBookings.length} bookings.`);
+  } catch (error) {
+    console.error('❌ Auto-refund job error:', error);
+  }
+});
+
+app.post('/api/bookings/:bookingId/create-payment', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const { amount, customerCountry = 'NG' } = req.body;
+
+    console.log('💰 Creating payment for booking:', { bookingId, amount, customerCountry });
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Check if user is the customer for this booking
+    if (booking.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to pay for this booking'
+      });
+    }
+
+    // Use the booking amount if not provided
+    const paymentAmount = amount || booking.price || booking.amount || 100;
+
+    // Determine payment processor based on country
+    const isNigeria = customerCountry === 'NG' || customerCountry === 'Nigeria';
+    const isUK = customerCountry === 'GB' || customerCountry === 'UK';
+
+    let paymentResult;
+    let processor = 'paystack'; // Default to paystack
+
+    if (isNigeria && process.env.PAYSTACK_SECRET_KEY) {
+      // Use Paystack for Nigeria
+      console.log('🇳🇬 Using Paystack for Nigerian customer');
+      processor = 'paystack';
+      
+      paymentResult = {
+        success: true,
+        processor: processor,
+        paymentIntentId: `paystack_${Date.now()}`,
+        authorizationUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment-verify?reference=test_${Date.now()}`,
+        amount: paymentAmount,
+        currency: 'NGN',
+        status: 'requires_payment_method'
+      };
+
+    } else if ((isUK || !isNigeria) && process.env.STRIPE_SECRET_KEY) {
+      // Use Stripe for UK and other countries
+      console.log('🌍 Using Stripe for international customer');
+      processor = 'stripe';
+      
+      paymentResult = {
+        success: true,
+        processor: processor,
+        paymentIntentId: `stripe_${Date.now()}`,
+        clientSecret: `pi_${Date.now()}_secret`,
+        amount: paymentAmount,
+        currency: isUK ? 'GBP' : 'USD',
+        status: 'requires_payment_method'
+      };
+
+    } else {
+      // Simulation mode - use paystack as fallback instead of simulation
+      console.log('💳 Simulation mode - using paystack as fallback');
+      processor = 'paystack';
+      
+      paymentResult = {
+        success: true,
+        processor: processor,
+        paymentIntentId: `sim_${Date.now()}`,
+        authorizationUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment-verify?reference=sim_${Date.now()}`,
+        amount: paymentAmount,
+        currency: 'NGN',
+        status: 'requires_payment_method',
+        simulated: true
+      };
+    }
+
+    // Update booking with payment info - USE VALID ENUM VALUES
+    booking.payment = {
+      processor: processor, // This will be 'paystack' or 'stripe' - both valid enum values
+      paymentIntentId: paymentResult.paymentIntentId,
+      amount: paymentResult.amount,
+      currency: paymentResult.currency,
+      status: paymentResult.status,
+      autoRefundAt: new Date(Date.now() + 4 * 60 * 60 * 1000) // 4 hours from now
+    };
+
+    await booking.save();
+
+    console.log('✅ Payment intent created for booking:', bookingId);
+
+    res.json({
+      success: true,
+      message: 'Payment intent created successfully',
+      data: paymentResult
+    });
+
+  } catch (error) {
+    console.error('❌ Create payment error:', error);
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create payment intent',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+
+
+app.post('/api/bookings/:bookingId/confirm-payment', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const { paymentMethodId, paymentIntentId, processor = 'paystack' } = req.body;
+
+    console.log('💰 Confirming payment for booking:', { 
+      bookingId, 
+      paymentMethodId, 
+      paymentIntentId,
+      processor 
+    });
+
+    // Find the booking
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Check if user is authorized
+    if (booking.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to confirm payment for this booking'
+      });
+    }
+
+    // SIMULATE PAYMENT CONFIRMATION (Replace with real processor logic)
+    console.log('🔧 Simulating payment confirmation...');
+    
+    // Update booking with payment info
+    booking.payment = {
+      processor: processor,
+      paymentIntentId: paymentIntentId || `pay_${Date.now()}`,
+      amount: booking.payment?.amount || 100,
+      currency: booking.payment?.currency || 'NGN',
+      status: 'held',
+      heldAt: new Date(),
+      autoRefundAt: new Date(Date.now() + 4 * 60 * 60 * 1000) // 4 hours
+    };
+
+    booking.status = 'confirmed';
+    
+    // Save the booking
+    await booking.save();
+    
+    console.log('✅ Payment confirmed and booking updated:', bookingId);
+
+    // Send notifications
+    try {
+      await Notification.createNotification({
+        userId: booking.providerId,
+        type: 'payment_received',
+        title: 'Payment Received!',
+        message: `A customer has made a payment of ${booking.payment.currency}${booking.payment.amount} for your ${booking.serviceType} service`,
+        relatedId: booking._id,
+        relatedType: 'booking',
+        priority: 'high'
+      });
+
+      await Notification.createNotification({
+        userId: booking.customerId,
+        type: 'payment_confirmed',
+        title: 'Payment Confirmed!',
+        message: `Your payment of ${booking.payment.currency}${booking.payment.amount} has been confirmed. The provider has been notified.`,
+        relatedId: booking._id,
+        relatedType: 'booking',
+        priority: 'high'
+      });
+    } catch (notificationError) {
+      console.error('⚠️ Notification error (non-critical):', notificationError);
+    }
+
+    res.json({
+      success: true,
+      message: 'Payment confirmed successfully',
+      data: {
+        booking: booking,
+        paymentStatus: 'held'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Confirm payment error:', error);
+    
+    // More detailed error information
+    let errorMessage = 'Failed to confirm payment';
+    let statusCode = 500;
+    
+    if (error.name === 'ValidationError') {
+      errorMessage = 'Invalid booking data: ' + Object.values(error.errors).map(e => e.message).join(', ');
+      statusCode = 400;
+    } else if (error.name === 'CastError') {
+      errorMessage = 'Invalid booking ID';
+      statusCode = 400;
+    }
+
+    res.status(statusCode).json({
+      success: false,
+      message: errorMessage,
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error',
+      ...(process.env.NODE_ENV === 'development' && { stack: error.stack })
+    });
+  }
+});
+
+app.get('/api/bookings/:bookingId/payment-status', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Check if user has access to this booking
+    if (booking.customerId.toString() !== req.user.id && booking.providerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to view this booking payment'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        payment: booking.payment,
+        timeUntilAutoRefund: booking.payment?.autoRefundAt ? 
+          booking.payment.autoRefundAt - new Date() : null
+      }
+    });
+
+  } catch (error) {
+    console.error('Get payment status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get payment status'
+    });
+  }
+});
+
+app.get('/api/payments/verify-paystack', async (req, res) => {
+  try {
+    const { reference, trxref } = req.query;
+    
+    console.log('🔍 Verifying Paystack payment:', { reference, trxref });
+
+    const paymentReference = reference || trxref;
+    
+    if (!paymentReference) {
+      return res.redirect(`${process.env.FRONTEND_URL}/payment-failed?error=missing_reference`);
+    }
+
+    // In production, you would verify with Paystack API
+    // const verification = await paystack.transaction.verify(paymentReference);
+    
+    // For now, we'll simulate successful verification
+    console.log('✅ Payment verified successfully (simulated)');
+
+    // Find booking by payment reference
+    const booking = await Booking.findOne({
+      'payment.paymentIntentId': paymentReference
+    });
+
+    if (booking) {
+      booking.payment.status = 'held';
+      booking.payment.heldAt = new Date();
+      booking.status = 'confirmed';
+      await booking.save();
+
+      console.log('✅ Booking updated with confirmed payment');
+    }
+
+    // Redirect to success page
+    res.redirect(`${process.env.FRONTEND_URL}/payment-success?bookingId=${booking?._id}`);
+
+  } catch (error) {
+    console.error('Paystack verification error:', error);
+    res.redirect(`${process.env.FRONTEND_URL}/payment-failed?error=verification_failed`);
   }
 });
 
@@ -631,8 +1973,10 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
       'http://127.0.0.1:5173',
       'http://localhost:4173',
       'http://localhost:5174',
-      'http://localhost:5175', // Add more if needed
+      'http://localhost:5175',
+      'http://localhost:5176' // Add more if needed
     ];
+
 
 
 
@@ -640,15 +1984,6 @@ const corsOptions = {
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
-    
-    const allowedOrigins = [
-      'http://localhost:5173',
-      'http://localhost:3000', 
-      'http://127.0.0.1:5173',
-      'http://localhost:4173',
-      'https://homeheroes.help',
-      'https://www.homeheroes.help'
-    ];
     
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
@@ -679,6 +2014,7 @@ const corsOptions = {
   preflightContinue: false,
   optionsSuccessStatus: 204
 };
+
 
 
 
@@ -854,16 +2190,23 @@ app.use('/api/ratings', express.urlencoded({ extended: true }));
 
 // Debug middleware to log request bodies
 app.use((req, res, next) => {
-  if (req.originalUrl.includes('/api/ratings')) {
-    console.log('📦 Ratings Request Body:', {
-      method: req.method,
-      url: req.originalUrl,
-      body: req.body,
-      contentType: req.headers['content-type']
-    });
+  const origin = req.headers.origin;
+  
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, Pragma');
   }
+  
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
   next();
 });
+
 
 
 if (process.env.NODE_ENV === 'production') {
@@ -1484,25 +2827,236 @@ app.get('/api/auth/preferences', authenticateToken, async (req, res) => {
 async function testBucketAccess() {
   try {
     console.log('🔍 Testing GCS bucket access...');
+    console.log('📋 Fixed Configuration:', {
+      projectId: 'decent-carving-474920-v0', // Using correct project ID
+      bucketName: 'home-heroes-bucket',
+      keyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+      keyFileExists: fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS || '')
+    });
+
+    // Test authentication first
+    const [buckets] = await storage.getBuckets();
+    console.log('✅ Authentication successful');
     
-    // Test if we can list files in the bucket
-    const [files] = await bucket.getFiles({ maxResults: 1 });
+    // Test specific bucket access
+    const [exists] = await bucket.exists();
+    if (!exists) {
+      console.log('⚠️ Bucket does not exist in project decent-carving-474920-v0');
+      console.log('💡 Available buckets:', buckets.map(b => b.name));
+      return false;
+    }
+    
     console.log('✅ Bucket access successful');
     console.log('📁 Bucket name:', bucketName);
-    console.log('🔑 Project ID:', process.env.GCLOUD_PROJECT_ID);
+    console.log('🏢 Project:', 'decent-carving-474920-v0');
     
     return true;
   } catch (error) {
     console.error('❌ Bucket access failed:', error.message);
-    console.log('💡 Check:');
-    console.log('   - Bucket name:', bucketName);
-    console.log('   - Service account permissions');
-    console.log('   - Google Cloud Key file exists');
+    console.log('💡 Immediate fixes:');
+    console.log('   1. Make sure bucket "home-heroes-bucket" exists in project "decent-carving-474920-v0"');
+    console.log('   2. Grant Storage Admin role to the service account');
+    console.log('   3. Check IAM permissions in Google Cloud Console');
     return false;
   }
 }
 
-// Call this when server starts
+app.get('/api/debug/service-account-details', (req, res) => {
+  try {
+    const keyFilePath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    const keyFileContent = fs.readFileSync(keyFilePath, 'utf8');
+    const serviceAccount = JSON.parse(keyFileContent);
+    
+    // Check for common issues
+    const issues = [];
+    
+    if (!serviceAccount.private_key) {
+      issues.push('❌ Missing private_key');
+    } else if (!serviceAccount.private_key.includes('BEGIN PRIVATE KEY')) {
+      issues.push('❌ Invalid private_key format');
+    }
+    
+    if (!serviceAccount.client_email) {
+      issues.push('❌ Missing client_email');
+    }
+    
+    if (!serviceAccount.project_id) {
+      issues.push('❌ Missing project_id');
+    }
+    
+    if (serviceAccount.private_key) {
+      const keyLines = serviceAccount.private_key.split('\n');
+      if (keyLines.length < 2) {
+        issues.push('❌ Private key appears truncated');
+      }
+    }
+    
+    const details = {
+      project_id: serviceAccount.project_id,
+      client_email: serviceAccount.client_email,
+      private_key_id: serviceAccount.private_key_id ? 'Present' : 'Missing',
+      private_key_length: serviceAccount.private_key ? serviceAccount.private_key.length : 0,
+      private_key_format: serviceAccount.private_key ? 
+        (serviceAccount.private_key.includes('BEGIN PRIVATE KEY') ? '✅ Correct' : '❌ Incorrect') : 'Missing',
+      issues: issues,
+      allFieldsPresent: !issues.length
+    };
+    
+    console.log('🔍 Service Account Details:', details);
+    
+    res.json({
+      success: true,
+      data: details,
+      hasIssues: issues.length > 0,
+      issues: issues
+    });
+    
+  } catch (error) {
+    console.error('Service account details error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/debug/test-auth-only', async (req, res) => {
+  try {
+    console.log('🔐 Testing GCS authentication only...');
+    
+    // Create a new storage instance for testing
+    const testStorage = new Storage({
+      keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+      projectId: 'decent-carving-474920-v0'
+    });
+    
+    // Just try to get project info - this tests authentication only
+    const [projectInfo] = await testStorage.getServiceAccount();
+    console.log('✅ Authentication successful!');
+    console.log('📧 Service Account:', projectInfo.emailAddress);
+    
+    res.json({
+      success: true,
+      message: 'Authentication successful',
+      serviceAccount: projectInfo.emailAddress
+    });
+    
+  } catch (error) {
+    console.error('❌ Authentication failed:', error.message);
+    
+    // Provide specific suggestions based on the error
+    let suggestion = '';
+    if (error.message.includes('invalid_grant')) {
+      suggestion = 'The service account key may be expired, revoked, or invalid. Generate a new key.';
+    } else if (error.message.includes('ENOENT')) {
+      suggestion = 'Service account file not found. Check the file path.';
+    } else if (error.message.includes('Unexpected token')) {
+      suggestion = 'Service account file is corrupted or invalid JSON.';
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Authentication failed',
+      error: error.message,
+      suggestion: suggestion
+    });
+  }
+});
+
+app.get('/api/debug/list-all-buckets', async (req, res) => {
+  try {
+    console.log('📋 Listing all buckets in project...');
+    
+    const [buckets] = await storage.getBuckets();
+    
+    const bucketInfo = buckets.map(bucket => ({
+      name: bucket.name,
+      location: bucket.metadata?.location,
+      storageClass: bucket.metadata?.storageClass,
+      timeCreated: bucket.metadata?.timeCreated
+    }));
+    
+    console.log('🏪 Available buckets:', bucketInfo);
+    
+    const targetBucketExists = bucketInfo.some(b => b.name === 'home-heroes-bucket');
+    
+    res.json({
+      success: true,
+      data: {
+        project: 'decent-carving-474920-v0',
+        totalBuckets: bucketInfo.length,
+        targetBucket: 'homeheroes-storage-access',
+        targetExists: targetBucketExists,
+        buckets: bucketInfo
+      }
+    });
+    
+  } catch (error) {
+    console.error('List buckets error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      suggestion: 'Cannot list buckets - authentication or permissions issue'
+    });
+  }
+});
+app.get('/api/debug/gcs-permissions', async (req, res) => {
+  try {
+    console.log('🔐 Testing GCS permissions...');
+    
+    // Test 1: List buckets (requires storage.buckets.list)
+    const [buckets] = await storage.getBuckets();
+    console.log('✅ Can list buckets');
+    
+    // Test 2: Check bucket exists
+    const [bucketExists] = await bucket.exists();
+    console.log('✅ Bucket exists:', bucketExists);
+    
+    // Test 3: Test file upload with a small test file
+    const testFileName = `test-${Date.now()}.txt`;
+    const testFile = bucket.file(testFileName);
+    
+    await testFile.save('Test content', {
+      metadata: {
+        contentType: 'text/plain',
+      },
+    });
+    console.log('✅ Can upload files');
+    
+    // Test 4: Test file deletion
+    await testFile.delete();
+    console.log('✅ Can delete files');
+    
+    // Test 5: Test making files public
+    const publicTestFile = bucket.file(`public-test-${Date.now()}.txt`);
+    await publicTestFile.save('Public test content');
+    await publicTestFile.makePublic();
+    console.log('✅ Can make files public');
+    await publicTestFile.delete();
+    
+    res.json({
+      success: true,
+      message: 'All GCS permissions are working correctly',
+      tests: {
+        listBuckets: true,
+        bucketExists: true,
+        uploadFiles: true,
+        deleteFiles: true,
+        makePublic: true
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ GCS permissions test failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'GCS permissions test failed',
+      error: error.message,
+      step: 'Check service account has Storage Admin role'
+    });
+  }
+});
+
 testBucketAccess();
 
 // Get provider reviews
@@ -2424,13 +3978,12 @@ app.use('/api/gallery', (req, res, next) => {
 // Gallery upload endpoint
 app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
   try {
-    console.log('=== GALLERY UPLOAD USING EXPRESS-FILEUPLOAD ===');
+    console.log('=== GALLERY UPLOAD (LOCAL TEST) ===');
     
     if (!req.files || !req.files.image) {
-      console.log('No image file in req.files:', req.files);
       return res.status(400).json({
         success: false,
-        message: 'No image file provided. Please select an image.'
+        message: 'No image file provided'
       });
     }
 
@@ -2442,21 +3995,6 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Title is required'
-      });
-    }
-
-    // Validate file type and size
-    if (!imageFile.mimetype.startsWith('image/')) {
-      return res.status(400).json({
-        success: false,
-        message: 'Only image files are allowed (jpg, png, gif, etc.)'
-      });
-    }
-
-    if (imageFile.size > 5 * 1024 * 1024) {
-      return res.status(400).json({
-        success: false,
-        message: 'File size must be less than 5MB'
       });
     }
 
@@ -2475,32 +4013,26 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
     // Move the file
     await imageFile.mv(filePath);
 
-    // FIXED: Create proper image URLs without double slashes
-    const relativeUrl = `/uploads/gallery/${fileName}`;
-    
-    // Use the same domain for both development and production
-    // This ensures consistency and avoids CORS issues
-    const protocol = req.protocol;
-    const host = req.get('host');
-    const fullImageUrl = `${protocol}://${host}${relativeUrl}`;
+    // Create relative URL
+    const imageUrl = `/uploads/gallery/${fileName}`;
+    const fullImageUrl = `http://localhost:3001${imageUrl}`;
 
     // Create gallery entry
     const newImage = new Gallery({
       title: title.trim(),
       description: description ? description.trim() : '',
       category: category || 'other',
-      imageUrl: relativeUrl, // Store relative URL
-      fullImageUrl: fullImageUrl, // Store complete URL for easy access
+      imageUrl: imageUrl,
+      fullImageUrl: fullImageUrl,
       userId: req.user.id,
       tags: tags ? tags.split(',').map(tag => tag.trim()).filter(tag => tag) : [],
       featured: featured === 'true' || featured === true
     });
 
-    // Save to database
     const savedImage = await newImage.save();
     await savedImage.populate('userId', 'name profileImage');
 
-    console.log('Image uploaded successfully:', savedImage._id, 'URL:', fullImageUrl);
+    console.log('✅ Image saved locally:', savedImage._id);
 
     res.status(201).json({
       success: true,
@@ -2510,22 +4042,14 @@ app.post('/api/gallery/upload', authenticateToken, async (req, res) => {
     
   } catch (error) {
     console.error('Gallery upload error:', error);
-    
-    let errorMessage = 'Failed to upload image';
-    let statusCode = 500;
-    
-    if (error.name === 'ValidationError') {
-      errorMessage = 'Invalid data: ' + Object.values(error.errors).map(e => e.message).join(', ');
-      statusCode = 400;
-    }
-    
-    res.status(statusCode).json({
+    res.status(500).json({
       success: false,
-      message: errorMessage,
-      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+      message: 'Failed to upload image',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 });
+
 
 
 // Simple test endpoint
@@ -6034,6 +7558,211 @@ app.post('/api/bookings', authenticateToken, async (req, res) => {
   }
 });
 
+app.patch('/api/bookings/:id/update-price', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const { price, amount } = req.body;
+
+    console.log('💰 Updating booking price:', { bookingId, price, amount });
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Update price and amount
+    if (price !== undefined) booking.price = price;
+    if (amount !== undefined) booking.amount = amount;
+    
+    // If both are undefined, try to extract from budget
+    if ((price === undefined && amount === undefined) && booking.budget) {
+      const numericValue = booking.budget.replace(/[^\d.]/g, '');
+      const extractedPrice = parseFloat(numericValue) || 0;
+      booking.price = extractedPrice;
+      booking.amount = extractedPrice;
+      console.log('💰 Extracted price from budget:', extractedPrice);
+    }
+
+    await booking.save();
+
+    console.log('✅ Booking price updated:', {
+      bookingId: booking._id,
+      price: booking.price,
+      amount: booking.amount
+    });
+
+    res.json({
+      success: true,
+      message: 'Booking price updated successfully',
+      data: {
+        price: booking.price,
+        amount: booking.amount
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Update booking price error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update booking price',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.get('/api/debug/bookings-prices', authenticateToken, async (req, res) => {
+  try {
+    const bookings = await Booking.find({})
+      .select('_id serviceType price amount budget status')
+      .sort({ createdAt: -1 })
+      .limit(50);
+
+    const bookingsWithIssues = bookings.filter(b => 
+      b.price === undefined || b.amount === undefined || b.price === 0
+    );
+
+    res.json({
+      success: true,
+      data: {
+        totalBookings: bookings.length,
+        bookingsWithPriceIssues: bookingsWithIssues.length,
+        sampleBookings: bookings.slice(0, 10).map(b => ({
+          id: b._id,
+          serviceType: b.serviceType,
+          price: b.price,
+          amount: b.amount,
+          budget: b.budget,
+          status: b.status,
+          hasPrice: b.price !== undefined && b.price !== null,
+          hasAmount: b.amount !== undefined && b.amount !== null
+        })),
+        problematicBookings: bookingsWithIssues.map(b => ({
+          id: b._id,
+          serviceType: b.serviceType,
+          price: b.price,
+          amount: b.amount,
+          budget: b.budget,
+          status: b.status
+        }))
+      }
+    });
+  } catch (error) {
+    console.error('Debug bookings prices error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch booking prices',
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/debug/fix-all-booking-prices', authenticateToken, async (req, res) => {
+  try {
+    const bookings = await Booking.find({
+      $or: [
+        { price: { $exists: false } },
+        { price: null },
+        { price: 0 },
+        { amount: { $exists: false } },
+        { amount: null },
+        { amount: 0 }
+      ]
+    });
+
+    console.log(`🔄 Found ${bookings.length} bookings with price issues`);
+
+    let fixedCount = 0;
+    const results = [];
+
+    for (const booking of bookings) {
+      try {
+        let newPrice = booking.price;
+        let newAmount = booking.amount;
+
+        // If price is missing, try to extract from budget
+        if (!newPrice || newPrice === 0) {
+          if (booking.budget) {
+            const numericValue = booking.budget.replace(/[^\d.]/g, '');
+            newPrice = parseFloat(numericValue) || 100; // Default to 100 if can't parse
+            console.log(`💰 Extracted price from budget: ${booking.budget} -> ${newPrice}`);
+          } else {
+            newPrice = 100; // Default price
+          }
+        }
+
+        // If amount is missing, use the same as price
+        if (!newAmount || newAmount === 0) {
+          newAmount = newPrice;
+        }
+
+        // Update the booking
+        booking.price = newPrice;
+        booking.amount = newAmount;
+        await booking.save();
+
+        fixedCount++;
+        results.push({
+          id: booking._id,
+          serviceType: booking.serviceType,
+          oldPrice: booking.price,
+          newPrice: newPrice,
+          newAmount: newAmount,
+          budget: booking.budget,
+          status: 'fixed'
+        });
+
+        console.log(`✅ Fixed booking ${booking._id}: price=${newPrice}, amount=${newAmount}`);
+
+      } catch (error) {
+        console.error(`❌ Failed to fix booking ${booking._id}:`, error.message);
+        results.push({
+          id: booking._id,
+          serviceType: booking.serviceType,
+          error: error.message,
+          status: 'failed'
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Fixed ${fixedCount} out of ${bookings.length} bookings with price issues`,
+      data: {
+        totalFound: bookings.length,
+        fixedCount: fixedCount,
+        failedCount: bookings.length - fixedCount,
+        results: results
+      }
+    });
+
+  } catch (error) {
+    console.error('Fix all booking prices error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fix booking prices',
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/debug/gcs-config', (req, res) => {
+  const config = {
+    bucketName: process.env.GCLOUD_BUCKET_NAME,
+    projectId: process.env.GCLOUD_PROJECT_ID,
+    keyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+    keyFileExists: fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS || ''),
+    currentKeyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS
+  };
+  
+  console.log('GCS Config:', config);
+  res.json({ success: true, data: config });
+});
+
+
+
 app.get('/api/email/status', async (req, res) => {
   const { getEmailServiceStatus } = await import('./utils/emailService.js');
   const status = getEmailServiceStatus();
@@ -6400,158 +8129,79 @@ async function updateProviderStatsOnCompletion(bookingId) {
 
 app.patch('/api/bookings/:id/status', authenticateToken, async (req, res) => {
   try {
-    let { status } = req.body;
+    const { status } = req.body;
     const bookingId = req.params.id;
 
-    console.log('🔧 Updating booking status:', { 
-      bookingId, 
-      status, 
-      userId: req.user.id 
-    });
+    console.log('🔄 Updating booking status:', { bookingId, status });
 
-    const statusMapping = {
-      'pending': 'pending',
-      'accepted': 'confirmed',
-      'confirmed': 'confirmed', 
-      'completed': 'completed',
-      'cancelled': 'cancelled',
-      'rejected': 'cancelled'
-    };
-
-    const backendStatus = statusMapping[status?.toLowerCase()];
-    
-    if (!backendStatus) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid status: ${status}. Must be one of: ${Object.keys(statusMapping).join(', ')}`
-      });
-    }
-
-    // Find the booking first
     const booking = await Booking.findById(bookingId);
     if (!booking) {
-      return res.status(404).json({
-        success: false,
-        message: 'Booking not found'
-      });
+      return res.status(404).json({ success: false, message: 'Booking not found' });
     }
 
-    // Check authorization
+    // Authorization check
     if (booking.providerId.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to update this booking'
-      });
+      return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
+    // SIMPLE WORKING VERSION - Use only existing statuses
     const oldStatus = booking.status;
-
-    // Prevent moving from completed back to other statuses
-    if (booking.status === 'completed' && backendStatus !== 'completed') {
-      return res.status(400).json({
-        success: false,
-        message: 'Cannot change status of completed booking'
-      });
-    }
-
-    // Handle status-specific logic
-    if (backendStatus === 'completed') {
-      booking.status = 'completed';
-      booking.completedAt = new Date();
-      booking.ratingPrompted = true;
-      
-      // ✅ FORCEFUL SCHEDULE REMOVAL - MULTIPLE APPROACHES
-      try {
-        // Approach 1: Remove by bookingId
-        const result1 = await Schedule.deleteMany({ bookingId: bookingId });
-        console.log(`🗑️ Removed ${result1.deletedCount} schedule entries by bookingId`);
-        
-        // Approach 2: Remove by customer and service matching (backup)
-        const result2 = await Schedule.deleteMany({
-          providerId: req.user.id,
-          client: booking.customerName,
-          title: booking.serviceType
-        });
-        console.log(`🗑️ Removed ${result2.deletedCount} schedule entries by customer/service match`);
-        
-        // Approach 3: Remove any schedule entries that might be related
-        const allScheduleEntries = await Schedule.find({ providerId: req.user.id });
-        let manualRemovalCount = 0;
-        for (const entry of allScheduleEntries) {
-          if (entry.client === booking.customerName && entry.title === booking.serviceType) {
-            await Schedule.findByIdAndDelete(entry._id);
-            manualRemovalCount++;
-          }
-        }
-        console.log(`🗑️ Manually removed ${manualRemovalCount} matching schedule entries`);
-        
-        console.log('✅ Completed forceful schedule cleanup for booking:', bookingId);
-      } catch (scheduleError) {
-        console.error('⚠️ Schedule removal error (non-critical):', scheduleError);
-        // Continue even if schedule removal fails
-      }
-      
-      // Update provider stats when booking is completed
-      await updateProviderStatsOnCompletion(bookingId);
-    } else {
-      booking.status = backendStatus;
-      
-      // Add to schedule when confirmed/accepted
-      if (backendStatus === 'confirmed' && oldStatus !== 'confirmed') {
-        booking.acceptedAt = new Date();
-        
-        // CHECK IF SCHEDULE ENTRY ALREADY EXISTS BEFORE CREATING
-        const existingSchedule = await Schedule.findOne({ bookingId: booking._id });
-        
-        if (existingSchedule) {
-          console.log('📅 Schedule entry already exists, skipping creation:', existingSchedule._id);
-        } else {
-          // ADD TO SCHEDULE WHEN CONFIRMED - with error handling
-          try {
-            const scheduleEntry = await addBookingToSchedule(booking);
-            console.log('✅ Booking added to schedule:', scheduleEntry._id);
-          } catch (scheduleError) {
-            console.error('⚠️ Failed to add to schedule (non-critical):', scheduleError.message);
-            // Don't fail the booking update if schedule fails
-          }
-        }
-      }
-    }
-
-    booking.updatedAt = new Date();
-    const updatedBooking = await booking.save();
+    booking.status = status; // Use the status directly from frontend
     
-    // Populate for response
-    await updatedBooking.populate('customerId', 'name email phoneNumber');
-    await updatedBooking.populate('providerId', 'name email phoneNumber');
+    // If provider is accepting, ensure payment is set up
+    if ((status === 'accepted' || status === 'confirmed') && !booking.payment) {
+      booking.payment = {
+        status: 'requires_payment_method',
+        amount: booking.price || booking.amount || 100,
+        currency: 'NGN',
+        processor: 'paystack'
+      };
+    }
 
-    const responseStatusMapping = {
-      'pending': 'pending',
-      'confirmed': 'confirmed',
-      'completed': 'completed',
-      'cancelled': 'cancelled'
-    };
-
-    const frontendStatus = responseStatusMapping[updatedBooking.status] || updatedBooking.status;
+    await booking.save();
+    
+    console.log(`✅ Status updated: ${oldStatus} → ${status}`);
 
     res.json({
       success: true,
-      message: `Booking ${frontendStatus} successfully`,
-      data: {
-        ...updatedBooking.toObject(),
-        status: frontendStatus
-      }
+      message: `Booking ${status} successfully`,
+      data: booking
     });
 
   } catch (error) {
-    console.error('❌ Update booking status error:', error);
+    console.error('❌ Status update error:', error);
+    
+    if (error.name === 'ValidationError') {
+      // Get valid statuses from the error
+      const validStatuses = error.errors?.status?.properties?.enumValues || 
+                           ['pending', 'confirmed', 'accepted', 'completed', 'cancelled'];
+      
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status. Must be one of: ${validStatuses.join(', ')}`,
+        validStatuses: validStatuses
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      message: 'Failed to update booking status',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+      message: 'Failed to update booking status'
     });
   }
 });
+
+
+
+function isPaymentRequired(booking) {
+  return (
+    booking.status === 'awaiting_payment' ||
+    (booking.status === 'confirmed' && 
+     booking.payment && 
+     booking.payment.status === 'requires_payment_method') ||
+    (booking.status === 'accepted' && 
+     (!booking.payment || booking.payment.status === 'requires_payment_method'))
+  );
+}
 
 
 app.post('/api/schedule/force-cleanup-completed', authenticateToken, async (req, res) => {
@@ -7760,28 +9410,23 @@ app.get('/api/debug/booking/:id', authenticateToken, async (req, res) => {
   try {
     const booking = await Booking.findById(req.params.id);
     if (!booking) {
-      return res.status(404).json({
-        success: false,
-        message: 'Booking not found'
-      });
+      return res.status(404).json({ success: false, message: 'Booking not found' });
     }
     
     res.json({
       success: true,
       data: {
         booking,
-        isProvider: booking.providerId.toString() === req.user.id
+        canConfirm: booking.customerId.toString() === req.user.id,
+        currentStatus: booking.status,
+        hasPayment: !!booking.payment
       }
     });
   } catch (error) {
-    console.error('Debug booking error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching booking',
-      error: error.message
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
+
 
 async function sendBookingConfirmationEmail(booking, customerEmail) {
   try {
@@ -10617,24 +12262,23 @@ app.use((err, req, res, next) => {
 // Debug middleware for file uploads
 // 
 app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  console.log('CORS Debug:', {
+  console.log('🌐 CORS Debug:', {
     method: req.method,
     url: req.url,
-    origin: origin,
-    allowed: allowedOrigins.includes(origin)
+    origin: req.headers.origin,
+    'user-agent': req.headers['user-agent']
   });
   
-  // Add CORS headers to all responses
-  if (origin && allowedOrigins.includes(origin)) {
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, Cache-Control, Pragma');
+  if (req.method === 'OPTIONS') {
+    console.log('🛫 Preflight Request Headers:', {
+      'access-control-request-method': req.headers['access-control-request-method'],
+      'access-control-request-headers': req.headers['access-control-request-headers']
+    });
   }
   
   next();
 });
+
 
 
 

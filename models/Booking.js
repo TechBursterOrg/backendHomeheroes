@@ -32,6 +32,23 @@ const bookingSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+
+  price: {
+    type: Number,
+    required: true,
+    default: 0,
+    min: 0
+  },
+  amount: {
+    type: Number,
+    required: true,
+    default: 0,
+    min: 0
+  },
+  budget: {
+    type: String,
+    required: false
+  },
   serviceType: {
     type: String,
     required: true
@@ -63,7 +80,7 @@ const bookingSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'accepted', 'rejected', 'completed', 'cancelled'],
+    enum: ['pending','awaiting_payment',  'confirmed', 'completed', 'cancelled'],
     default: 'pending'
   },
   requestedAt: {
@@ -80,41 +97,69 @@ const bookingSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
-
   ratingStatus: {
     customerRated: { type: Boolean, default: false },
     providerRated: { type: Boolean, default: false }
   },
-
   ratingPrompted: { 
     type: Boolean, 
     default: false 
   },
-  completedAt: {
-    type: Date
+  payment: {
+    processor: {
+      type: String,
+      enum: ['stripe', 'paystack', 'simulation'], 
+      default: null
+    },
+    paymentIntentId: String,
+    amount: Number,
+    currency: {
+      type: String,
+      default: 'NGN'
+    },
+    status: {
+      type: String,
+      enum: ['requires_payment_method', 'held', 'released', 'refunded', 'failed'],
+      default: 'requires_payment_method'
+    },
+    heldAt: Date,
+    releasedAt: Date,
+    refundedAt: Date,
+    autoRefundAt: Date,
+    commission: Number,
+    providerAmount: Number
   },
-  status: {
-    type: String,
-    enum: ['pending', 'confirmed', 'completed', 'cancelled'], // Changed from 'accepted' to 'confirmed'
-    default: 'pending'
+  serviceConfirmedByCustomer: {
+    type: Boolean,
+    default: false
   },
-  ratingStatus: {
-    customerRated: { type: Boolean, default: false },
-    providerRated: { type: Boolean, default: false }
-  },
-  ratingPrompted: { type: Boolean, default: false }
+  serviceConfirmedAt: Date
 }, {
   timestamps: true
 });
 
 bookingSchema.plugin(mongoosePaginate);
 
-// Update the updatedAt field before saving
+// Indexes for query optimization
 bookingSchema.index({ status: 1, completedAt: 1 });
 bookingSchema.index({ customerId: 1, ratingStatus: 1 });
 bookingSchema.index({ providerId: 1, ratingStatus: 1 });
+bookingSchema.index({ 'payment.status': 1 });
+bookingSchema.index({ 'payment.autoRefundAt': 1 });
+
+// Update the updatedAt field before saving
 bookingSchema.pre('save', function(next) {
-  this.updatedAt = Date.now();
+  // If price is not set, try to extract from budget
+  if ((!this.price || this.price === 0) && this.budget) {
+    const numericValue = this.budget.replace(/[^\d.]/g, '');
+    this.price = parseFloat(numericValue) || 0;
+  }
+  
+  // If amount is not set, use price
+  if (!this.amount || this.amount === 0) {
+    this.amount = this.price;
+  }
+  
   next();
 });
 

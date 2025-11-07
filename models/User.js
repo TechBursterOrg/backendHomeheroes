@@ -378,6 +378,35 @@ const userSchema = new mongoose.Schema({
     category: String
   }],
 
+  stripeCustomerId: {
+    type: String,
+    sparse: true
+  },
+  
+  // For providers
+  stripeAccountId: {
+    type: String,
+    sparse: true
+  },
+  
+  bankAccount: {
+    accountHolderName: String,
+    accountNumber: String,
+    routingNumber: String,
+    bankName: String,
+    isVerified: { type: Boolean, default: false }
+  },
+  
+  // Payment preferences
+  paymentPreferences: {
+    payoutSchedule: {
+      type: String,
+      enum: ['daily', 'weekly', 'monthly', 'manual'],
+      default: 'weekly'
+    },
+    autoPayout: { type: Boolean, default: true }
+  },
+
   services: [{
     type: String,
     enum: [
@@ -400,6 +429,10 @@ const userSchema = new mongoose.Schema({
     ]
   }],
   hourlyRate: {
+    type: Number,
+    default: null
+  },
+  Rate: {
     type: Number,
     default: null
   }
