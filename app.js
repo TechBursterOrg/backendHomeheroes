@@ -1984,15 +1984,12 @@ const corsOptions = {
     if (!origin) return callback(null, true);
     
     const allowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:5174', 
-  'http://localhost:3000',
-  'http://127.0.0.1:5173',
-  'http://127.0.0.1:5174',
-  'https://homeheroes.help',
-  'https://www.homeheroes.help'
-];
-
+      'https://homeheroes.help',
+      'https://www.homeheroes.help',
+      'http://localhost:5173',
+      'http://localhost:5174',
+      'http://localhost:3000'
+    ];
     
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
@@ -2010,20 +2007,14 @@ const corsOptions = {
     'Accept', 
     'Origin',
     'Cache-Control',
-    'Pragma',
-    'Access-Control-Allow-Origin'
-  ],
-  exposedHeaders: [
-    'Content-Length',
-    'Content-Type',
-    'Authorization',
-    'Access-Control-Allow-Origin'
-  ],
-  maxAge: 86400, // 24 hours
-  preflightContinue: false,
-  optionsSuccessStatus: 204
+    'Pragma'
+  ]
 };
 
+app.use(cors(corsOptions));
+
+
+app.options('*', cors(corsOptions));
 
 app.use(express.json({ 
   limit: '10mb',
@@ -2037,10 +2028,33 @@ app.use(express.urlencoded({
   limit: '10mb' 
 }));
 
-app.use(cors(corsOptions));
+
+app.get('/api/debug/cors-test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'CORS is working!',
+    allowedOrigins: [
+      'https://homeheroes.help',
+      'https://www.homeheroes.help',
+      'http://localhost:5173',
+      'http://localhost:5174'
+    ],
+    requestOrigin: req.headers.origin,
+    timestamp: new Date().toISOString()
+  });
+});
 
 
+app.set('trust proxy', 1); // Trust first proxy
 
+
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV 
+  });
+});
 
 app.use('/api/ratings', express.json({ limit: '10mb' }));
 app.use('/api/ratings', express.urlencoded({ extended: true }));
@@ -2074,7 +2088,6 @@ app.use('/api/ratings', (req, res, next) => {
 
 app.use('/api/ratings', ratingRoutes);
 
-app.options('*', cors(corsOptions));
 
 app.use(cors({
   origin: function (origin, callback) {
