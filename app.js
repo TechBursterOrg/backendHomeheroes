@@ -1965,14 +1965,16 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
   ? [
       'https://homeheroes.help',
       'https://www.homeheroes.help',
-      'https://backendhomeheroes.onrender.com'
+      'https://backendhomeheroes.onrender.com',
+      'http://localhost:5173'
     ]
   : [
       'http://localhost:5173',
       'http://localhost:3000',
       'http://127.0.0.1:5173',
       'http://localhost:4173',
-      'http://localhost:5174'
+      'http://localhost:5174',
+      'https://homeheroes.help'
     ];
 
 
@@ -1980,7 +1982,6 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
 
 const corsOptions = {
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
     
     if (allowedOrigins.indexOf(origin) !== -1) {
@@ -2007,13 +2008,15 @@ const corsOptions = {
     'Authorization',
     'Access-Control-Allow-Origin'
   ],
-  maxAge: 86400, // 24 hours
+  maxAge: 86400,
   preflightContinue: false,
   optionsSuccessStatus: 204
 };
 
 
 
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 
 app.use(express.json({ 
@@ -2029,7 +2032,7 @@ app.use(express.urlencoded({
 }));
 
 
-app.use(cors(corsOptions));
+
 
 
 
@@ -2063,10 +2066,8 @@ app.use('/api/ratings', (req, res, next) => {
   next();
 });
 
-
 app.use('/api/ratings', ratingRoutes);
 
-app.options('*', cors(corsOptions));
 
 app.use(cors({
   origin: function (origin, callback) {
