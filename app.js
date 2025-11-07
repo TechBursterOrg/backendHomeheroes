@@ -1972,9 +1972,7 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
       'http://localhost:3000',
       'http://127.0.0.1:5173',
       'http://localhost:4173',
-      'http://localhost:5174',
-      'http://localhost:5175',
-      'http://localhost:5176' // Add more if needed
+      'http://localhost:5174'
     ];
 
 
@@ -1988,7 +1986,7 @@ const corsOptions = {
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
-      console.log('CORS blocked origin:', origin);
+      console.log('🚫 CORS blocked origin:', origin);
       callback(new Error('Not allowed by CORS'), false);
     }
   },
@@ -2001,8 +1999,7 @@ const corsOptions = {
     'Accept', 
     'Origin',
     'Cache-Control',
-    'Pragma',
-    'Access-Control-Allow-Origin'
+    'Pragma'
   ],
   exposedHeaders: [
     'Content-Length',
@@ -2014,6 +2011,7 @@ const corsOptions = {
   preflightContinue: false,
   optionsSuccessStatus: 204
 };
+
 
 
 
