@@ -570,17 +570,13 @@ app.use(cookieParser());
 
 // Debug middleware to check body parsing
 app.use((req, res, next) => {
-  if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
-    console.log('📦 Request Body Debug:', {
-      method: req.method,
-      url: req.url,
-      contentType: req.headers['content-type'],
-      hasBody: !!req.body,
-      bodyKeys: req.body ? Object.keys(req.body) : 'No body'
-    });
+  // Skip favicon requests
+  if (req.url === '/favicon.ico') {
+    return res.status(204).end();
   }
   next();
 });
+
 
 app.use((error, req, res, next) => {
   console.error('🚨 Unhandled Error:', {
@@ -1980,36 +1976,29 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
 
 const corsOptions = {
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, Postman, etc.)
-    if (!origin) return callback(null, true);
-    
     const allowedOrigins = [
       'https://homeheroes.help',
       'https://www.homeheroes.help',
       'http://localhost:5173',
-      'http://localhost:5174',
-      'http://localhost:3000'
+      'http://localhost:5174'
     ];
     
-    if (allowedOrigins.indexOf(origin) !== -1) {
+    // Allow requests with no origin (like mobile apps or server-to-server)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      console.log('CORS blocked origin:', origin);
+      console.log('🚫 CORS blocked origin:', origin);
       callback(new Error('Not allowed by CORS'), false);
     }
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: [
-    'Content-Type', 
-    'Authorization', 
-    'X-Requested-With', 
-    'Accept', 
-    'Origin',
-    'Cache-Control',
-    'Pragma'
-  ]
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
 };
+
+
 
 app.use(cors(corsOptions));
 
@@ -12212,26 +12201,54 @@ app.get('/', (req, res) => {
 });
 
 // API 404 handler (should come after all API routes)
-app.use('/api/*', (req, res) => {
-  res.status(404).json({
-    success: false,
-    message: 'API endpoint not found'
-  });
-});
+// app.use('/api/*', (req, res) => {
+//   res.status(404).json({
+//     success: false,
+//     message: 'API endpoint not found'
+//   });
+// });
 
 // ==================== STATIC FILES (PRODUCTION ONLY) ====================
 
 // Static files (only in production)
-if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, 'client/dist')));
-}
+// if (process.env.NODE_ENV === 'production') {
+//   app.use(express.static(path.join(__dirname, 'client/dist')));
+// }
 
 // Catch-all handler for SPA (only in production)
-if (process.env.NODE_ENV === 'production') {
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'client/dist', 'index.html'));
+// if (process.env.NODE_ENV === 'production') {
+//   app.get('*', (req, res) => {
+//     res.sendFile(path.join(__dirname, 'client/dist', 'index.html'));
+//   });
+// }
+
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: 'HomeHero API Server',
+    version: '2.0.0',
+    environment: process.env.NODE_ENV,
+    endpoints: {
+      docs: 'https://github.com/your-repo/docs',
+      health: '/api/health',
+      auth: '/api/auth'
+    }
   });
-}
+});
+
+app.get('/favicon.ico', (req, res) => {
+  res.status(204).end(); // No content
+});
+
+// API 404 handler
+app.use('/api/*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    message: 'API endpoint not found',
+    requestedUrl: req.originalUrl
+  });
+});
+
 
 // ==================== ERROR HANDLING ====================
 
@@ -12361,29 +12378,16 @@ app.use('*', (req, res) => {
   if (req.originalUrl.startsWith('/api/')) {
     return res.status(404).json({
       success: false,
-      message: 'API endpoint not found'
+      message: 'API endpoint not found: ' + req.originalUrl
     });
   }
   
-  if (process.env.NODE_ENV === 'production') {
-    return res.sendFile(path.join(__dirname, 'client/dist', 'index.html'));
-  }
-  
-  res.status(404).json({
+  // For non-API routes, return API info
+  res.json({
     success: false,
-    message: 'Endpoint not found',
-    availableEndpoints: {
-      health: 'GET /api/health',
-      uploadHealth: 'GET /api/health/upload',
-      auth: 'POST /api/auth/signup, POST /api/auth/login, POST /api/auth/verify-email, POST /api/auth/switch-role',
-      users: 'GET /api/users',
-      profile: 'GET /api/auth/profile, PUT /api/auth/profile',
-      availability: 'GET /api/availability, POST /api/availability',
-      stats: 'GET /api/stats/users',
-      earnings: 'GET /api/earnings',
-      schedule: 'GET /api/user/schedule',
-      dashboard: 'GET /api/user/dashboard'
-    }
+    message: 'This is an API server. Please use API endpoints.',
+    baseUrl: '/api',
+    example: '/api/health'
   });
 });
 
