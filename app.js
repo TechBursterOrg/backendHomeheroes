@@ -543,7 +543,7 @@ initializeEmailTransporter().then(success => {
 });
 
 app.use(cors({
-  origin: 'http://localhost:5173',
+  origin: ['http://localhost:5173', 'http://localhost:5174'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
@@ -1965,8 +1965,7 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
   ? [
       'https://homeheroes.help',
       'https://www.homeheroes.help',
-      'https://backendhomeheroes.onrender.com',
-      'http://localhost:5173'
+      'https://backendhomeheroes.onrender.com'
     ]
   : [
       'http://localhost:5173',
@@ -1974,20 +1973,31 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
       'http://127.0.0.1:5173',
       'http://localhost:4173',
       'http://localhost:5174',
-      'https://homeheroes.help'
+      'http://localhost:5175', // Add more if needed
     ];
-
 
 
 
 const corsOptions = {
   origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
+    
+    const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:5174', 
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5174',
+  'https://homeheroes.help',
+  'https://www.homeheroes.help'
+];
+
     
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
-      console.log('🚫 CORS blocked origin:', origin);
+      console.log('CORS blocked origin:', origin);
       callback(new Error('Not allowed by CORS'), false);
     }
   },
@@ -2000,7 +2010,8 @@ const corsOptions = {
     'Accept', 
     'Origin',
     'Cache-Control',
-    'Pragma'
+    'Pragma',
+    'Access-Control-Allow-Origin'
   ],
   exposedHeaders: [
     'Content-Length',
@@ -2008,15 +2019,10 @@ const corsOptions = {
     'Authorization',
     'Access-Control-Allow-Origin'
   ],
-  maxAge: 86400,
+  maxAge: 86400, // 24 hours
   preflightContinue: false,
   optionsSuccessStatus: 204
 };
-
-
-
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
 
 
 app.use(express.json({ 
@@ -2031,7 +2037,7 @@ app.use(express.urlencoded({
   limit: '10mb' 
 }));
 
-
+app.use(cors(corsOptions));
 
 
 
@@ -2068,22 +2074,23 @@ app.use('/api/ratings', (req, res, next) => {
 
 app.use('/api/ratings', ratingRoutes);
 
+app.options('*', cors(corsOptions));
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, Postman, etc.)
+    // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
       console.log('CORS blocked origin:', origin);
-      return callback(new Error(msg), false);
+      callback(new Error('Not allowed by CORS'), false);
     }
-    return callback(null, true);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin','Cache-Control', 'Pragma']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
 }));
 
 app.post('/api/debug/test-email-verification', async (req, res) => {
