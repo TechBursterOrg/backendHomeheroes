@@ -570,6 +570,21 @@ router.post('/login', loginValidation, async (req, res) => {
   }
 });
 
+router.get('/login', (req, res) => {
+  res.json({
+    success: false,
+    message: 'Please use POST method for login',
+    example: {
+      method: 'POST',
+      url: '/api/auth/login',
+      body: {
+        email: 'petervj2019@gmail.com',
+        password: 'Password111',
+        userType: 'customer'
+      }
+    }
+  });
+});
 
 router.post('/verify-email', async (req, res) => {
   try {

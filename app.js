@@ -171,6 +171,22 @@ console.log('GCLOUD_BUCKET_NAME:', process.env.GCLOUD_BUCKET_NAME || 'NOT SET');
 console.log('NODE_ENV:', process.env.NODE_ENV || 'NOT SET');
 
 // Check if the key file exists
+
+try {
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    const keyExists = fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+    if (!keyExists) {
+      console.log('⚠️ Google Cloud key file not found, disabling GCS features');
+      // Set a flag to disable GCS-dependent routes
+      process.env.GCS_DISABLED = 'true';
+    }
+  }
+} catch (error) {
+  console.log('⚠️ GCS initialization skipped:', error.message);
+  process.env.GCS_DISABLED = 'true';
+}
+
+
 if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
   const keyExists = fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS);
   console.log('\n🔑 Service Account Key File:');
@@ -187,6 +203,8 @@ if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
     }
   }
 }
+
+
 
 
 
@@ -542,12 +560,25 @@ initializeEmailTransporter().then(success => {
   }
 });
 
+//...app.use
+
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:5174'],
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.log('CORS blocked origin:', origin);
+      callback(new Error('Not allowed by CORS'), false);
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
 }));
+
 
 app.options('*', cors());
 
@@ -1969,8 +2000,9 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
       'http://127.0.0.1:5173',
       'http://localhost:4173',
       'http://localhost:5174',
-      'http://localhost:5175', // Add more if needed
+      'http://localhost:5175',
     ];
+
 
 
 
@@ -2071,22 +2103,22 @@ app.use('/api/ratings', (req, res, next) => {
 app.use('/api/ratings', ratingRoutes);
 
 
-app.use(cors({
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
+// app.use(cors({
+//   origin: function (origin, callback) {
+//     // Allow requests with no origin (like mobile apps or curl requests)
+//     if (!origin) return callback(null, true);
     
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      console.log('CORS blocked origin:', origin);
-      callback(new Error('Not allowed by CORS'), false);
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
-}));
+//     if (allowedOrigins.indexOf(origin) !== -1) {
+//       callback(null, true);
+//     } else {
+//       console.log('CORS blocked origin:', origin);
+//       callback(new Error('Not allowed by CORS'), false);
+//     }
+//   },
+//   credentials: true,
+//   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+//   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
+// }));
 
 app.post('/api/debug/test-email-verification', async (req, res) => {
   try {
@@ -2183,7 +2215,9 @@ app.options('*', cors());
 app.options('*', cors());
 // Middleware
 
-
+console.log('🔧 Checking route registration...');
+console.log('Auth routes:', authRoutes ? 'Loaded' : 'NOT LOADED');
+console.log('All routes registered successfully');
 
 // Add this specific middleware for ratings routes
 app.use('/api/ratings', express.json({ limit: '10mb' }));
@@ -2231,6 +2265,16 @@ app.use((req, res, next) => {
   next();
 });
 
+console.log('🔧 DEBUG: Starting route registration...');
+
+try {
+  console.log('🔧 DEBUG: Importing auth routes...');
+  const authRoutes = await import('./routes/auth.routes.js');
+  console.log('✅ DEBUG: Auth routes imported successfully');
+} catch (error) {
+  console.error('❌ DEBUG: Auth routes import failed:', error);
+}
+
 app.use('/api/auth', authRoutes);
 app.use('/api/verification', verificationRoutes);
 app.use('/api/jobs', jobRoutes);
@@ -2238,6 +2282,144 @@ app.use('/api/messages', messageRoutes);
 app.use('/api/ratings', ratingRoutes);
 app.use('/api/providers', providerRoutes);
 app.use(cookieParser());
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    console.log('🔐 Login attempt received:', {
+      email: req.body.email,
+      userType: req.body.userType,
+      timestamp: new Date().toISOString()
+    });
+
+    const { email, password, userType } = req.body;
+
+    // Validate required fields
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and password are required'
+      });
+    }
+
+    // Find user
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password'
+      });
+    }
+
+    // Check if email is verified
+    if (!user.isEmailVerified) {
+      return res.status(403).json({
+        success: false,
+        message: 'Please verify your email address before logging in',
+        requiresVerification: true,
+        email: user.email
+      });
+    }
+
+    // Verify password
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password'
+      });
+    }
+
+    // Update last login
+    user.lastLogin = new Date();
+    await user.save();
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { 
+        id: user._id, 
+        email: user.email, 
+        userType: userType || user.userType,
+        isEmailVerified: user.isEmailVerified
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    // Determine redirect path
+    let redirectTo = '/dashboard';
+    const finalUserType = userType || user.userType;
+    if (finalUserType === 'provider' || user.userType === 'both') {
+      redirectTo = '/provider/dashboard';
+    } else {
+      redirectTo = '/customer/dashboard';
+    }
+
+    console.log('✅ Login successful for:', user.email);
+
+    res.json({
+      success: true,
+      message: 'Login successful',
+      data: {
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          userType: finalUserType,
+          actualUserType: user.userType,
+          country: user.country,
+          isEmailVerified: user.isEmailVerified
+        },
+        token,
+        redirectTo,
+        canSwitchRoles: user.userType === 'both'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Login error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error during login',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.get('/api/auth/login', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Login endpoint is working! Use POST to login.',
+    method: 'GET'
+  });
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    console.log('📝 Login request body:', req.body);
+    
+    // Simple response to confirm it's working
+    res.json({
+      success: true,
+      message: 'Login endpoint is working!',
+      received: req.body
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/auth/login', (req, res) => {
+  res.json({
+    success: true,
+    message: 'POST login endpoint is working!',
+    method: 'POST',
+    bodyReceived: req.body
+  });
+});
 
 // Serve static files for uploaded images
 // app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -12345,17 +12527,17 @@ app.use((err, req, res, next) => {
 
 
 
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
-    if (process.env.NODE_ENV !== 'production') return callback(null, true);
-    if (allowedOrigins.indexOf(origin) !== -1) return callback(null, true);
+// app.use(cors({
+//   origin: function (origin, callback) {
+//     if (!origin) return callback(null, true);
+//     if (process.env.NODE_ENV !== 'production') return callback(null, true);
+//     if (allowedOrigins.indexOf(origin) !== -1) return callback(null, true);
     
-    console.warn('CORS blocked origin:', origin);
-    return callback(new Error('Not allowed by CORS'), false);
-  },
-  credentials: true
-}));
+//     console.warn('CORS blocked origin:', origin);
+//     return callback(new Error('Not allowed by CORS'), false);
+//   },
+//   credentials: true
+// }));
 
 app.options('*', (req, res) => {
   const origin = req.headers.origin;
