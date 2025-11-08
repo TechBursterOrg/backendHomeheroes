@@ -1011,101 +1011,107 @@ app.post('/api/bookings/create-payment-intent', authenticateToken, async (req, r
 // In your Paystack payment creation section:
 if (isNigeria && paymentProcessors.paystack) {
   try {
-    // Check if there's an existing payment that can be reused
-    if (booking.payment && booking.payment.status === 'requires_payment_method' && booking.payment.processor === 'paystack') {
-      console.log('🔄 Reusing existing Paystack payment for retry');
-      
-      // For retry, we need to get a fresh authorization URL
-      const paystackPayload = {
-        amount: Math.round(paymentAmount * 100),
-        email: req.user.email || booking.customerId.email,
-        currency: 'NGN',
-        reference: booking.payment.paymentIntentId, // Use existing reference
-        metadata: {
-          bookingId: bookingId,
-          customerId: req.user.id,
-          paymentType: 'escrow',
-          isRetry: true
-        },
-        callback_url: `${process.env.FRONTEND_URL}/customer/payment-status?bookingId=${bookingId}&processor=paystack&isRetry=true`
-      };
-
-      console.log('📤 Paystack retry payload:', paystackPayload);
-
-      // For retry, you might need to use transaction.initialize with the same reference
-      // or create a new payment if Paystack doesn't allow reusing references
-      const paystackResponse = await paymentProcessors.paystack.transaction.initialize(paystackPayload);
-
-      paymentResult = {
-        success: true,
-        processor: 'paystack',
-        paymentIntentId: paystackResponse.data.reference,
-        authorizationUrl: paystackResponse.data.authorization_url,
-        accessCode: paystackResponse.data.access_code,
-        amount: paymentAmount,
-        currency: 'NGN',
-        status: 'requires_payment_method',
-        existingPayment: true,
-        isRetry: true
-      };
-
+    // DETERMINE IF THIS IS A RETRY SCENARIO
+    const isRetry = booking.payment && 
+                   booking.payment.status === 'requires_payment_method';
+    
+    let reference;
+    if (isRetry) {
+      // FOR RETRY: ALWAYS create new reference for requires_payment_method status
+      reference = `HH_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+      console.log('🔄 RETRY: Creating new reference for failed payment:', reference);
+    } else if (booking.payment?.paymentIntentId && booking.payment.status === 'requires_payment_method') {
+      // If somehow we get here, still create new reference
+      reference = `HH_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+      console.log('🔄 Creating new reference for existing requires_payment_method:', reference);
     } else {
-      // New payment flow (your existing code)
-      const paystackPayload = {
-        amount: Math.round(paymentAmount * 100),
-        email: req.user.email || booking.customerId.email,
-        currency: 'NGN',
-        metadata: {
-          bookingId: bookingId,
-          customerId: req.user.id,
-          paymentType: 'escrow'
-        },
-        callback_url: `${process.env.FRONTEND_URL}/customer/payment-status?bookingId=${bookingId}&processor=paystack`
-      };
-
-      console.log('📤 Paystack request payload:', paystackPayload);
-
-      const paystackResponse = await paymentProcessors.paystack.transaction.initialize(paystackPayload);
-
-      console.log('📥 Paystack response:', {
-        status: paystackResponse.status,
-        reference: paystackResponse.data?.reference,
-        authorizationUrl: paystackResponse.data?.authorization_url ? 'present' : 'missing'
-      });
-
-      if (!paystackResponse.status) {
-        throw new Error(paystackResponse.message || 'Paystack initialization failed');
-      }
-
-      // VERIFY THE AUTHORIZATION URL IS CORRECT
-      const authorizationUrl = paystackResponse.data.authorization_url;
-      console.log('🔗 Paystack authorization URL:', authorizationUrl);
-      
-      if (!authorizationUrl || !authorizationUrl.includes('checkout.paystack.com')) {
-        console.error('❌ INVALID Paystack authorization URL:', authorizationUrl);
-        throw new Error('Invalid Paystack authorization URL received');
-      }
-
-      paymentResult = {
-        success: true,
-        processor: 'paystack',
-        paymentIntentId: paystackResponse.data.reference,
-        authorizationUrl: authorizationUrl,
-        accessCode: paystackResponse.data.access_code,
-        amount: paymentAmount,
-        currency: 'NGN',
-        status: 'requires_payment_method',
-        existingPayment: false
-      };
+      // New payment
+      reference = `HH_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
     }
 
-    console.log('✅ Paystack payment initialized successfully');
+    const paystackPayload = {
+      amount: Math.round(paymentAmount * 100),
+      email: req.user.email || booking.customerId.email,
+      currency: 'NGN',
+      reference: reference,
+      metadata: {
+        bookingId: bookingId,
+        customerId: req.user.id,
+        paymentType: 'escrow',
+        isRetry: isRetry,
+        originalReference: isRetry ? booking.payment?.paymentIntentId : null,
+        retryCount: isRetry ? ((booking.payment?.retryCount || 0) + 1) : 0
+      },
+      callback_url: `${process.env.FRONTEND_URL}/customer/payment-status?bookingId=${bookingId}&processor=paystack&isRetry=${isRetry}`
+    };
+
+    console.log('📤 Paystack request payload:', paystackPayload);
+
+    const paystackResponse = await paymentProcessors.paystack.transaction.initialize(paystackPayload);
+
+    // Validate the authorization URL
+    const authorizationUrl = paystackResponse.data.authorization_url;
+    console.log('🔗 Paystack authorization URL:', authorizationUrl);
+    
+    if (!authorizationUrl || !authorizationUrl.includes('checkout.paystack.com')) {
+      console.error('❌ INVALID Paystack authorization URL:', authorizationUrl);
+      throw new Error('Invalid Paystack authorization URL received');
+    }
+
+    paymentResult = {
+      success: true,
+      processor: 'paystack',
+      paymentIntentId: paystackResponse.data.reference,
+      authorizationUrl: authorizationUrl,
+      accessCode: paystackResponse.data.access_code,
+      amount: paymentAmount,
+      currency: 'NGN',
+      status: 'requires_payment_method',
+      existingPayment: !!booking.payment,
+      isRetry: isRetry
+    };
+
+    // UPDATE BOOKING WITH NEW PAYMENT REFERENCE (even for retries)
+    console.log('💾 Updating booking with new payment reference...');
+    
+    booking.payment = {
+      processor: 'paystack',
+      paymentIntentId: paymentResult.paymentIntentId,
+      authorizationUrl: paymentResult.authorizationUrl,
+      amount: paymentResult.amount,
+      currency: paymentResult.currency,
+      status: paymentResult.status,
+      initiatedAt: new Date(),
+      autoRefundAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
+      retryCount: isRetry ? ((booking.payment?.retryCount || 0) + 1) : 0,
+      lastRetryAt: isRetry ? new Date() : undefined
+    };
+
+    // Add payment history entry
+    booking.paymentHistory = booking.paymentHistory || [];
+    booking.paymentHistory.push({
+      action: isRetry ? 'payment_retry' : 'payment_initiated',
+      processor: 'paystack',
+      paymentIntentId: paymentResult.paymentIntentId,
+      amount: paymentResult.amount,
+      currency: paymentResult.currency,
+      status: paymentResult.status,
+      isRetry: isRetry,
+      originalReference: isRetry ? booking.payment?.paymentIntentId : null,
+      timestamp: new Date()
+    });
+
+    await booking.save();
+
+    console.log('✅ Paystack payment initialized successfully with NEW reference:', paymentResult.paymentIntentId);
 
   } catch (paystackError) {
     console.error('❌ Paystack payment creation failed:', paystackError);
     throw new Error(`Paystack payment failed: ${paystackError.message}`);
   }
-} else if ((isUK || !isNigeria) && paymentProcessors.stripe) {
+}
+
+ else if ((isUK || !isNigeria) && paymentProcessors.stripe) {
       // REAL Stripe payment for UK and International
       const stripeCurrency = isUK ? 'gbp' : 'usd';
       
@@ -1167,6 +1173,175 @@ if (isNigeria && paymentProcessors.paystack) {
     });
   }
 });
+
+app.get('/api/debug/booking-payment/:bookingId', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Check authorization
+    if (booking.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to view this booking'
+      });
+    }
+
+    const paymentInfo = {
+      bookingId: booking._id,
+      status: booking.status,
+      payment: booking.payment,
+      paymentHistory: booking.paymentHistory,
+      canRetry: booking.payment && ['requires_payment_method', 'failed'].includes(booking.payment.status),
+      retryCount: booking.payment?.retryCount || 0,
+      initiatedAt: booking.payment?.initiatedAt,
+      timeSinceInitiation: booking.payment?.initiatedAt ? 
+        Date.now() - new Date(booking.payment.initiatedAt).getTime() : null
+    };
+
+    res.json({
+      success: true,
+      data: paymentInfo
+    });
+
+  } catch (error) {
+    console.error('Debug payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get payment debug info'
+    });
+  }
+});
+
+// Add this temporary debug endpoint to reset the payment
+app.post('/api/debug/reset-payment/:bookingId', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Reset payment to allow fresh retry
+    booking.payment = undefined;
+    await booking.save();
+
+    console.log('✅ Payment reset for booking:', bookingId);
+
+    res.json({
+      success: true,
+      message: 'Payment reset successfully. You can now retry payment with a fresh reference.'
+    });
+
+  } catch (error) {
+    console.error('Reset payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reset payment'
+    });
+  }
+});
+app.get('/api/bookings/:bookingId/payment-status', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (!booking.payment) {
+      return res.status(400).json({
+        success: false,
+        message: 'No payment found for this booking'
+      });
+    }
+
+    // If payment is in requires_payment_method status for more than 1 hour, allow retry
+    const canRetry = booking.payment.status === 'requires_payment_method' && 
+                    booking.payment.initiatedAt && 
+                    (new Date() - new Date(booking.payment.initiatedAt)) > 3600000; // 1 hour
+
+    res.json({
+      success: true,
+      data: {
+        payment: booking.payment,
+        canRetry: canRetry,
+        retryCount: booking.payment.retryCount || 0
+      }
+    });
+
+  } catch (error) {
+    console.error('Get payment status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get payment status'
+    });
+  }
+});
+
+// Paystack webhook for refunds
+app.post('/api/payments/paystack-webhook-refund', async (req, res) => {
+  try {
+    const signature = req.headers['x-paystack-signature'];
+    
+    if (!signature) {
+      return res.status(400).send('No signature');
+    }
+
+    // Verify webhook signature
+    const crypto = require('crypto');
+    const hash = crypto.createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
+                      .update(JSON.stringify(req.body))
+                      .digest('hex');
+    
+    if (hash !== signature) {
+      return res.status(400).send('Invalid signature');
+    }
+
+    const event = req.body;
+    console.log('🔔 Paystack refund webhook received:', event.event);
+
+    if (event.event === 'refund.processed') {
+      const { reference, amount, status } = event.data;
+      
+      // Find booking by Paystack reference
+      const booking = await Booking.findOne({
+        'payment.paymentIntentId': reference
+      });
+
+      if (booking && status === 'processed') {
+        // Update booking payment status to refunded
+        booking.payment.status = 'refunded';
+        booking.payment.refundedAt = new Date();
+        booking.status = 'cancelled';
+        await booking.save();
+
+        console.log('✅ Paystack refund processed for booking:', booking._id);
+      }
+    }
+
+    res.sendStatus(200);
+  } catch (error) {
+    console.error('❌ Paystack refund webhook error:', error);
+    res.status(500).send('Webhook error');
+  }
+});
+
 app.post('/api/test-body-parsing', (req, res) => {
   console.log('🧪 Body Parsing Test:', {
     body: req.body,
@@ -1223,17 +1398,21 @@ app.post('/api/bookings/:bookingId/retry-payment', authenticateToken, async (req
 
     if (booking.payment.processor === 'paystack') {
       try {
-        // Create a new Paystack payment with a new reference
+        // IMPORTANT: For Paystack retry, ALWAYS create a new reference
+        const newReference = `HH_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+        
         const paystackPayload = {
           amount: Math.round(booking.payment.amount * 100),
-          email: req.user.email,
+          email: req.user.email || booking.customerEmail,
           currency: 'NGN',
+          reference: newReference, // ALWAYS new reference for retry
           metadata: {
             bookingId: bookingId,
             customerId: req.user.id,
             paymentType: 'escrow',
             isRetry: true,
-            originalReference: booking.payment.paymentIntentId
+            originalReference: booking.payment.paymentIntentId,
+            retryCount: (booking.payment.retryCount || 0) + 1
           },
           callback_url: `${process.env.FRONTEND_URL}/customer/payment-status?bookingId=${bookingId}&processor=paystack&isRetry=true`
         };
@@ -1242,27 +1421,41 @@ app.post('/api/bookings/:bookingId/retry-payment', authenticateToken, async (req
 
         const paystackResponse = await paymentProcessors.paystack.transaction.initialize(paystackPayload);
 
-        if (!paystackResponse.status) {
-          throw new Error(paystackResponse.message || 'Paystack initialization failed');
+        // VALIDATE THE AUTHORIZATION URL
+        const authorizationUrl = paystackResponse.data.authorization_url;
+        console.log('🔗 Paystack retry authorization URL:', authorizationUrl);
+
+        if (!authorizationUrl) {
+          throw new Error('No authorization URL received from Paystack');
+        }
+
+        // Ensure it's a valid Paystack URL
+        if (!authorizationUrl.includes('checkout.paystack.com')) {
+          console.error('❌ INVALID Paystack URL received:', authorizationUrl);
+          throw new Error('Invalid Paystack payment URL received');
         }
 
         // Update booking with new payment intent
-        booking.payment.paymentIntentId = paystackResponse.data.reference;
-        booking.payment.authorizationUrl = paystackResponse.data.authorization_url;
+        booking.payment.paymentIntentId = newReference;
+        booking.payment.authorizationUrl = authorizationUrl;
         booking.payment.status = 'requires_payment_method';
         booking.payment.retryCount = (booking.payment.retryCount || 0) + 1;
         booking.payment.lastRetryAt = new Date();
+        booking.payment.initiatedAt = new Date(); // Reset the initiation time
 
         // Add to payment history
+        booking.paymentHistory = booking.paymentHistory || [];
         booking.paymentHistory.push({
           action: 'payment_retry',
           processor: 'paystack',
-          paymentIntentId: paystackResponse.data.reference,
+          paymentIntentId: newReference,
           amount: booking.payment.amount,
           currency: booking.payment.currency,
           status: 'requires_payment_method',
           timestamp: new Date(),
-          isRetry: true
+          isRetry: true,
+          originalReference: booking.payment.paymentIntentId,
+          retryCount: booking.payment.retryCount
         });
 
         await booking.save();
@@ -1270,22 +1463,22 @@ app.post('/api/bookings/:bookingId/retry-payment', authenticateToken, async (req
         paymentResult = {
           success: true,
           processor: 'paystack',
-          paymentIntentId: paystackResponse.data.reference,
-          authorizationUrl: paystackResponse.data.authorization_url,
+          paymentIntentId: newReference,
+          authorizationUrl: authorizationUrl,
           amount: booking.payment.amount,
           currency: booking.payment.currency,
           status: 'requires_payment_method',
-          isRetry: true
+          isRetry: true,
+          retryCount: booking.payment.retryCount
         };
 
-        console.log('✅ Payment retry initialized successfully');
+        console.log('✅ Payment retry initialized successfully with new reference:', newReference);
 
       } catch (paystackError) {
         console.error('❌ Paystack retry failed:', paystackError);
         throw new Error(`Payment retry failed: ${paystackError.message}`);
       }
     } else {
-      // Handle Stripe retry logic here if needed
       return res.status(400).json({
         success: false,
         message: 'Retry not implemented for this payment processor'
@@ -1307,6 +1500,222 @@ app.post('/api/bookings/:bookingId/retry-payment', authenticateToken, async (req
     });
   }
 });
+
+app.post('/api/bookings/:id/confirm-arrival', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Check if user is the provider for this booking
+    if (booking.providerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to confirm arrival for this booking'
+      });
+    }
+
+    // Update booking with provider arrival confirmation
+    booking.providerArrived = true;
+    booking.providerArrivedAt = new Date();
+    
+    // Make "Hero Here" button visible to customer
+    booking.showHeroHereButton = true;
+    
+    await booking.save();
+
+    // Notify customer that provider has arrived
+    await Notification.createNotification({
+      userId: booking.customerId,
+      type: 'provider_arrived',
+      title: 'Your Hero Has Arrived!',
+      message: `${booking.providerName} has arrived at your location. Please confirm they are here to start the service.`,
+      relatedId: booking._id,
+      relatedType: 'booking',
+      priority: 'high'
+    });
+
+    res.json({
+      success: true,
+      message: 'Arrival confirmed successfully. Customer can now confirm you are here.'
+    });
+
+  } catch (error) {
+    console.error('Confirm arrival error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to confirm arrival'
+    });
+  }
+});
+
+app.post('/api/bookings/:id/confirm-hero-here', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Check if user is the customer for this booking
+    if (booking.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to confirm service for this booking'
+      });
+    }
+
+    // Check if provider has confirmed arrival first
+    if (!booking.providerArrived) {
+      return res.status(400).json({
+        success: false,
+        message: 'Provider has not confirmed arrival yet'
+      });
+    }
+
+    // Check if "Hero Here" button should be visible
+    if (!booking.showHeroHereButton) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot confirm hero here at this time'
+      });
+    }
+
+    // Update booking with customer confirmation
+    booking.customerConfirmedHeroHere = true;
+    booking.customerConfirmedAt = new Date();
+    booking.heroHereConfirmed = true;
+    
+    // Set auto-refund timer (4 hours from now)
+    booking.autoRefundAt = new Date(Date.now() + 4 * 60 * 60 * 1000);
+    
+    await booking.save();
+
+    // Notify provider that customer confirmed their arrival
+    await Notification.createNotification({
+      userId: booking.providerId,
+      type: 'customer_confirmed_arrival',
+      title: 'Customer Confirmed Your Arrival!',
+      message: 'The customer has confirmed you are at the location. Service can begin.',
+      relatedId: booking._id,
+      relatedType: 'booking',
+      priority: 'high'
+    });
+
+    res.json({
+      success: true,
+      message: 'Hero here confirmed successfully. Payment will be held for 4 hours for service completion.',
+      data: {
+        autoRefundAt: booking.autoRefundAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Confirm hero here error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to confirm hero here'
+    });
+  }
+});
+
+app.post('/api/payments/release-to-provider', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.body;
+
+    const booking = await Booking.findById(bookingId).populate('providerId');
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Verify user is authorized (admin or customer)
+    if (booking.customerId.toString() !== req.user.id && req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to release this payment'
+      });
+    }
+
+    // Check if payment is held
+    if (booking.payment.status !== 'held') {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment is not in held status'
+      });
+    }
+
+    // Check if Hero Here was confirmed
+    if (!booking.heroHereConfirmed) {
+      return res.status(400).json({
+        success: false,
+        message: 'Hero Here not confirmed by customer'
+      });
+    }
+
+    // Calculate commission (20% to Home Heroes, 80% to provider)
+    const totalAmount = booking.payment.amount;
+    const commission = totalAmount * 0.20;
+    const providerAmount = totalAmount * 0.80;
+
+    // Update provider earnings
+    const provider = booking.providerId;
+    provider.totalEarnings = (provider.totalEarnings || 0) + providerAmount;
+    await provider.save();
+
+    // Update booking payment status
+    booking.payment.status = 'released';
+    booking.payment.releasedAt = new Date();
+    booking.payment.commission = commission;
+    booking.payment.providerAmount = providerAmount;
+    booking.paymentReleased = true;
+    booking.paymentReleasedAt = new Date();
+    
+    await booking.save();
+
+    // Notify provider
+    await Notification.createNotification({
+      userId: booking.providerId,
+      type: 'payment_released',
+      title: 'Payment Released!',
+      message: `Payment of ${booking.payment.currency}${providerAmount} has been released to your account. Home Heroes commission: ${booking.payment.currency}${commission}`,
+      relatedId: booking._id,
+      relatedType: 'booking',
+      priority: 'high'
+    });
+
+    res.json({
+      success: true,
+      message: 'Payment released to provider successfully',
+      data: {
+        providerAmount,
+        commission,
+        totalAmount
+      }
+    });
+
+  } catch (error) {
+    console.error('Release payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to release payment'
+    });
+  }
+});
+
+
 
 app.post('/api/payments/create-intent', authenticateToken, async (req, res) => {
   try {
@@ -1860,54 +2269,23 @@ app.post('/api/bookings/:bookingId/create-payment', authenticateToken, async (re
     console.log('✅ Authorization passed, proceeding with payment...');
 
     // Check if booking already has an active payment
-    if (booking.payment && booking.payment.status === 'requires_payment_method') {
-      console.log('⚠️ Payment already initiated for booking:', {
-        paymentIntentId: booking.payment.paymentIntentId,
-        processor: booking.payment.processor,
-        status: booking.payment.status
-      });
+    // Check if booking already has an active payment
+if (booking.payment && booking.payment.status === 'requires_payment_method') {
+  console.log('⚠️ Payment already initiated for booking:', {
+    paymentIntentId: booking.payment.paymentIntentId,
+    processor: booking.payment.processor,
+    status: booking.payment.status,
+    initiatedAt: booking.payment.initiatedAt,
+    timeSinceInitiation: booking.payment.initiatedAt ? 
+      Date.now() - new Date(booking.payment.initiatedAt).getTime() : 'unknown'
+  });
 
-      // If it's a Paystack payment, we need to get the authorization URL
-      if (booking.payment.processor === 'paystack') {
-        console.log('🔄 Getting Paystack authorization URL for existing payment...');
-        
-        // For Paystack, we need to reconstruct the authorization URL
-        // OR fetch it from Paystack API if we stored it
-        const authorizationUrl = booking.payment.authorizationUrl || 
-          `https://paystack.com/pay/${booking.payment.paymentIntentId}`;
-        
-        return res.json({
-          success: true,
-          message: 'Payment already initiated',
-          data: {
-            processor: 'paystack',
-            paymentIntentId: booking.payment.paymentIntentId,
-            authorizationUrl: authorizationUrl,
-            amount: booking.payment.amount,
-            currency: booking.payment.currency,
-            status: booking.payment.status,
-            existingPayment: true // Flag to indicate this is an existing payment
-          }
-        });
-      }
-
-      // For Stripe, return the existing payment details
-      if (booking.payment.processor === 'stripe') {
-        return res.json({
-          success: true,
-          message: 'Payment already initiated',
-          data: {
-            processor: 'stripe',
-            paymentIntentId: booking.payment.paymentIntentId,
-            clientSecret: booking.payment.clientSecret, // Make sure this is stored
-            amount: booking.payment.amount,
-            currency: booking.payment.currency,
-            status: booking.payment.status,
-            existingPayment: true
-          }
-        });
-      }
-    }
+  // CRITICAL FIX: For requires_payment_method status, treat as retry and create NEW reference
+  console.log('🔄 Payment requires new attempt - creating new reference...');
+  
+  // Don't return here - continue to create a new payment with fresh reference
+  // We'll update the existing payment record with new reference below
+}
 
     const paymentAmount = parseFloat(amount);
     const bookingAmount = booking.price || booking.amount;

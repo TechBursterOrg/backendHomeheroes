@@ -73,6 +73,7 @@ const bookingSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  
   bookingType: {
     type: String,
     enum: ['immediate', 'long-term'],
@@ -105,6 +106,39 @@ const bookingSchema = new mongoose.Schema({
     type: Boolean, 
     default: false 
   },
+  
+  // New fields added here
+  providerArrived: {
+    type: Boolean,
+    default: false
+  },
+  providerArrivedAt: Date,
+  showHeroHereButton: {
+    type: Boolean,
+    default: false
+  },
+  customerConfirmedHeroHere: {
+    type: Boolean,
+    default: false
+  },
+  customerConfirmedAt: Date,
+  heroHereConfirmed: {
+    type: Boolean,
+    default: false
+  },
+  
+  // Payment release fields
+  autoRefundAt: Date,
+  paymentReleased: {
+    type: Boolean,
+    default: false
+  },
+  paymentReleasedAt: Date,
+  
+  // Commission tracking
+  commissionAmount: Number,
+  providerAmount: Number,
+
   payment: {
     processor: {
       type: String,
@@ -137,6 +171,8 @@ const bookingSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+
 
 bookingSchema.plugin(mongoosePaginate);
 
