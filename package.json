@@ -27,6 +27,7 @@
     "node-cron": "^4.2.1",
     "nodemailer": "^7.0.5",
     "nodemailer-gmail": "^3.0.0",
+    "paystack": "^2.0.1",
     "stripe": "^19.1.0",
     "twilio": "^5.10.1"
   },

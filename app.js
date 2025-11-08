@@ -880,6 +880,251 @@ app.post('/api/gcs/cleanup', authenticateToken, async (req, res) => {
 
 //payment
 
+console.log('🔧 Payment Configuration Check:');
+console.log('STRIPE_SECRET_KEY:', process.env.STRIPE_SECRET_KEY ? 'Set' : 'NOT SET');
+console.log('STRIPE_PUBLISHABLE_KEY:', process.env.STRIPE_PUBLISHABLE_KEY ? 'Set' : 'NOT SET');
+console.log('PAYSTACK_SECRET_KEY:', process.env.PAYSTACK_SECRET_KEY ? 'Set' : 'NOT SET');
+console.log('NODE_ENV:', process.env.NODE_ENV);
+
+const initializePaymentProcessors = async () => {
+  const processors = {
+    stripe: null,
+    paystack: null
+  };
+
+  // Initialize Stripe
+  if (process.env.STRIPE_SECRET_KEY) {
+    try {
+      // Use dynamic import for ES modules
+      const { default: Stripe } = await import('stripe');
+      processors.stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+        apiVersion: '2025-09-30.clover',
+      });
+      console.log('✅ Stripe initialized successfully');
+    } catch (error) {
+      console.error('❌ Stripe initialization failed:', error.message);
+    }
+  } else {
+    console.log('⚠️ Stripe secret key not configured');
+  }
+
+  // Initialize Paystack
+  if (process.env.PAYSTACK_SECRET_KEY) {
+  try {
+    console.log('🔧 Initializing Paystack...');
+    
+    // For ES modules, use dynamic import
+    const paystackModule = await import('paystack');
+    
+    // Paystack exports the function directly, not as default
+    const Paystack = paystackModule.default || paystackModule;
+    
+    const paystackKey = process.env.PAYSTACK_SECRET_KEY;
+    
+    if (!paystackKey) {
+      throw new Error('Paystack secret key is empty');
+    }
+    
+    processors.paystack = Paystack(paystackKey);
+    
+    console.log('✅ Paystack instance created');
+    
+    // Test the connection with a simple API call
+    try {
+      const testResponse = await processors.paystack.transaction.list({ perPage: 1 });
+      console.log('✅ Paystack connection test successful');
+    } catch (testError) {
+      console.log('⚠️ Paystack test call failed (might be normal for invalid keys):', testError.message);
+      // Don't throw here - the initialization might still work for actual payments
+    }
+    
+  } catch (error) {
+    console.error('❌ Paystack initialization failed:', error.message);
+    console.error('Full error:', error);
+  }
+} else {
+  console.log('⚠️ Paystack secret key not configured');
+}
+
+  return processors;
+};
+
+let paymentProcessors;
+initializePaymentProcessors().then(processors => {
+  paymentProcessors = processors;
+  console.log('💰 Payment processors initialized:', {
+    stripe: !!processors.stripe,
+    paystack: !!processors.paystack
+  });
+});
+
+app.get('/api/debug/paystack-health', async (req, res) => {
+  try {
+    if (!paymentProcessors.paystack) {
+      return res.json({
+        success: false,
+        message: 'Paystack not initialized',
+        configured: !!process.env.PAYSTACK_SECRET_KEY
+      });
+    }
+
+    // Test Paystack connection
+    const testResponse = await paymentProcessors.paystack.transaction.list({ 
+      perPage: 1 
+    });
+
+    res.json({
+      success: true,
+      message: 'Paystack is working correctly',
+      data: {
+        configured: true,
+        testSuccessful: true,
+        canListTransactions: testResponse.status
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Paystack health check failed',
+      error: error.message,
+      configured: !!process.env.PAYSTACK_SECRET_KEY
+    });
+  }
+});
+
+app.post('/api/bookings/create-payment-intent', authenticateToken, async (req, res) => {
+  try {
+    const { amount, currency, customerCountry, bookingData } = req.body;
+
+    console.log('💰 Creating REAL payment intent:', { 
+      amount, 
+      currency, 
+      customerCountry,
+      bookingData 
+    });
+
+    const isNigeria = customerCountry === 'NG' || customerCountry === 'Nigeria';
+    const isUK = customerCountry === 'GB' || customerCountry === 'UK';
+    
+    let paymentResult;
+
+// In your Paystack payment creation section:
+if (isNigeria && paymentProcessors.paystack) {
+  try {
+   const paystackPayload = {
+  amount: Math.round(paymentAmount * 100),
+  email: req.user.email || booking.customerId.email,
+  currency: 'NGN',
+  metadata: {
+    bookingId: bookingId,
+    customerId: req.user.id,
+    paymentType: 'escrow'
+  },
+  callback_url: `${process.env.FRONTEND_URL}/customer/payment-status?bookingId=${bookingId}&processor=paystack`
+};
+
+    console.log('📤 Paystack request payload:', paystackPayload);
+
+    const paystackResponse = await paymentProcessors.paystack.transaction.initialize(paystackPayload);
+
+    console.log('📥 Paystack response:', {
+      status: paystackResponse.status,
+      reference: paystackResponse.data?.reference,
+      authorizationUrl: paystackResponse.data?.authorization_url ? 'present' : 'missing'
+    });
+
+    if (!paystackResponse.status) {
+      throw new Error(paystackResponse.message || 'Paystack initialization failed');
+    }
+
+    // VERIFY THE AUTHORIZATION URL IS CORRECT
+    const authorizationUrl = paystackResponse.data.authorization_url;
+    console.log('🔗 Paystack authorization URL:', authorizationUrl);
+    
+    if (!authorizationUrl || !authorizationUrl.includes('checkout.paystack.com')) {
+      console.error('❌ INVALID Paystack authorization URL:', authorizationUrl);
+      throw new Error('Invalid Paystack authorization URL received');
+    }
+
+    paymentResult = {
+      success: true,
+      processor: 'paystack',
+      paymentIntentId: paystackResponse.data.reference,
+      authorizationUrl: authorizationUrl, // Use the exact URL from Paystack
+      accessCode: paystackResponse.data.access_code,
+      amount: paymentAmount,
+      currency: 'NGN',
+      status: 'requires_payment_method'
+    };
+
+    console.log('✅ Paystack payment initialized successfully');
+
+  } catch (paystackError) {
+    console.error('❌ Paystack payment creation failed:', paystackError);
+    throw new Error(`Paystack payment failed: ${paystackError.message}`);
+  }
+} else if ((isUK || !isNigeria) && paymentProcessors.stripe) {
+      // REAL Stripe payment for UK and International
+      const stripeCurrency = isUK ? 'gbp' : 'usd';
+      
+      try {
+        const paymentIntent = await paymentProcessors.stripe.paymentIntents.create({
+          amount: Math.round(amount * 100), // Convert to cents/pence
+          currency: stripeCurrency,
+          capture_method: 'manual', // Hold payment until service completion
+          metadata: {
+            bookingData: JSON.stringify(bookingData),
+            customerId: req.user.id,
+            paymentType: 'escrow',
+            customerCountry: customerCountry
+          },
+          automatic_payment_methods: {
+            enabled: true,
+          },
+        });
+
+        paymentResult = {
+          success: true,
+          processor: 'stripe',
+          paymentIntentId: paymentIntent.id,
+          clientSecret: paymentIntent.client_secret,
+          amount: amount,
+          currency: stripeCurrency.toUpperCase(),
+          status: 'requires_payment_method'
+        };
+
+        console.log('✅ REAL Stripe payment intent created:', paymentIntent.id);
+
+      } catch (stripeError) {
+        console.error('❌ REAL Stripe payment creation failed:', stripeError);
+        throw new Error(`Stripe payment failed: ${stripeError.message}`);
+      }
+    } else {
+      // No REAL payment processors configured
+      return res.status(500).json({
+        success: false,
+        message: 'No payment processors configured for this region',
+        code: 'PAYMENT_PROCESSOR_UNAVAILABLE'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'REAL Payment intent created successfully',
+      data: paymentResult
+    });
+
+  } catch (error) {
+    console.error('❌ REAL Create payment error:', error);
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create REAL payment intent',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error',
+      code: 'PAYMENT_CREATION_FAILED'
+    });
+  }
+});
 app.post('/api/test-body-parsing', (req, res) => {
   console.log('🧪 Body Parsing Test:', {
     body: req.body,
@@ -1354,99 +1599,384 @@ cron.schedule('0 * * * *', async () => {
   }
 });
 
+const determinePaymentProcessor = (customerCountry, providerCountry) => {
+  const isNigeria = customerCountry === 'NG' || providerCountry === 'NG';
+  const isUK = customerCountry === 'GB' || providerCountry === 'GB';
+  
+  // Check available processors
+  const hasStripe = !!paymentProcessors.stripe;
+  const hasPaystack = !!paymentProcessors.paystack;
+  
+  console.log('🔍 Payment Processor Availability:', { hasStripe, hasPaystack, isNigeria, isUK });
+
+  if (isNigeria && hasPaystack) {
+    return 'paystack';
+  }
+  if ((isUK || !isNigeria) && hasStripe) {
+    return 'stripe';
+  }
+  
+  // Fallback logic
+  if (hasPaystack) return 'paystack';
+  if (hasStripe) return 'stripe';
+  
+  // No processors configured
+  
+};
+
+
 app.post('/api/bookings/:bookingId/create-payment', authenticateToken, async (req, res) => {
   try {
     const { bookingId } = req.params;
-    const { amount, customerCountry = 'NG' } = req.body;
+    const { amount, customerCountry = 'NIGERIA' } = req.body;
 
-    console.log('💰 Creating payment for booking:', { bookingId, amount, customerCountry });
+    console.log('🔍 Payment Creation Debug:', {
+      bookingId,
+      amount,
+      customerCountry,
+      user: req.user.id,
+      body: req.body
+    });
 
-    const booking = await Booking.findById(bookingId);
+    // Input validation
+    if (!bookingId || !mongoose.Types.ObjectId.isValid(bookingId)) {
+      console.log('❌ Invalid booking ID:', bookingId);
+      return res.status(400).json({
+        success: false,
+        message: 'Valid booking ID is required',
+        code: 'INVALID_BOOKING_ID'
+      });
+    }
+
+    if (!amount || isNaN(amount) || amount <= 0) {
+      console.log('❌ Invalid amount:', amount);
+      return res.status(400).json({
+        success: false,
+        message: 'Valid payment amount is required',
+        code: 'INVALID_AMOUNT'
+      });
+    }
+
+    // Find booking with better error handling
+    const booking = await Booking.findById(bookingId).populate('customerId', 'email');
     if (!booking) {
+      console.log('❌ Booking not found:', bookingId);
       return res.status(404).json({
         success: false,
-        message: 'Booking not found'
+        message: 'Booking not found',
+        code: 'BOOKING_NOT_FOUND'
       });
     }
 
-    // Check if user is the customer for this booking
-    if (booking.customerId.toString() !== req.user.id) {
+    console.log('✅ Booking found:', {
+      bookingId: booking._id,
+      customerId: booking.customerId?._id,
+      currentUserId: req.user.id,
+      bookingStatus: booking.status,
+      existingPayment: booking.payment
+    });
+
+    // Check authorization
+    if (booking.customerId._id.toString() !== req.user.id) {
+      console.log('❌ Authorization failed:', {
+        bookingCustomer: booking.customerId._id.toString(),
+        currentUser: req.user.id
+      });
       return res.status(403).json({
         success: false,
-        message: 'Not authorized to pay for this booking'
+        message: 'Not authorized to pay for this booking',
+        code: 'UNAUTHORIZED_PAYMENT'
       });
     }
 
-    // Use the booking amount if not provided
-    const paymentAmount = amount || booking.price || booking.amount || 100;
+    console.log('✅ Authorization passed, proceeding with payment...');
 
-    // Determine payment processor based on country
-    const isNigeria = customerCountry === 'NG' || customerCountry === 'Nigeria';
-    const isUK = customerCountry === 'GB' || customerCountry === 'UK';
+    // Check if booking already has an active payment
+    if (booking.payment && booking.payment.status === 'requires_payment_method') {
+      console.log('⚠️ Payment already initiated for booking:', {
+        paymentIntentId: booking.payment.paymentIntentId,
+        processor: booking.payment.processor,
+        status: booking.payment.status
+      });
 
-    let paymentResult;
-    let processor = 'paystack'; // Default to paystack
+      // If it's a Paystack payment, we need to get the authorization URL
+      if (booking.payment.processor === 'paystack') {
+        console.log('🔄 Getting Paystack authorization URL for existing payment...');
+        
+        // For Paystack, we need to reconstruct the authorization URL
+        // OR fetch it from Paystack API if we stored it
+        const authorizationUrl = booking.payment.authorizationUrl || 
+          `https://paystack.com/pay/${booking.payment.paymentIntentId}`;
+        
+        return res.json({
+          success: true,
+          message: 'Payment already initiated',
+          data: {
+            processor: 'paystack',
+            paymentIntentId: booking.payment.paymentIntentId,
+            authorizationUrl: authorizationUrl,
+            amount: booking.payment.amount,
+            currency: booking.payment.currency,
+            status: booking.payment.status,
+            existingPayment: true // Flag to indicate this is an existing payment
+          }
+        });
+      }
 
-    if (isNigeria && process.env.PAYSTACK_SECRET_KEY) {
-      // Use Paystack for Nigeria
-      console.log('🇳🇬 Using Paystack for Nigerian customer');
-      processor = 'paystack';
-      
-      paymentResult = {
-        success: true,
-        processor: processor,
-        paymentIntentId: `paystack_${Date.now()}`,
-        authorizationUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment-verify?reference=test_${Date.now()}`,
-        amount: paymentAmount,
-        currency: 'NGN',
-        status: 'requires_payment_method'
-      };
-
-    } else if ((isUK || !isNigeria) && process.env.STRIPE_SECRET_KEY) {
-      // Use Stripe for UK and other countries
-      console.log('🌍 Using Stripe for international customer');
-      processor = 'stripe';
-      
-      paymentResult = {
-        success: true,
-        processor: processor,
-        paymentIntentId: `stripe_${Date.now()}`,
-        clientSecret: `pi_${Date.now()}_secret`,
-        amount: paymentAmount,
-        currency: isUK ? 'GBP' : 'USD',
-        status: 'requires_payment_method'
-      };
-
-    } else {
-      // Simulation mode - use paystack as fallback instead of simulation
-      console.log('💳 Simulation mode - using paystack as fallback');
-      processor = 'paystack';
-      
-      paymentResult = {
-        success: true,
-        processor: processor,
-        paymentIntentId: `sim_${Date.now()}`,
-        authorizationUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment-verify?reference=sim_${Date.now()}`,
-        amount: paymentAmount,
-        currency: 'NGN',
-        status: 'requires_payment_method',
-        simulated: true
-      };
+      // For Stripe, return the existing payment details
+      if (booking.payment.processor === 'stripe') {
+        return res.json({
+          success: true,
+          message: 'Payment already initiated',
+          data: {
+            processor: 'stripe',
+            paymentIntentId: booking.payment.paymentIntentId,
+            clientSecret: booking.payment.clientSecret, // Make sure this is stored
+            amount: booking.payment.amount,
+            currency: booking.payment.currency,
+            status: booking.payment.status,
+            existingPayment: true
+          }
+        });
+      }
     }
 
-    // Update booking with payment info - USE VALID ENUM VALUES
+    const paymentAmount = parseFloat(amount);
+    const bookingAmount = booking.price || booking.amount;
+    
+    // Validate payment amount against booking amount with tolerance
+    if (bookingAmount && Math.abs(paymentAmount - bookingAmount) > 0.01) {
+      console.log('⚠️ Payment amount differs from booking amount:', {
+        paymentAmount,
+        bookingAmount,
+        difference: Math.abs(paymentAmount - bookingAmount)
+      });
+    }
+
+    // Convert country name to code
+    const getCountryCode = (country) => {
+      if (!country) return 'NG';
+      
+      const countryMap = {
+        'nigeria': 'NG',
+        'ng': 'NG',
+        'united kingdom': 'GB',
+        'uk': 'GB',
+        'gb': 'GB',
+        'united states': 'US',
+        'usa': 'US',
+        'us': 'US'
+      };
+      
+      return countryMap[country.toLowerCase()] || 'NG';
+    };
+
+    const countryCode = getCountryCode(customerCountry);
+    
+    console.log('🌍 Country processing:', {
+      received: customerCountry,
+      processed: countryCode
+    });
+
+    // Now use countryCode instead of customerCountry in payment logic
+    const isNigeria = countryCode === 'NG';
+    const isUK = countryCode === 'GB';
+    
+    console.log('💰 Processing payment:', {
+      paymentAmount,
+      originalCountry: customerCountry,
+      processedCountryCode: countryCode,
+      isNigeria,
+      isUK,
+      userEmail: req.user.email
+    });
+
+    let paymentResult;
+
+    if (isNigeria) {
+      // PAYSTACK PAYMENT (Nigeria)
+      console.log('🌍 Using Paystack for Nigerian customer');
+      
+      if (!paymentProcessors.paystack) {
+        console.log('❌ Paystack processor not configured');
+        return res.status(503).json({
+          success: false,
+          message: 'Paystack payment processor is not configured',
+          code: 'PAYMENT_PROCESSOR_UNAVAILABLE'
+        });
+      }
+
+      try {
+const paystackPayload = {
+  amount: Math.round(paymentAmount * 100),
+  email: req.user.email || booking.customerId.email,
+  currency: 'NGN',
+  metadata: {
+    bookingId: bookingId,
+    customerId: req.user.id,
+    paymentType: 'escrow'
+  },
+  callback_url: `${process.env.FRONTEND_URL}/customer/payment-status?bookingId=${bookingId}&processor=paystack`
+};
+
+        console.log('📤 Paystack request payload:', paystackPayload);
+
+        const paystackResponse = await paymentProcessors.paystack.transaction.initialize(paystackPayload);
+
+        console.log('📥 Paystack response:', {
+          status: paystackResponse.status,
+          reference: paystackResponse.data?.reference,
+          authorizationUrl: paystackResponse.data?.authorization_url ? 'present' : 'missing'
+        });
+
+        if (!paystackResponse.status) {
+          throw new Error(paystackResponse.message || 'Paystack initialization failed');
+        }
+
+        paymentResult = {
+          success: true,
+          processor: 'paystack',
+          paymentIntentId: paystackResponse.data.reference,
+          authorizationUrl: paystackResponse.data.authorization_url,
+          accessCode: paystackResponse.data.access_code,
+          amount: paymentAmount,
+          currency: 'NGN',
+          status: 'requires_payment_method',
+          existingPayment: false
+        };
+
+        console.log('✅ Paystack payment initialized successfully:', paystackResponse.data.reference);
+
+      } catch (paystackError) {
+        console.error('❌ Paystack payment creation failed:', {
+          error: paystackError.message,
+          stack: paystackError.stack,
+          response: paystackError.response?.data
+        });
+        return res.status(502).json({
+          success: false,
+          message: 'Paystack payment service unavailable',
+          error: process.env.NODE_ENV === 'development' ? paystackError.message : undefined,
+          code: 'PAYSTACK_SERVICE_ERROR'
+        });
+      }
+
+    } else {
+      // STRIPE PAYMENT (International)
+      console.log('🌍 Using Stripe for international customer:', { 
+        originalCountry: customerCountry,
+        countryCode,
+        isUK 
+      });
+      
+      if (!paymentProcessors.stripe) {
+        console.log('❌ Stripe processor not configured');
+        return res.status(503).json({
+          success: false,
+          message: 'Stripe payment processor is not configured',
+          code: 'PAYMENT_PROCESSOR_UNAVAILABLE'
+        });
+      }
+
+      const currency = isUK ? 'gbp' : 'usd';
+      
+      try {
+        const stripePayload = {
+          amount: Math.round(paymentAmount * 100), // Convert to cents/pence
+          currency: currency,
+          capture_method: 'manual', // Hold payment until service completion
+          metadata: {
+            bookingId: bookingId,
+            customerId: req.user.id,
+            paymentType: 'escrow',
+            originalCountry: customerCountry,
+            processedCountryCode: countryCode,
+            timestamp: new Date().toISOString()
+          },
+          automatic_payment_methods: {
+            enabled: true,
+          },
+          description: `Payment for booking ${bookingId}`,
+        };
+
+        console.log('📤 Stripe request payload:', stripePayload);
+
+        const paymentIntent = await paymentProcessors.stripe.paymentIntents.create(stripePayload);
+
+        console.log('📥 Stripe response:', {
+          id: paymentIntent.id,
+          status: paymentIntent.status,
+          clientSecret: paymentIntent.client_secret ? 'present' : 'missing'
+        });
+
+        paymentResult = {
+          success: true,
+          processor: 'stripe',
+          paymentIntentId: paymentIntent.id,
+          clientSecret: paymentIntent.client_secret,
+          amount: paymentAmount,
+          currency: currency.toUpperCase(),
+          status: paymentIntent.status,
+          existingPayment: false
+        };
+
+        console.log('✅ Stripe payment intent created successfully:', paymentIntent.id);
+
+      } catch (stripeError) {
+        console.error('❌ Stripe payment creation failed:', {
+          error: stripeError.message,
+          stack: stripeError.stack,
+          type: stripeError.type,
+          code: stripeError.code
+        });
+        return res.status(502).json({
+          success: false,
+          message: 'Stripe payment service unavailable',
+          error: process.env.NODE_ENV === 'development' ? stripeError.message : undefined,
+          code: 'STRIPE_SERVICE_ERROR'
+        });
+      }
+    }
+
+    // Update booking with payment info
+    console.log('💾 Updating booking with payment information...');
+    
     booking.payment = {
-      processor: processor, // This will be 'paystack' or 'stripe' - both valid enum values
+      processor: isNigeria ? 'paystack' : 'stripe',
       paymentIntentId: paymentResult.paymentIntentId,
       amount: paymentResult.amount,
       currency: paymentResult.currency,
       status: paymentResult.status,
-      autoRefundAt: new Date(Date.now() + 4 * 60 * 60 * 1000) // 4 hours from now
+      initiatedAt: new Date(),
+      autoRefundAt: new Date(Date.now() + 4 * 60 * 60 * 1000), // 4 hours from now
+      originalCountry: customerCountry,
+      processedCountryCode: countryCode,
+      authorizationUrl: paymentResult.authorizationUrl,
+      clientSecret: paymentResult.clientSecret
     };
+
+    // Add payment history entry
+    booking.paymentHistory = booking.paymentHistory || [];
+    booking.paymentHistory.push({
+      action: 'payment_initiated',
+      processor: booking.payment.processor,
+      paymentIntentId: paymentResult.paymentIntentId,
+      amount: paymentResult.amount,
+      currency: paymentResult.currency,
+      status: paymentResult.status,
+      originalCountry: customerCountry,
+      processedCountryCode: countryCode,
+      timestamp: new Date()
+    });
 
     await booking.save();
 
-    console.log('✅ Payment intent created for booking:', bookingId);
+    console.log('✅ Booking updated successfully with payment info:', {
+      bookingId: booking._id,
+      paymentIntentId: paymentResult.paymentIntentId,
+      processor: booking.payment.processor,
+      countryCode: countryCode
+    });
 
     res.json({
       success: true,
@@ -1455,32 +1985,45 @@ app.post('/api/bookings/:bookingId/create-payment', authenticateToken, async (re
     });
 
   } catch (error) {
-    console.error('❌ Create payment error:', error);
+    console.error('❌ Create payment error details:', {
+      error: error.message,
+      stack: error.stack,
+      bookingId: req.params.bookingId,
+      user: req.user.id,
+      timestamp: new Date().toISOString()
+    });
     
+    // Handle specific error types
+    if (error.name === 'CastError') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid booking ID format',
+        code: 'INVALID_BOOKING_ID'
+      });
+    }
+
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation error',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        code: 'VALIDATION_ERROR'
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: 'Failed to create payment intent',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      code: 'PAYMENT_CREATION_FAILED'
     });
   }
 });
 
-
-
-
-app.post('/api/bookings/:bookingId/confirm-payment', authenticateToken, async (req, res) => {
+app.get('/api/bookings/:bookingId/payment-url', authenticateToken, async (req, res) => {
   try {
     const { bookingId } = req.params;
-    const { paymentMethodId, paymentIntentId, processor = 'paystack' } = req.body;
 
-    console.log('💰 Confirming payment for booking:', { 
-      bookingId, 
-      paymentMethodId, 
-      paymentIntentId,
-      processor 
-    });
-
-    // Find the booking
     const booking = await Booking.findById(bookingId);
     if (!booking) {
       return res.status(404).json({
@@ -1489,92 +2032,478 @@ app.post('/api/bookings/:bookingId/confirm-payment', authenticateToken, async (r
       });
     }
 
-    // Check if user is authorized
     if (booking.customerId.toString() !== req.user.id) {
       return res.status(403).json({
         success: false,
-        message: 'Not authorized to confirm payment for this booking'
+        message: 'Not authorized to view this payment'
       });
     }
 
-    // SIMULATE PAYMENT CONFIRMATION (Replace with real processor logic)
-    console.log('🔧 Simulating payment confirmation...');
+    if (!booking.payment) {
+      return res.status(404).json({
+        success: false,
+        message: 'No payment found for this booking'
+      });
+    }
+
+    // For Paystack, use the correct URL format
+    if (booking.payment.processor === 'paystack' && booking.payment.paymentIntentId) {
+      // If we stored the authorization URL, use it
+      if (booking.payment.authorizationUrl) {
+        return res.json({
+          success: true,
+          data: {
+            authorizationUrl: booking.payment.authorizationUrl,
+            paymentIntentId: booking.payment.paymentIntentId,
+            amount: booking.payment.amount,
+            currency: booking.payment.currency,
+            status: booking.payment.status
+          }
+        });
+      }
+      
+      // Otherwise, construct the correct Paystack URL
+      const authorizationUrl = `https://checkout.paystack.com/${paymentResult.data.access_code}`;
+
+      if (!authorizationUrl.includes('checkout.paystack.com')) {
+  console.error('Invalid Paystack URL:', authorizationUrl);
+  alert('Invalid payment URL. Please try again.');
+  return;
+}
+      
+      console.log('🔗 Constructed Paystack URL:', authorizationUrl);
+      
+      return res.json({
+        success: true,
+        data: {
+          authorizationUrl: authorizationUrl,
+          paymentIntentId: booking.payment.paymentIntentId,
+          amount: booking.payment.amount,
+          currency: booking.payment.currency,
+          status: booking.payment.status
+        }
+      });
+    }
+
+    res.status(400).json({
+      success: false,
+      message: 'Unable to generate payment URL'
+    });
+
+  } catch (error) {
+    console.error('Get payment URL error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get payment URL'
+    });
+  }
+});
+
+app.post('/api/debug/test-paystack-direct', async (req, res) => {
+  try {
+    const { amount, email } = req.body;
     
-    // Update booking with payment info
-    booking.payment = {
-      processor: processor,
-      paymentIntentId: paymentIntentId || `pay_${Date.now()}`,
-      amount: booking.payment?.amount || 100,
-      currency: booking.payment?.currency || 'NGN',
-      status: 'held',
-      heldAt: new Date(),
-      autoRefundAt: new Date(Date.now() + 4 * 60 * 60 * 1000) // 4 hours
+    if (!paymentProcessors.paystack) {
+      return res.status(400).json({
+        success: false,
+        message: 'Paystack not initialized'
+      });
+    }
+
+    const testPayload = {
+      amount: Math.round((amount || 10000)), // 100 NGN
+      email: email || 'test@example.com',
+      currency: 'NGN',
+      callback_url: `${process.env.FRONTEND_URL}/payment-verify`
     };
 
-    booking.status = 'confirmed';
-    
-    // Save the booking
-    await booking.save();
-    
-    console.log('✅ Payment confirmed and booking updated:', bookingId);
+    console.log('🧪 Testing Paystack directly with:', testPayload);
 
-    // Send notifications
-    try {
-      await Notification.createNotification({
-        userId: booking.providerId,
-        type: 'payment_received',
-        title: 'Payment Received!',
-        message: `A customer has made a payment of ${booking.payment.currency}${booking.payment.amount} for your ${booking.serviceType} service`,
-        relatedId: booking._id,
-        relatedType: 'booking',
-        priority: 'high'
-      });
+    const response = await paymentProcessors.paystack.transaction.initialize(testPayload);
 
-      await Notification.createNotification({
-        userId: booking.customerId,
-        type: 'payment_confirmed',
-        title: 'Payment Confirmed!',
-        message: `Your payment of ${booking.payment.currency}${booking.payment.amount} has been confirmed. The provider has been notified.`,
-        relatedId: booking._id,
-        relatedType: 'booking',
-        priority: 'high'
+    console.log('🔍 FULL PAYSTACK RESPONSE:', JSON.stringify(response, null, 2));
+
+    res.json({
+      success: true,
+      data: {
+        status: response.status,
+        message: response.message,
+        authorization_url: response.data?.authorization_url,
+        reference: response.data?.reference,
+        access_code: response.data?.access_code,
+        full_response: response
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Direct Paystack test failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      response: error.response?.data
+    });
+  }
+});
+
+// Add this debug endpoint to reset payment
+app.delete('/api/debug/bookings/:bookingId/reset-payment', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
       });
-    } catch (notificationError) {
-      console.error('⚠️ Notification error (non-critical):', notificationError);
     }
+
+    // Reset payment
+    booking.payment = undefined;
+    await booking.save();
+
+    res.json({
+      success: true,
+      message: 'Payment reset successfully'
+    });
+
+  } catch (error) {
+    console.error('Reset payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reset payment'
+    });
+  }
+});
+
+app.get('/api/bookings/:bookingId/payment-details', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Check authorization
+    if (booking.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to view this payment'
+      });
+    }
+
+    if (!booking.payment) {
+      return res.status(404).json({
+        success: false,
+        message: 'No payment found for this booking'
+      });
+    }
+
+    // For Stripe, get updated payment intent details
+    if (booking.payment.processor === 'stripe' && booking.payment.paymentIntentId) {
+      try {
+        const paymentIntent = await paymentProcessors.stripe.paymentIntents.retrieve(
+          booking.payment.paymentIntentId
+        );
+        
+        // Update booking payment status if needed
+        if (paymentIntent.status !== booking.payment.status) {
+          booking.payment.status = paymentIntent.status;
+          await booking.save();
+        }
+
+        res.json({
+          success: true,
+          data: {
+            ...booking.payment.toObject(),
+            clientSecret: paymentIntent.client_secret,
+            status: paymentIntent.status
+          }
+        });
+        return;
+      } catch (stripeError) {
+        console.error('Stripe retrieval error:', stripeError);
+      }
+    }
+
+    // For Paystack or if Stripe retrieval fails, return existing payment data
+    res.json({
+      success: true,
+      data: booking.payment
+    });
+
+  } catch (error) {
+    console.error('Get payment details error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get payment details'
+    });
+  }
+});
+
+app.post('/api/bookings/:bookingId/confirm-payment', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const { paymentMethodId, processor = 'stripe' } = req.body;
+
+    console.log('💰 Confirming payment for booking:', { 
+      bookingId, 
+      paymentMethodId,
+      processor 
+    });
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (!booking.payment) {
+      return res.status(400).json({
+        success: false,
+        message: 'No payment found for this booking'
+      });
+    }
+
+    let paymentResult;
+
+    if (processor === 'stripe' && paymentProcessors.stripe && paymentMethodId) {
+      try {
+        console.log('🔐 Confirming Stripe payment with payment method:', paymentMethodId);
+        
+        // Confirm the payment intent with the payment method
+        const paymentIntent = await paymentProcessors.stripe.paymentIntents.confirm(
+          booking.payment.paymentIntentId,
+          {
+            payment_method: paymentMethodId,
+            return_url: `${process.env.FRONTEND_URL}/payment-success?bookingId=${bookingId}`
+          }
+        );
+
+        console.log('✅ Stripe payment intent status:', paymentIntent.status);
+
+        if (paymentIntent.status === 'requires_capture' || paymentIntent.status === 'succeeded') {
+          // Payment is held successfully
+          booking.payment.status = 'held';
+          booking.payment.heldAt = new Date();
+          booking.status = 'confirmed';
+          await booking.save();
+
+          paymentResult = {
+            success: true,
+            paymentStatus: 'held',
+            clientSecret: paymentIntent.client_secret,
+            requiresAction: paymentIntent.status === 'requires_action',
+            nextAction: paymentIntent.next_action
+          };
+
+          console.log('✅ Stripe payment confirmed and held');
+
+        } else if (paymentIntent.status === 'requires_action') {
+          // 3D Secure required
+          paymentResult = {
+            success: true,
+            paymentStatus: 'requires_action',
+            clientSecret: paymentIntent.client_secret,
+            requiresAction: true,
+            nextAction: paymentIntent.next_action
+          };
+
+          console.log('⚠️ Stripe payment requires 3D Secure');
+        } else {
+          throw new Error(`Unexpected payment status: ${paymentIntent.status}`);
+        }
+
+      } catch (stripeError) {
+        console.error('❌ Stripe confirmation error:', stripeError);
+        throw new Error(`Stripe payment failed: ${stripeError.message}`);
+      }
+
+    } else if (processor === 'paystack') {
+      // For Paystack, payment is confirmed via webhook/callback
+      // The webhook will update the status
+      paymentResult = {
+        success: true,
+        paymentStatus: 'pending_verification',
+        message: 'Payment pending verification via webhook'
+      };
+
+      console.log('✅ Paystack payment confirmation initiated');
+
+    } else {
+      throw new Error('Invalid payment processor or missing payment method');
+    }
+
+    // Send notification to provider
+    await Notification.createNotification({
+      userId: booking.providerId,
+      type: 'payment_received',
+      title: 'Payment Received!',
+      message: `A customer has made a payment of ${booking.payment.currency}${booking.payment.amount} for your ${booking.serviceType} service`,
+      relatedId: booking._id,
+      relatedType: 'booking',
+      priority: 'high'
+    });
 
     res.json({
       success: true,
       message: 'Payment confirmed successfully',
       data: {
         booking: booking,
-        paymentStatus: 'held'
+        ...paymentResult
       }
     });
 
   } catch (error) {
     console.error('❌ Confirm payment error:', error);
     
-    // More detailed error information
-    let errorMessage = 'Failed to confirm payment';
-    let statusCode = 500;
-    
-    if (error.name === 'ValidationError') {
-      errorMessage = 'Invalid booking data: ' + Object.values(error.errors).map(e => e.message).join(', ');
-      statusCode = 400;
-    } else if (error.name === 'CastError') {
-      errorMessage = 'Invalid booking ID';
-      statusCode = 400;
-    }
-
-    res.status(statusCode).json({
+    res.status(500).json({
       success: false,
-      message: errorMessage,
+      message: 'Failed to confirm payment',
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error',
-      ...(process.env.NODE_ENV === 'development' && { stack: error.stack })
+      code: 'PAYMENT_CONFIRMATION_FAILED'
     });
   }
 });
+
+app.post('/api/payments/paystack-webhook', async (req, res) => {
+  try {
+    const signature = req.headers['x-paystack-signature'];
+    
+    if (!signature) {
+      return res.status(400).send('No signature');
+    }
+
+    // Verify webhook signature
+    const crypto = require('crypto');
+    const hash = crypto.createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
+                      .update(JSON.stringify(req.body))
+                      .digest('hex');
+    
+    if (hash !== signature) {
+      return res.status(400).send('Invalid signature');
+    }
+
+    const event = req.body;
+    console.log('🔔 Paystack webhook received:', event.event);
+
+    if (event.event === 'charge.success') {
+      const { reference, amount, customer } = event.data;
+      
+      // Find booking by Paystack reference
+      const booking = await Booking.findOne({
+        'payment.paymentIntentId': reference
+      });
+
+      if (booking) {
+        // Update booking payment status
+        booking.payment.status = 'held';
+        booking.payment.heldAt = new Date();
+        booking.status = 'confirmed';
+        await booking.save();
+
+        // Send notification to provider
+        await Notification.createNotification({
+          userId: booking.providerId,
+          type: 'payment_received',
+          title: 'Payment Received!',
+          message: `A customer has made a payment of ${booking.payment.currency}${booking.payment.amount} for your ${booking.serviceType} service`,
+          relatedId: booking._id,
+          relatedType: 'booking',
+          priority: 'high'
+        });
+
+        console.log('✅ Paystack payment verified and booking updated');
+      }
+    }
+
+    res.sendStatus(200);
+  } catch (error) {
+    console.error('❌ Paystack webhook error:', error);
+    res.status(500).send('Webhook error');
+  }
+});
+
+
+
+app.post('/api/bookings/:bookingId/paystack-payment', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const { amount, email } = req.body;
+
+    console.log('🇳🇬 Initializing Paystack payment for booking:', bookingId);
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (!process.env.PAYSTACK_SECRET_KEY) {
+      return res.status(400).json({
+        success: false,
+        message: 'Paystack is not configured'
+      });
+    }
+
+    const Paystack = require('paystack')(process.env.PAYSTACK_SECRET_KEY);
+    
+    const paystackResponse = await Paystack.transaction.initialize({
+      amount: Math.round(amount * 100), // Convert to kobo
+      email: email,
+      currency: 'NGN',
+      metadata: {
+        bookingId: bookingId,
+        customerId: req.user.id,
+        paymentType: 'escrow'
+      },
+      callback_url: `${process.env.FRONTEND_URL}/payment-verify?bookingId=${bookingId}`
+    });
+
+    if (!paystackResponse.status) {
+      throw new Error('Paystack initialization failed');
+    }
+
+    // Update booking with Paystack reference
+    booking.payment = {
+      processor: 'paystack',
+      paymentIntentId: paystackResponse.data.reference,
+      amount: amount,
+      currency: 'NGN',
+      status: 'requires_payment_method',
+      autoRefundAt: new Date(Date.now() + 4 * 60 * 60 * 1000)
+    };
+    await booking.save();
+
+    console.log('✅ Paystack payment initialized');
+
+    res.json({
+      success: true,
+      message: 'Paystack payment initialized',
+      data: {
+        authorizationUrl: paystackResponse.data.authorization_url,
+        reference: paystackResponse.data.reference
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Paystack payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to initialize Paystack payment',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
 
 app.get('/api/bookings/:bookingId/payment-status', authenticateToken, async (req, res) => {
   try {
@@ -1616,44 +2545,224 @@ app.get('/api/bookings/:bookingId/payment-status', authenticateToken, async (req
 
 app.get('/api/payments/verify-paystack', async (req, res) => {
   try {
-    const { reference, trxref } = req.query;
+    const { reference, trxref, bookingId } = req.query;
     
-    console.log('🔍 Verifying Paystack payment:', { reference, trxref });
+    console.log('🔍 Verifying Paystack payment:', { reference, trxref, bookingId });
 
     const paymentReference = reference || trxref;
     
     if (!paymentReference) {
-      return res.redirect(`${process.env.FRONTEND_URL}/payment-failed?error=missing_reference`);
+      return res.redirect(`${process.env.FRONTEND_URL}/customer/payment-status?status=failed&error=missing_reference`);
     }
 
-    // In production, you would verify with Paystack API
-    // const verification = await paystack.transaction.verify(paymentReference);
-    
-    // For now, we'll simulate successful verification
-    console.log('✅ Payment verified successfully (simulated)');
-
-    // Find booking by payment reference
-    const booking = await Booking.findOne({
-      'payment.paymentIntentId': paymentReference
-    });
-
-    if (booking) {
-      booking.payment.status = 'held';
-      booking.payment.heldAt = new Date();
-      booking.status = 'confirmed';
-      await booking.save();
-
-      console.log('✅ Booking updated with confirmed payment');
+    if (!paymentProcessors.paystack) {
+      console.log('❌ Paystack not configured');
+      return res.redirect(`${process.env.FRONTEND_URL}/customer/payment-status?status=failed&error=paystack_not_configured`);
     }
 
-    // Redirect to success page
-    res.redirect(`${process.env.FRONTEND_URL}/payment-success?bookingId=${booking?._id}`);
+    const verification = await paymentProcessors.paystack.transaction.verify(paymentReference);
+
+    if (verification.data.status === 'success') {
+      // Find booking by payment reference
+      const booking = await Booking.findOne({
+        'payment.paymentIntentId': paymentReference
+      });
+
+      if (booking) {
+        booking.payment.status = 'held';
+        booking.payment.heldAt = new Date();
+        booking.status = 'confirmed';
+        await booking.save();
+
+        // Send notification to provider
+        await Notification.createNotification({
+          userId: booking.providerId,
+          type: 'payment_received',
+          title: 'Payment Received!',
+          message: `A customer has made a payment of ${booking.payment.currency}${booking.payment.amount} for your ${booking.serviceType} service`,
+          relatedId: booking._id,
+          relatedType: 'booking',
+          priority: 'high'
+        });
+
+        console.log('✅ Paystack payment verified and booking updated');
+      }
+
+      // Redirect to payment status page with success
+      res.redirect(`${process.env.FRONTEND_URL}/customer/payment-status?status=success&bookingId=${booking?._id}&reference=${paymentReference}`);
+    } else {
+      console.log('❌ Paystack payment verification failed');
+      res.redirect(`${process.env.FRONTEND_URL}/customer/payment-status?status=failed&error=verification_failed&reference=${paymentReference}`);
+    }
 
   } catch (error) {
     console.error('Paystack verification error:', error);
-    res.redirect(`${process.env.FRONTEND_URL}/payment-failed?error=verification_failed`);
+    res.redirect(`${process.env.FRONTEND_URL}/customer/payment-status?status=failed&error=verification_error`);
   }
 });
+
+
+
+const handlePaymentSuccess = async (bookingId) => {
+  console.log('💰 Processing payment for booking:', bookingId);
+  
+  try {
+    const token = localStorage.getItem('authToken');
+    if (!token) {
+      throw new Error('Authentication required');
+    }
+
+    // Get user data to determine country
+    const userData = JSON.parse(localStorage.getItem('userData') || '{}');
+    const userCountry = userData.country || 'NG';
+
+    // Get booking to determine provider country (you might need to fetch this)
+    const bookingResponse = await fetch(`${API_BASE_URL}/api/bookings/${bookingId}`, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+    });
+    
+    const bookingData = await bookingResponse.json();
+    const providerCountry = bookingData.data?.providerCountry || 'NG';
+
+    // Show payment modal with country information
+    setSelectedBookingForPayment(bookingData.data);
+    setShowPaymentModal(true);
+
+  } catch (error) {
+    console.error('❌ Payment initialization error:', error);
+    alert('Failed to initialize payment: ' + error.message);
+  }
+};
+
+
+app.post('/api/payments/create-payment-intent', authenticateToken, async (req, res) => {
+  try {
+    const { amount, currency = 'usd', bookingId, customerId } = req.body;
+
+    if (!amount || !bookingId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Amount and booking ID are required'
+      });
+    }
+
+    // Validate booking exists and user has permission
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to pay for this booking'
+      });
+    }
+
+    // Create Stripe payment intent
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(amount * 100), // Convert to cents
+      currency: currency.toLowerCase(),
+      metadata: {
+        bookingId: bookingId,
+        customerId: req.user.id,
+        paymentType: 'escrow'
+      },
+      automatic_payment_methods: {
+        enabled: true,
+      },
+    });
+
+    // Update booking with payment info
+    booking.payment = {
+      processor: 'stripe',
+      paymentIntentId: paymentIntent.id,
+      amount: amount,
+      currency: currency.toUpperCase(),
+      status: 'requires_payment_method'
+    };
+
+    await booking.save();
+
+    res.json({
+      success: true,
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id
+    });
+
+  } catch (error) {
+    console.error('Create payment intent error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create payment intent'
+    });
+  }
+});
+
+app.post('/api/payments/confirm-stripe-payment', authenticateToken, async (req, res) => {
+  try {
+    const { paymentIntentId, bookingId } = req.body;
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Verify payment intent
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+
+    if (paymentIntent.status === 'succeeded') {
+      // Payment successful - update booking
+      booking.payment.status = 'held';
+      booking.payment.heldAt = new Date();
+      booking.status = 'confirmed';
+      
+      await booking.save();
+
+      // Send notification to provider
+      await Notification.createNotification({
+        userId: booking.providerId,
+        type: 'payment_received',
+        title: 'Payment Received!',
+        message: `A customer has made a payment of ${booking.payment.currency}${booking.payment.amount} for your service`,
+        relatedId: booking._id,
+        relatedType: 'booking',
+        priority: 'high'
+      });
+
+      res.json({
+        success: true,
+        message: 'Payment confirmed successfully',
+        data: {
+          booking: booking,
+          paymentStatus: 'held'
+        }
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        message: `Payment not completed. Status: ${paymentIntent.status}`
+      });
+    }
+
+  } catch (error) {
+    console.error('Confirm payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to confirm payment'
+    });
+  }
+});
+
+
 
 //NIN
 app.post('/api/auth/verify-identity', authenticateToken, upload.single('nepaBill'), async (req, res) => {
@@ -3761,14 +4870,8 @@ const sendBookingNotification = async (bookingData, providerEmail) => {
 // Then in your booking endpoint, update the email sending part:
 if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
   try {
-    // Check if providerId is defined before using it
-    if (!providerId) {
-      console.log('⚠️ providerId not available for email notification');
-      
-    }
-    
-    const providerUser = await User.findById(providerId);
-    if (providerUser && providerUser.email) {
+    // Make sure we have the provider information
+    if (provider && provider.email) {
       const emailResult = await sendBookingNotification({
         serviceType,
         description,
@@ -3777,12 +4880,14 @@ if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
         budget,
         contactInfo,
         specialRequests
-      }, providerUser.email);
+      }, provider.email);
       
       if (!emailResult.success) {
         console.log('⚠️ Email notification failed but booking was created');
         console.log('⚠️ Email error:', emailResult.error);
       }
+    } else {
+      console.log('⚠️ Provider email not available for notification');
     }
   } catch (emailError) {
     console.error('⚠️ Email notification failed (non-critical):', emailError);
@@ -3790,8 +4895,6 @@ if (process.env.EMAIL_USER && process.env.EMAIL_PASSWORD) {
 } else {
   console.log('📧 Email service not configured, skipping notification');
 }
-
-
 
 
 app.post('/api/debug/test-email', async (req, res) => {
@@ -9642,22 +10745,30 @@ app.get('/api/debug/booking/:id', authenticateToken, async (req, res) => {
   try {
     const booking = await Booking.findById(req.params.id);
     if (!booking) {
-      return res.status(404).json({ success: false, message: 'Booking not found' });
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
     }
     
     res.json({
       success: true,
       data: {
         booking,
-        canConfirm: booking.customerId.toString() === req.user.id,
-        currentStatus: booking.status,
-        hasPayment: !!booking.payment
+        exists: true,
+        customerId: booking.customerId,
+        currentUserId: req.user.id,
+        isAuthorized: booking.customerId.toString() === req.user.id
       }
     });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
   }
 });
+
 
 
 async function sendBookingConfirmationEmail(booking, customerEmail) {
