@@ -4,6 +4,7 @@ import User from '../models/User.js';
 import Gallery from '../models/Gallery.js';
 import Rating from '../models/Rating.js';
 import Booking from '../models/Booking.js';
+import mongoose from 'mongoose';
 
 const router = express.Router();
 
@@ -11,7 +12,6 @@ const router = express.Router();
 router.get('/:id', async (req, res) => {
   try {
     const providerId = req.params.id;
-    
     console.log('👤 Fetching provider profile:', providerId);
 
     const provider = await User.findById(providerId)
