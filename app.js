@@ -1976,20 +1976,13 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
 
 const corsOptions = {
   origin: function (origin, callback) {
-    const allowedOrigins = [
-      'https://homeheroes.help',
-      'https://www.homeheroes.help',
-      'http://localhost:5173',
-      'http://localhost:5174'
-    ];
-    
-    // Allow requests with no origin (like mobile apps or server-to-server)
+    // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
-    if (allowedOrigins.includes(origin)) {
+    if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
-      console.log('🚫 CORS blocked origin:', origin);
+      console.log('CORS blocked origin:', origin);
       callback(new Error('Not allowed by CORS'), false);
     }
   },
@@ -2231,6 +2224,19 @@ app.use(fileUpload({
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+
+app.use((req, res, next) => {
+  console.log('🔍 Request:', req.method, req.url);
+  next();
+});
+
+app.use('/api/auth', authRoutes);
+app.use('/api/verification', verificationRoutes);
+app.use('/api/jobs', jobRoutes);
+app.use('/api/messages', messageRoutes);
+app.use('/api/ratings', ratingRoutes);
+app.use('/api/providers', providerRoutes);
 app.use(cookieParser());
 
 // Serve static files for uploaded images
@@ -2248,10 +2254,34 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use('/api/auth', authRoutes);
-app.use('/api/verification', verificationRoutes);
-app.use('/api/jobs', jobRoutes);
+console.log('🔧 Registering routes...');
 
+
+app.use('/api/auth', authRoutes);
+console.log('✅ Auth routes registered at /api/auth');
+
+app.use('/api/verification', verificationRoutes);
+console.log('✅ Verification routes registered');
+
+app.use('/api/jobs', jobRoutes);
+console.log('✅ Job routes registered');
+app.post('/api/test-login', (req, res) => {
+  console.log('✅ Test login route hit via POST');
+  res.json({
+    success: true,
+    message: 'Test login route is working!',
+    method: 'POST'
+  });
+});
+
+app.get('/api/test-login', (req, res) => {
+  console.log('✅ Test login route hit via GET');
+  res.json({
+    success: true,
+    message: 'Test login route is working!',
+    method: 'GET'
+  });
+});
 app.get('/api/debug/config', (req, res) => {
   res.json({
     environment: process.env.NODE_ENV,
@@ -12309,23 +12339,7 @@ app.use((err, req, res, next) => {
 
 // Debug middleware for file uploads
 // 
-app.use((req, res, next) => {
-  console.log('🌐 CORS Debug:', {
-    method: req.method,
-    url: req.url,
-    origin: req.headers.origin,
-    'user-agent': req.headers['user-agent']
-  });
-  
-  if (req.method === 'OPTIONS') {
-    console.log('🛫 Preflight Request Headers:', {
-      'access-control-request-method': req.headers['access-control-request-method'],
-      'access-control-request-headers': req.headers['access-control-request-headers']
-    });
-  }
-  
-  next();
-});
+
 
 
 
