@@ -407,28 +407,55 @@ const userSchema = new mongoose.Schema({
     autoPayout: { type: Boolean, default: true }
   },
 
-  services: [{
-    type: String,
-    enum: [
-      'House Cleaning',
-      'Plumbing Repair', 
-      'Garden Maintenance',
-      'Electrical Work',
-      'Painting',
-      'General Maintenance',
-      'Barber Services',
-      'Hair Styling',
-      'Veterinary Services',
-      'Tailoring',
-      'Shoe Repair',
-      'Engineering Services',
-      'Mechanical Services',
-      'Car Washing',
-      'Carpentry',
-      'Barber',
-      'Other'
-    ]
-  }],
+services: [{
+  type: String,
+  enum: [
+    'House Cleaning',
+    'Plumbing Repair',
+    'Garden Maintenance',
+    'Electrical Work',
+    'Painting',
+    'General Maintenance',
+    'Barber Services',
+    'Hair Stylist',
+    'Veterinary Services',
+    'Tailoring',
+    'Shoe Repair',
+    'Engineering Services',
+    'Mechanical Services',
+    'Car Washing',
+    'Carpentry',
+    'Barber',
+    'Cook/Chef',
+    'Nanny',
+    'Laundry Services',
+    'Security Services',
+    'CCTV Installer',
+    'Solar Panel Technician',
+    'Inverter Installation',
+    'IT Support',
+    'Interior Design',
+    'TV Repair',
+    'Welder',
+    'Spa/Massage Therapist',
+
+    // ✅ Newly-added (NOT duplicates)
+    'AC Repair',
+    'Generator Repair',
+    'Tiling',
+    'Masonry',
+    'Pest Control',
+    'Auto Mechanic',
+    'Panel Beater',
+    'Auto Electrician',
+    'Vulcanizer',
+    'Nail Technician',
+    'Massage Therapist',
+    'Gardener',
+
+    'Other'
+  ]
+}],
   hourlyRate: {
     type: Number,
     default: null

@@ -7139,13 +7139,20 @@ app.post('/api/business-hours/bulk', authenticateToken, async (req, res) => {
       });
     }
 
-    console.log('✅ Business hours saved successfully');
+    // AUTOMATICALLY UPDATE AVAILABILITY BASED ON NEW BUSINESS HOURS
+    await updateProviderAvailability(userId);
+
+    // Get updated user data
+    const updatedUser = await User.findById(userId);
+
+    console.log('✅ Business hours saved and availability updated');
 
     res.json({
       success: true,
       message: 'Business hours saved successfully',
       data: {
-        businessHours: user.businessHours
+        businessHours: updatedUser.businessHours,
+        isAvailableNow: updatedUser.isAvailableNow // Return current availability status
       }
     });
   } catch (error) {
@@ -7157,6 +7164,43 @@ app.post('/api/business-hours/bulk', authenticateToken, async (req, res) => {
     });
   }
 });
+
+app.get('/api/availability/check-now', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    const isAvailable = await updateProviderAvailability(userId);
+    const user = await User.findById(userId).select('isAvailableNow businessHours');
+
+    res.json({
+      success: true,
+      data: {
+        isAvailableNow: user.isAvailableNow,
+        businessHours: user.businessHours,
+        message: `You are currently ${user.isAvailableNow ? 'available' : 'unavailable'} based on your business hours`
+      }
+    });
+  } catch (error) {
+    console.error('Manual availability check error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check availability'
+    });
+  }
+});
+
+cron.schedule('*/5 * * * *', async () => {
+  try {
+    console.log('⏰ Running scheduled availability check...');
+    await updateAllProvidersAvailability();
+  } catch (error) {
+    console.error('Scheduled availability check failed:', error);
+  }
+});
+
+// Also run on server startup
+updateAllProvidersAvailability();
+
 
 
 app.get('/api/business-hours', authenticateToken, async (req, res) => {
@@ -8292,6 +8336,77 @@ app.delete('/api/settings/account', authenticateToken, async (req, res) => {
 });
 
 
+async function updateProviderAvailability(userId) {
+  try {
+    const user = await User.findById(userId);
+    if (!user || !user.businessHours || user.businessHours.length === 0) {
+      return false;
+    }
+
+    const now = new Date();
+    const currentDay = now.toLocaleDateString('en-US', { weekday: 'long' }); // e.g., "Monday"
+    const currentTime = now.toTimeString().slice(0, 5); // "HH:MM" format
+
+    // Find today's business hours
+    const todayHours = user.businessHours.find(hours => 
+      hours.dayOfWeek.toLowerCase() === currentDay.toLowerCase() && 
+      hours.isAvailable
+    );
+
+    if (!todayHours) {
+      // No business hours for today or not available
+      user.isAvailableNow = false;
+      await user.save();
+      return false;
+    }
+
+    // Check if current time is within business hours
+    const isAvailable = currentTime >= todayHours.startTime && currentTime <= todayHours.endTime;
+    
+    // Update user's availability
+    user.isAvailableNow = isAvailable;
+    await user.save();
+
+    console.log(`🕒 Availability updated for ${user.name}: ${isAvailable ? 'Available' : 'Unavailable'}`);
+    return isAvailable;
+
+  } catch (error) {
+    console.error('Error updating provider availability:', error);
+    return false;
+  }
+}
+
+// Function to update all providers' availability
+async function updateAllProvidersAvailability() {
+  try {
+    console.log('🔄 Updating availability for all providers based on business hours...');
+    
+    const providers = await User.find({ 
+      userType: { $in: ['provider', 'both'] },
+      businessHours: { $exists: true, $ne: [] }
+    });
+
+    let updatedCount = 0;
+    
+    for (const provider of providers) {
+      const wasAvailable = provider.isAvailableNow;
+      await updateProviderAvailability(provider._id);
+      
+      // Re-fetch to get updated status
+      const updatedProvider = await User.findById(provider._id);
+      if (updatedProvider.isAvailableNow !== wasAvailable) {
+        updatedCount++;
+      }
+    }
+
+    console.log(`✅ Availability update completed. ${updatedCount} providers updated.`);
+  } catch (error) {
+    console.error('Error updating all providers availability:', error);
+  }
+}
+
+
+
 
 app.get('/api/providers', async (req, res) => {
   try {
@@ -8350,22 +8465,32 @@ app.get('/api/providers', async (req, res) => {
     // Build location filters if provided - FIXED: Use partial matches
     const locationFilters = [];
     if (location && location.trim() !== '' && location !== 'all') {
-      const locationLower = location.toLowerCase().trim();
-      const mainLocationTerm = locationLower.split(',')[0].trim();
-      
-      console.log('🔍 Location filter:', locationLower);
-      console.log('🔍 Main location term:', mainLocationTerm);
-      
-      // FIXED: Use partial matches instead of exact matches
-      locationFilters.push({
-        $or: [
-          { city: { $regex: mainLocationTerm, $options: 'i' } },
-          { state: { $regex: mainLocationTerm, $options: 'i' } },
-          { country: { $regex: mainLocationTerm, $options: 'i' } },
-          { address: { $regex: mainLocationTerm, $options: 'i' } }
-        ]
-      });
-    } else {
+  const locationLower = location.toLowerCase().trim();
+  const mainLocationTerm = locationLower.split(',')[0].trim();
+  
+  // More lenient location matching
+  mainQuery.$or = [
+    { city: { $regex: mainLocationTerm, $options: 'i' } },
+    { state: { $regex: mainLocationTerm, $options: 'i' } },
+    { country: { $regex: mainLocationTerm, $options: 'i' } },
+    { address: { $regex: mainLocationTerm, $options: 'i' } },
+    // Add fallback for providers with incomplete location
+    { 
+      $and: [
+        { $or: [
+          { city: { $exists: false } },
+          { city: null },
+          { city: '' }
+        ]},
+        { $or: [
+          { state: { $exists: false } },
+          { state: null },
+          { state: '' }
+        ]}
+      ]
+    }
+  ];
+} else {
       console.log('🌍 No location filter applied');
     }
 
