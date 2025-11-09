@@ -425,6 +425,7 @@ const userSchema = new mongoose.Schema({
       'Mechanical Services',
       'Car Washing',
       'Carpentry',
+      'Barber',
       'Other'
     ]
   }],
