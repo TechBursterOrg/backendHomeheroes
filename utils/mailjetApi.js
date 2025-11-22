@@ -32,7 +32,7 @@ export const sendVerificationEmailViaAPI = async (user, verificationToken) => {
             Subject: "Verify Your HomeHero Account",
             HTMLPart: `
               <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                <h2>Welcome to HomeHero!</h2>
+                <h2>Welcome to Home Heroes!</h2>
                 <p>Hello ${name},</p>
                 <p>Please verify your email address using this code:</p>
                 <div style="background: #f4f4f4; padding: 15px; text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 5px; margin: 20px 0;">

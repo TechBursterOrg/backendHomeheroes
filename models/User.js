@@ -1,3 +1,4 @@
+// models/User.js
 import mongoose from 'mongoose';
 
 const userSchema = new mongoose.Schema({
@@ -48,7 +49,7 @@ const userSchema = new mongoose.Schema({
     required: true
   },
 
-    businessHours: [{
+  businessHours: [{
     dayOfWeek: {
       type: String,
       required: true
@@ -74,23 +75,26 @@ const userSchema = new mongoose.Schema({
     }
   }],
 
-
   favorites: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   }],
 
-  
-
   isAvailableNow: {
     type: Boolean,
     default: false
   },
+  
+  // ==================== UPDATED IDENTITY VERIFICATION ====================
   identityVerification: {
     nin: {
       type: String,
       trim: true,
       sparse: true
+    },
+    selfieUrl: {
+      type: String,
+      trim: true
     },
     nepaBillUrl: {
       type: String,
@@ -100,14 +104,18 @@ const userSchema = new mongoose.Schema({
       type: Boolean,
       default: false
     },
+    isSelfieVerified: {
+      type: Boolean,
+      default: false
+    },
     isNepaVerified: {
       type: Boolean,
       default: false
     },
     verificationStatus: {
       type: String,
-      enum: ['unverified', 'pending', 'verified', 'rejected'],
-      default: 'unverified'
+      enum: ['pending', 'approved', 'rejected', 'verified', 'not_submitted', 'submitted', 'pending_review', 'unverified'],
+      default: 'not_submitted', 
     },
     verificationSubmittedAt: {
       type: Date
@@ -117,7 +125,15 @@ const userSchema = new mongoose.Schema({
     },
     verificationNotes: {
       type: String
+    },
+    consentGiven: {
+      type: Boolean
     }
+  },
+
+  hasSubmittedVerification: {
+    type: Boolean,
+    default: false
   },
 
   // ==================== NEW SETTINGS STRUCTURE ====================
@@ -213,19 +229,11 @@ const userSchema = new mongoose.Schema({
 
   // ==================== EXISTING FIELDS ====================
   
-  hasSubmittedVerification: {
-    type: Boolean,
-    default: false
-  },
   responseTime: {
     type: String,
     default: 'within 1 hour'
   },
   reviewCount: {
-    type: Number,
-    default: 0
-  },
-  completedJobs: {
     type: Number,
     default: 0
   },
@@ -306,7 +314,11 @@ const userSchema = new mongoose.Schema({
   certifications: [{
     type: String
   }],
-  
+  providerFinancials: {
+    totalEarnings: { type: Number, default: 0 },
+    pendingBalance: { type: Number, default: 0 },
+    availableBalance: { type: Number, default: 0 }
+  },
   // Dashboard-related fields
   availability: [{
     id: String,
@@ -346,10 +358,6 @@ const userSchema = new mongoose.Schema({
   }],
   
   // Stats for dashboard
-  totalEarnings: {
-    type: Number,
-    default: 0
-  },
   activeClients: {
     type: Number,
     default: 0
@@ -407,55 +415,55 @@ const userSchema = new mongoose.Schema({
     autoPayout: { type: Boolean, default: true }
   },
 
-services: [{
-  type: String,
-  enum: [
-    'House Cleaning',
-    'Plumbing Repair',
-    'Garden Maintenance',
-    'Electrical Work',
-    'Painting',
-    'General Maintenance',
-    'Barber Services',
-    'Hair Stylist',
-    'Veterinary Services',
-    'Tailoring',
-    'Shoe Repair',
-    'Engineering Services',
-    'Mechanical Services',
-    'Car Washing',
-    'Carpentry',
-    'Barber',
-    'Cook/Chef',
-    'Nanny',
-    'Laundry Services',
-    'Security Services',
-    'CCTV Installer',
-    'Solar Panel Technician',
-    'Inverter Installation',
-    'IT Support',
-    'Interior Design',
-    'TV Repair',
-    'Welder',
-    'Spa/Massage Therapist',
+  services: [{
+    type: String,
+    enum: [
+      'House Cleaning',
+      'Plumbing Repair',
+      'Garden Maintenance',
+      'Electrical Work',
+      'Painting',
+      'General Maintenance',
+      'Barber Services',
+      'Hair Stylist',
+      'Veterinary Services',
+      'Tailoring',
+      'Shoe Repair',
+      'Engineering Services',
+      'Mechanical Services',
+      'Car Washing',
+      'Carpentry',
+      'Barber',
+      'Cook/Chef',
+      'Nanny',
+      'Laundry Services',
+      'Security Services',
+      'CCTV Installer',
+      'Solar Panel Technician',
+      'Inverter Installation',
+      'IT Support',
+      'Interior Design',
+      'TV Repair',
+      'Welder',
+      'Spa/Massage Therapist',
 
-    // ✅ Newly-added (NOT duplicates)
-    'AC Repair',
-    'Generator Repair',
-    'Tiling',
-    'Masonry',
-    'Pest Control',
-    'Auto Mechanic',
-    'Panel Beater',
-    'Auto Electrician',
-    'Vulcanizer',
-    'Nail Technician',
-    'Massage Therapist',
-    'Gardener',
+      // ✅ Newly-added (NOT duplicates)
+      'AC Repair',
+      'Generator Repair',
+      'Tiling',
+      'Masonry',
+      'Pest Control',
+      'Auto Mechanic',
+      'Panel Beater',
+      'Auto Electrician',
+      'Vulcanizer',
+      'Nail Technician',
+      'Massage Therapist',
+      'Gardener',
 
-    'Other'
-  ]
-}],
+      'Other'
+    ]
+  }],
   hourlyRate: {
     type: Number,
     default: null

@@ -8,6 +8,8 @@ import mongoose from 'mongoose';
 
 const router = express.Router();
 
+
+
 // Get provider profile by ID
 router.get('/:id', async (req, res) => {
   try {

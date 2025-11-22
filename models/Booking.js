@@ -65,10 +65,6 @@ const bookingSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  budget: {
-    type: String,
-    default: 'Not specified'
-  },
   specialRequests: {
     type: String,
     default: ''
@@ -81,7 +77,7 @@ const bookingSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending','awaiting_payment',  'confirmed', 'completed', 'cancelled'],
+    enum: ['pending','awaiting_payment', 'confirmed', 'completed', 'cancelled'],
     default: 'pending'
   },
   requestedAt: {
@@ -107,7 +103,7 @@ const bookingSchema = new mongoose.Schema({
     default: false 
   },
   
-  // New fields added here
+  // Provider arrival tracking
   providerArrived: {
     type: Boolean,
     default: false
@@ -126,6 +122,33 @@ const bookingSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  
+  // New fields for the corrected workflow
+  providerConfirmed: {
+    type: Boolean,
+    default: false
+  },
+  providerConfirmedAt: Date,
+  
+  customerSeenProvider: {
+    type: Boolean,
+    default: false
+  },
+  customerSeenProviderAt: Date,
+  
+  providerCompletedAt: Date,
+  
+  customerConfirmedCompletion: {
+    type: Boolean,
+    default: false
+  },
+  customerConfirmedCompletionAt: Date,
+  
+  serviceConfirmedByCustomer: {
+    type: Boolean,
+    default: false
+  },
+  serviceConfirmedAt: Date,
   
   // Payment release fields
   autoRefundAt: Date,
@@ -156,23 +179,20 @@ const bookingSchema = new mongoose.Schema({
       enum: ['requires_payment_method', 'held', 'released', 'refunded', 'failed'],
       default: 'requires_payment_method'
     },
-    heldAt: Date,
+    // Enhanced payment fields
+    heldAt: Date, // When payment was held (starts 4-hour timer)
     releasedAt: Date,
-    refundedAt: Date,
+    refundedAt: Date, // When auto-refund happened
     autoRefundAt: Date,
-    commission: Number,
-    providerAmount: Number
-  },
-  serviceConfirmedByCustomer: {
-    type: Boolean,
-    default: false
-  },
-  serviceConfirmedAt: Date
+    companyAmount: Number, // 20% commission
+    providerAmount: Number, // 80% provider share
+    companyTransferCode: String, // Paystack transfer reference for company
+    providerTransferCode: String, // Paystack transfer reference for provider
+    commission: Number
+  }
 }, {
   timestamps: true
 });
-
-
 
 bookingSchema.plugin(mongoosePaginate);
 
@@ -182,6 +202,9 @@ bookingSchema.index({ customerId: 1, ratingStatus: 1 });
 bookingSchema.index({ providerId: 1, ratingStatus: 1 });
 bookingSchema.index({ 'payment.status': 1 });
 bookingSchema.index({ 'payment.autoRefundAt': 1 });
+bookingSchema.index({ providerConfirmed: 1 });
+bookingSchema.index({ customerSeenProvider: 1 });
+bookingSchema.index({ customerConfirmedCompletion: 1 });
 
 // Update the updatedAt field before saving
 bookingSchema.pre('save', function(next) {
@@ -195,6 +218,9 @@ bookingSchema.pre('save', function(next) {
   if (!this.amount || this.amount === 0) {
     this.amount = this.price;
   }
+  
+  // Update the updatedAt timestamp
+  this.updatedAt = Date.now();
   
   next();
 });

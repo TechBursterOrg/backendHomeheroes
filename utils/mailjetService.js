@@ -52,7 +52,7 @@ export class MailjetService {
                 </head>
                 <body>
                   <div class="header">
-                    <h1>Welcome to HomeHero! 🏠</h1>
+                    <h1>Welcome to Home Heroes! 🏠</h1>
                   </div>
                   <div class="content">
                     <h2>Verify Your Email Address</h2>

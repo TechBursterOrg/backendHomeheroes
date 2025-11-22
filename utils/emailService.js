@@ -716,7 +716,7 @@ const generateVerificationEmailHTML = (name, verificationUrl) => {
     </head>
     <body>
       <div class="header">
-        <h1>Welcome to HomeHero!</h1>
+        <h1>Welcome to Home Heroes!</h1>
         <p>Verify your email address to get started</p>
       </div>
       <div class="content">
@@ -749,7 +749,7 @@ const generateVerificationEmailHTML = (name, verificationUrl) => {
 // Plain text email template
 const generateVerificationEmailText = (name, verificationUrl) => {
   return `
-Welcome to HomeHero!
+Welcome to Home Heroes!
 
 Hello ${name},
 
