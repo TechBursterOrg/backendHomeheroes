@@ -28,6 +28,7 @@ import providerRoutes from './routes/providers.routes.js';
 import cron from 'node-cron';
 
 
+
 // Import models
 import User from './models/User.js';
 import Job from './models/Jobs.js';
@@ -2769,6 +2770,8 @@ app.post('/api/payments/release-to-provider', authenticateToken, async (req, res
   try {
     const { bookingId } = req.body;
 
+    console.log('💰 Releasing payment for booking:', bookingId);
+
     const booking = await Booking.findById(bookingId).populate('providerId');
     if (!booking) {
       return res.status(404).json({
@@ -2803,7 +2806,7 @@ app.post('/api/payments/release-to-provider', authenticateToken, async (req, res
 
     const provider = booking.providerId;
 
-    // Check if provider has set up their bank account
+    // CRITICAL: Check if provider has set up their bank account
     if (!provider.paymentSettings?.paystackRecipientCode) {
       return res.status(400).json({
         success: false,
@@ -2819,46 +2822,46 @@ app.post('/api/payments/release-to-provider', authenticateToken, async (req, res
       });
     }
 
-    // Calculate amounts (20% company, 80% provider)
+    // Calculate amounts (15% platform fee, 85% to provider)
     const totalAmount = booking.payment.amount;
-    const companyAmount = totalAmount * 0.20;
-    const providerAmount = totalAmount * 0.80;
+    const platformFee = totalAmount * 0.15;
+    const providerAmount = totalAmount * 0.85;
 
     console.log('💰 Payment Split:', {
       totalAmount,
-      companyAmount,
+      platformFee,
       providerAmount
     });
 
     // Process BOTH transfers simultaneously
-    let companyTransferResult, providerTransferResult;
+    let platformTransferResult, providerTransferResult;
 
     try {
-      // Transfer 20% to company account
-      companyTransferResult = await paymentProcessors.paystack.transfer.create({
+      // Transfer 15% to platform account
+      platformTransferResult = await paymentProcessors.paystack.transfer.create({
         source: 'balance',
-        amount: Math.round(companyAmount * 100), // Convert to kobo
+        amount: Math.round(platformFee * 100), // Convert to kobo
         recipient: COMPANY_ACCOUNT.paystackRecipientCode,
-        reason: `Home Heroes Commission - Booking ${bookingId}`
+        reason: `Home Heroes Platform Fee - Booking ${bookingId}`
       });
 
-      if (!companyTransferResult.status) {
-        throw new Error(`Company transfer failed: ${companyTransferResult.message}`);
+      if (!platformTransferResult.status) {
+        throw new Error(`Platform transfer failed: ${platformTransferResult.message}`);
       }
 
-      console.log('✅ Company transfer initiated:', companyTransferResult.data.transfer_code);
+      console.log('✅ Platform fee transfer initiated:', platformTransferResult.data.transfer_code);
 
-    } catch (companyTransferError) {
-      console.error('❌ Company transfer failed:', companyTransferError);
+    } catch (platformTransferError) {
+      console.error('❌ Platform transfer failed:', platformTransferError);
       return res.status(500).json({
         success: false,
-        message: 'Failed to transfer commission to company: ' + companyTransferError.message,
-        code: 'COMPANY_TRANSFER_FAILED'
+        message: 'Failed to transfer platform fee: ' + platformTransferError.message,
+        code: 'PLATFORM_TRANSFER_FAILED'
       });
     }
 
     try {
-      // Transfer 80% to provider account
+      // Transfer 85% to provider account
       providerTransferResult = await paymentProcessors.paystack.transfer.create({
         source: 'balance',
         amount: Math.round(providerAmount * 100), // Convert to kobo
@@ -2875,16 +2878,16 @@ app.post('/api/payments/release-to-provider', authenticateToken, async (req, res
     } catch (providerTransferError) {
       console.error('❌ Provider transfer failed:', providerTransferError);
       
-      // If provider transfer fails, try to reverse the company transfer
+      // If provider transfer fails, try to reverse the platform transfer
       try {
-        if (companyTransferResult?.data?.transfer_code) {
+        if (platformTransferResult?.data?.transfer_code) {
           await paymentProcessors.paystack.transfer.reverse({
-            transfer_code: companyTransferResult.data.transfer_code
+            transfer_code: platformTransferResult.data.transfer_code
           });
-          console.log('✅ Reversed company transfer due to provider transfer failure');
+          console.log('✅ Reversed platform transfer due to provider transfer failure');
         }
       } catch (reverseError) {
-        console.error('❌ Failed to reverse company transfer:', reverseError);
+        console.error('❌ Failed to reverse platform transfer:', reverseError);
       }
 
       return res.status(500).json({
@@ -2894,7 +2897,7 @@ app.post('/api/payments/release-to-provider', authenticateToken, async (req, res
       });
     }
 
-    // Update provider earnings (only their 80% portion)
+    // Update provider earnings (only their 85% portion)
     provider.providerFinancials = provider.providerFinancials || {};
     provider.providerFinancials.totalEarnings = (provider.providerFinancials.totalEarnings || 0) + providerAmount;
     provider.providerFinancials.availableBalance = (provider.providerFinancials.availableBalance || 0) + providerAmount;
@@ -2903,10 +2906,9 @@ app.post('/api/payments/release-to-provider', authenticateToken, async (req, res
     // Update booking payment status
     booking.payment.status = 'released';
     booking.payment.releasedAt = new Date();
-    booking.payment.commission = companyAmount;
+    booking.payment.platformFee = platformFee;
     booking.payment.providerAmount = providerAmount;
-    booking.payment.companyAmount = companyAmount;
-    booking.payment.companyTransferCode = companyTransferResult.data.transfer_code;
+    booking.payment.platformTransferCode = platformTransferResult.data.transfer_code;
     booking.payment.providerTransferCode = providerTransferResult.data.transfer_code;
     booking.paymentReleased = true;
     booking.paymentReleasedAt = new Date();
@@ -2919,7 +2921,7 @@ app.post('/api/payments/release-to-provider', authenticateToken, async (req, res
       userId: booking.providerId,
       type: 'payment_released',
       title: 'Payment Released!',
-      message: `Payment of ${booking.payment.currency}${providerAmount} has been released to your bank account (80% of total). Home Heroes commission: ${booking.payment.currency}${companyAmount}`,
+      message: `Payment of ${booking.payment.currency}${providerAmount} has been released to your bank account (85% of total). Platform fee: ${booking.payment.currency}${platformFee}`,
       relatedId: booking._id,
       relatedType: 'booking',
       priority: 'high'
@@ -2936,22 +2938,22 @@ app.post('/api/payments/release-to-provider', authenticateToken, async (req, res
       priority: 'medium'
     });
 
-    // Log company commission (you might want to store this in a separate collection)
-    console.log('🏢 Company Commission Recorded:', {
+    // Log platform fee (you might want to store this in a separate collection)
+    console.log('🏢 Platform Fee Recorded:', {
       bookingId: booking._id,
-      amount: companyAmount,
-      transferCode: companyTransferResult.data.transfer_code,
+      amount: platformFee,
+      transferCode: platformTransferResult.data.transfer_code,
       timestamp: new Date()
     });
 
     res.json({
       success: true,
-      message: 'Payment released successfully - 20% to company, 80% to provider',
+      message: 'Payment released successfully - 15% platform fee, 85% to provider',
       data: {
         totalAmount,
-        companyAmount,
+        platformFee,
         providerAmount,
-        companyTransferCode: companyTransferResult.data.transfer_code,
+        platformTransferCode: platformTransferResult.data.transfer_code,
         providerTransferCode: providerTransferResult.data.transfer_code
       }
     });
@@ -3630,7 +3632,7 @@ app.get('/api/payments/transfer-status/:bookingId', authenticateToken, async (re
     const { bookingId } = req.params;
 
     const booking = await Booking.findById(bookingId);
-    if (!booking || !booking.payment.companyTransferCode || !booking.payment.providerTransferCode) {
+    if (!booking || !booking.payment.platformTransferCode || !booking.payment.providerTransferCode) {
       return res.status(404).json({
         success: false,
         message: 'Booking or transfer codes not found'
@@ -3638,19 +3640,19 @@ app.get('/api/payments/transfer-status/:bookingId', authenticateToken, async (re
     }
 
     // Check both transfers
-    const [companyTransfer, providerTransfer] = await Promise.all([
-      paymentProcessors.paystack.transfer.fetch(booking.payment.companyTransferCode),
+    const [platformTransfer, providerTransfer] = await Promise.all([
+      paymentProcessors.paystack.transfer.fetch(booking.payment.platformTransferCode),
       paymentProcessors.paystack.transfer.fetch(booking.payment.providerTransferCode)
     ]);
 
     res.json({
       success: true,
       data: {
-        companyTransfer: {
-          status: companyTransfer.data.status,
-          amount: companyTransfer.data.amount / 100,
-          recipient: 'Home Heroes Company',
-          createdAt: companyTransfer.data.createdAt
+        platformTransfer: {
+          status: platformTransfer.data.status,
+          amount: platformTransfer.data.amount / 100,
+          recipient: 'Home Heroes Platform',
+          createdAt: platformTransfer.data.createdAt
         },
         providerTransfer: {
           status: providerTransfer.data.status,
@@ -3772,7 +3774,7 @@ app.post('/api/providers/bank-account', authenticateToken, async (req, res) => {
       });
     }
 
-    // Rest of your existing code for Paystack recipient creation...
+    // Create Paystack recipient (this creates the transfer recipient)
     let paystackRecipientCode;
     try {
       const recipientResponse = await paymentProcessors.paystack.recipient.create({
@@ -3783,16 +3785,23 @@ app.post('/api/providers/bank-account', authenticateToken, async (req, res) => {
         currency: 'NGN'
       });
 
-      if (recipientResponse.status) {
-        paystackRecipientCode = recipientResponse.data.recipient_code;
+      if (recipientResponse.data.status) {
+        paystackRecipientCode = recipientResponse.data.data.recipient_code;
       } else {
-        throw new Error(recipientResponse.message || 'Failed to create Paystack recipient');
+        throw new Error(recipientResponse.data.message || 'Failed to create Paystack recipient');
       }
     } catch (paystackError) {
       console.error('Paystack recipient creation failed:', paystackError);
+      
+      let errorMessage = 'Failed to verify bank account with Paystack';
+      if (paystackError.response && paystackError.response.data) {
+        errorMessage = paystackError.response.data.message || errorMessage;
+      }
+      
       return res.status(400).json({
         success: false,
-        message: 'Failed to verify bank account with Paystack: ' + paystackError.message
+        message: errorMessage,
+        error: process.env.NODE_ENV === 'development' ? paystackError.message : 'Internal server error'
       });
     }
 
@@ -3803,9 +3812,11 @@ app.post('/api/providers/bank-account', authenticateToken, async (req, res) => {
         bankName,
         accountNumber: accountNumber.slice(-4), // Store only last 4 digits for security
         accountName,
-        bankCode
+        bankCode,
+        fullAccountNumber: accountNumber // Store full number for transfers
       },
-      preferredPayoutMethod: 'paystack'
+      preferredPayoutMethod: 'paystack',
+      verifiedAt: new Date()
     };
 
     await user.save();
@@ -3815,7 +3826,8 @@ app.post('/api/providers/bank-account', authenticateToken, async (req, res) => {
       message: 'Bank account added successfully and verified with Paystack',
       data: {
         bankAccount: user.paymentSettings.bankAccount,
-        isVerified: true
+        isVerified: true,
+        recipientCode: paystackRecipientCode
       }
     });
 
@@ -5918,21 +5930,29 @@ app.post('/api/verification/submit', authenticateToken, upload.fields([
   { name: 'nepaBill', maxCount: 1 }
 ]), async (req, res) => {
   try {
+    console.log('🔐 Verification submit endpoint hit');
+    
     const { nin, consent } = req.body;
     const files = req.files;
     
-    const selfieFile = files?.selfie?.[0];
-    const nepaBillFile = files?.nepaBill?.[0];
+    console.log('📋 Received data:', {
+      hasNin: !!nin,
+      hasConsent: !!consent,
+      hasSelfie: !!(files?.selfie?.[0]),
+      hasNepaBill: !!(files?.nepaBill?.[0])
+    });
 
     // Validate required fields
     if (!nin || !consent) {
+      console.log('❌ Missing required fields:', { nin: !!nin, consent: !!consent });
       return res.status(400).json({
         success: false,
         message: 'NIN and consent are required'
       });
     }
 
-    if (!selfieFile) {
+    if (!files?.selfie?.[0]) {
+      console.log('❌ No selfie file provided');
       return res.status(400).json({
         success: false,
         message: 'Selfie photo is required'
@@ -5942,6 +5962,7 @@ app.post('/api/verification/submit', authenticateToken, upload.fields([
     // Validate NIN format
     const cleanNIN = nin.replace(/\D/g, '');
     if (cleanNIN.length !== 11) {
+      console.log('❌ Invalid NIN length:', cleanNIN.length);
       return res.status(400).json({
         success: false,
         message: 'NIN must be exactly 11 digits'
@@ -5952,18 +5973,20 @@ app.post('/api/verification/submit', authenticateToken, upload.fields([
     const user = await User.findById(userId);
 
     if (!user) {
+      console.log('❌ User not found:', userId);
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
 
-    // Upload files to Google Cloud Storage
+    // Upload files to Google Cloud Storage with enhanced error handling
     let selfieUrl = '';
     let nepaBillUrl = '';
 
     try {
       console.log('📤 Uploading selfie to Google Cloud Storage...');
+      const selfieFile = files.selfie[0];
       const selfieUploadResult = await uploadToGCS(selfieFile, 'verification/selfies');
       selfieUrl = selfieUploadResult.url;
       console.log('✅ Selfie uploaded to GCS:', selfieUrl);
@@ -5971,13 +5994,14 @@ app.post('/api/verification/submit', authenticateToken, upload.fields([
       console.error('❌ Selfie upload failed:', uploadError);
       return res.status(500).json({
         success: false,
-        message: 'Failed to upload selfie photo'
+        message: 'Failed to upload selfie photo to cloud storage'
       });
     }
 
-    if (nepaBillFile) {
+    if (files?.nepaBill?.[0]) {
       try {
         console.log('📤 Uploading utility bill to Google Cloud Storage...');
+        const nepaBillFile = files.nepaBill[0];
         const nepaBillUploadResult = await uploadToGCS(nepaBillFile, 'verification/utility-bills');
         nepaBillUrl = nepaBillUploadResult.url;
         console.log('✅ Utility bill uploaded to GCS:', nepaBillUrl);
@@ -5993,12 +6017,12 @@ app.post('/api/verification/submit', authenticateToken, upload.fields([
       nin: cleanNIN,
       selfieUrl: selfieUrl,
       nepaBillUrl: nepaBillUrl || '',
-      isNinVerified: false, // Will be set to true after manual/admin verification
+      isNinVerified: false,
       isSelfieVerified: false,
       isNepaVerified: false,
       verificationStatus: 'pending',
       verificationSubmittedAt: new Date(),
-      consentGiven: consent === 'true',
+      consentGiven: consent === 'true' || consent === true,
       lastVerifiedAt: null,
       verificationNotes: ''
     };
@@ -6006,7 +6030,23 @@ app.post('/api/verification/submit', authenticateToken, upload.fields([
     user.hasSubmittedVerification = true;
     await user.save();
 
-    console.log('✅ Verification submitted for user:', userId);
+    console.log('✅ Verification submitted successfully for user:', userId);
+
+    // Send notification to admin for review
+    try {
+      await Notification.createNotification({
+        userId: userId,
+        type: 'verification_submitted',
+        title: 'Verification Submitted',
+        message: 'Your identity verification has been submitted and is under review.',
+        relatedId: user._id,
+        relatedType: 'verification',
+        priority: 'medium'
+      });
+    } catch (notificationError) {
+      console.error('Notification error:', notificationError);
+      // Continue even if notification fails
+    }
 
     res.json({
       success: true,
@@ -6017,14 +6057,14 @@ app.post('/api/verification/submit', authenticateToken, upload.fields([
         documentsSubmitted: {
           nin: true,
           selfie: true,
-          utilityBill: !!nepaBillFile
+          utilityBill: !!files?.nepaBill?.[0]
         },
         estimatedReviewTime: '24-48 hours'
       }
     });
 
   } catch (error) {
-    console.error('Submit verification error:', error);
+    console.error('❌ Submit verification error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to submit verification information',
@@ -6032,6 +6072,7 @@ app.post('/api/verification/submit', authenticateToken, upload.fields([
     });
   }
 });
+
 
 // Get all verification requests (Admin only)
 app.get('/api/admin/verification-requests', authenticateToken, async (req, res) => {
@@ -8980,7 +9021,74 @@ app.post('/api/test-upload', async (req, res) => {
 // Get verification status
 app.get('/api/auth/verification-status', authenticateToken, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select('identityVerification hasSubmittedVerification');
+    const userId = req.user.id;
+    console.log('🔍 Fetching verification status for user:', userId);
+    
+    const user = await User.findById(userId).select('identityVerification hasSubmittedVerification');
+    
+    if (!user) {
+      console.log('❌ User not found:', userId);
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const verificationData = user.identityVerification || {};
+    
+    console.log('📊 Verification data:', {
+      hasSubmittedVerification: user.hasSubmittedVerification,
+      verificationStatus: verificationData.verificationStatus,
+      isNinVerified: verificationData.isNinVerified
+    });
+
+    // Determine verification status
+    let verificationStatus = 'not_submitted';
+    let isVerified = false;
+    
+    if (user.hasSubmittedVerification) {
+      if (verificationData.verificationStatus === 'approved') {
+        verificationStatus = 'verified';
+        isVerified = true;
+      } else if (verificationData.verificationStatus === 'rejected') {
+        verificationStatus = 'rejected';
+      } else if (verificationData.verificationStatus === 'pending') {
+        verificationStatus = 'pending_review';
+      } else {
+        verificationStatus = 'submitted';
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        hasSubmittedVerification: user.hasSubmittedVerification || false,
+        verificationStatus: verificationStatus,
+        isVerified: isVerified,
+        details: {
+          ninVerified: verificationData.isNinVerified || false,
+          nepaVerified: verificationData.isNepaVerified || false,
+          selfieVerified: verificationData.isSelfieVerified || false,
+          submittedAt: verificationData.verificationSubmittedAt,
+          reviewedAt: verificationData.verificationReviewedAt,
+          notes: verificationData.verificationNotes || ''
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Check verification status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check verification status'
+    });
+  }
+});
+
+app.get('/api/debug/verification-data', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId).select('identityVerification hasSubmittedVerification');
     
     if (!user) {
       return res.status(404).json({
@@ -8992,20 +9100,24 @@ app.get('/api/auth/verification-status', authenticateToken, async (req, res) => 
     res.json({
       success: true,
       data: {
-        isNinVerified: user.identityVerification?.isNinVerified || false,
-        isNepaVerified: user.identityVerification?.isNepaVerified || false,
-        verificationStatus: user.identityVerification?.verificationStatus || 'unverified',
-        hasSubmittedVerification: user.hasSubmittedVerification || false
+        user: {
+          id: user._id,
+          hasSubmittedVerification: user.hasSubmittedVerification
+        },
+        identityVerification: user.identityVerification || {},
+        rawData: JSON.stringify(user.identityVerification, null, 2)
       }
     });
   } catch (error) {
-    console.error('Get verification status error:', error);
+    console.error('Debug verification error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch verification status'
+      message: 'Debug failed'
     });
   }
 });
+
+
 
 // Submit identity verification
 app.post('/api/auth/verify-identity', authenticateToken, async (req, res) => {
