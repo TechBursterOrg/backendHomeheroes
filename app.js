@@ -1676,24 +1676,285 @@ app.post('/api/bookings/:bookingId/create-payment', authenticateToken, async (re
       paystackAvailable: !!paymentProcessors?.paystack
     });
 
-    // If Paystack is not available in production, use fallback
-    if (process.env.NODE_ENV === 'production' && !paymentProcessors?.paystack) {
-      console.log('🔄 Using production fallback payment method');
-      return await handleProductionFallbackPayment(bookingId, amount, req.user.id, res);
+    // Input validation
+    if (!bookingId || !mongoose.Types.ObjectId.isValid(bookingId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid booking ID is required',
+        code: 'INVALID_BOOKING_ID'
+      });
     }
 
-    // Rest of your existing payment creation logic...
-    // [Your existing payment creation code here]
+    if (!amount || isNaN(amount) || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid payment amount is required',
+        code: 'INVALID_AMOUNT'
+      });
+    }
+
+    // Find booking
+    const booking = await Booking.findById(bookingId).populate('customerId', 'email');
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found',
+        code: 'BOOKING_NOT_FOUND'
+      });
+    }
+
+    // Check authorization
+    if (booking.customerId._id.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to pay for this booking',
+        code: 'UNAUTHORIZED_PAYMENT'
+      });
+    }
+
+    const paymentAmount = parseFloat(amount);
+    
+    // Country detection
+    const isNigeria = () => {
+      const country = customerCountry?.toLowerCase()?.trim();
+      return country === 'ng' || 
+             country === 'nigeria' || 
+             country === 'ngn' ||
+             country === 'naija' ||
+             country.includes('nigeria');
+    };
+
+    console.log('🌍 Country detection:', {
+      received: customerCountry,
+      isNigeria: isNigeria()
+    });
+
+    let paymentResult;
+
+    if (isNigeria()) {
+      // PAYSTACK PAYMENT (Nigeria)
+      console.log('🌍 Using Paystack for Nigerian customer');
+      
+      if (!paymentProcessors?.paystack) {
+        console.log('❌ Paystack processor not available');
+        return res.status(503).json({
+          success: false,
+          message: 'Paystack payment processor is not available',
+          code: 'PAYMENT_PROCESSOR_UNAVAILABLE'
+        });
+      }
+
+      try {
+        const paystackPayload = {
+          amount: Math.round(paymentAmount * 100), // Convert to kobo
+          email: req.user.email || booking.customerId.email,
+          currency: 'NGN',
+          metadata: {
+            bookingId: bookingId,
+            customerId: req.user.id,
+            paymentType: 'escrow'
+          },
+          callback_url: `${process.env.FRONTEND_URL}/customer/payment-status?bookingId=${bookingId}&processor=paystack`
+        };
+
+        console.log('📤 Paystack request payload:', {
+          ...paystackPayload,
+          amount: paystackPayload.amount,
+          email: paystackPayload.email
+        });
+
+        // Make the Paystack API call
+        const paystackResponse = await paymentProcessors.paystack.transaction.initialize(paystackPayload);
+
+        console.log('📥 Paystack response:', {
+          status: paystackResponse.status,
+          dataStatus: paystackResponse.data?.status,
+          reference: paystackResponse.data?.data?.reference
+        });
+
+        // Handle Paystack response
+        if (!paystackResponse.data || paystackResponse.data.status !== true) {
+          throw new Error(paystackResponse.data?.message || 'Paystack initialization failed');
+        }
+
+        const paymentData = paystackResponse.data.data;
+        const authorizationUrl = paymentData.authorization_url;
+        const paymentReference = paymentData.reference;
+
+        if (!authorizationUrl) {
+          throw new Error('No authorization URL received from Paystack');
+        }
+
+        paymentResult = {
+          success: true,
+          processor: 'paystack',
+          paymentIntentId: paymentReference,
+          authorizationUrl: authorizationUrl,
+          amount: paymentAmount,
+          currency: 'NGN',
+          status: 'requires_payment_method'
+        };
+
+        console.log('✅ Paystack payment initialized successfully');
+
+      } catch (paystackError) {
+        console.error('❌ Paystack payment creation failed:', {
+          error: paystackError.message,
+          response: paystackError.response?.data
+        });
+        
+        return res.status(502).json({
+          success: false,
+          message: 'Paystack payment service unavailable',
+          error: process.env.NODE_ENV === 'development' ? paystackError.message : undefined,
+          code: 'PAYSTACK_SERVICE_ERROR'
+        });
+      }
+    } else {
+      // STRIPE PAYMENT (International) - your existing Stripe code
+      console.log('🌍 Using Stripe for international customer');
+      
+      if (!paymentProcessors?.stripe) {
+        return res.status(503).json({
+          success: false,
+          message: 'Stripe payment processor is not configured',
+          code: 'PAYMENT_PROCESSOR_UNAVAILABLE'
+        });
+      }
+
+      try {
+        const isUK = customerCountry === 'GB' || customerCountry === 'UK';
+        const currency = isUK ? 'gbp' : 'usd';
+        
+        const stripePayload = {
+          amount: Math.round(paymentAmount * 100),
+          currency: currency,
+          capture_method: 'manual',
+          metadata: {
+            bookingId: bookingId,
+            customerId: req.user.id,
+            paymentType: 'escrow'
+          },
+          automatic_payment_methods: {
+            enabled: true,
+          }
+        };
+
+        const paymentIntent = await paymentProcessors.stripe.paymentIntents.create(stripePayload);
+
+        paymentResult = {
+          success: true,
+          processor: 'stripe',
+          paymentIntentId: paymentIntent.id,
+          clientSecret: paymentIntent.client_secret,
+          amount: paymentAmount,
+          currency: currency.toUpperCase(),
+          status: paymentIntent.status
+        };
+
+      } catch (stripeError) {
+        console.error('❌ Stripe payment creation failed:', stripeError);
+        return res.status(502).json({
+          success: false,
+          message: 'Stripe payment service unavailable',
+          code: 'STRIPE_SERVICE_ERROR'
+        });
+      }
+    }
+
+    // Update booking with payment info
+    booking.payment = {
+      processor: isNigeria() ? 'paystack' : 'stripe',
+      paymentIntentId: paymentResult.paymentIntentId,
+      amount: paymentResult.amount,
+      currency: paymentResult.currency,
+      status: paymentResult.status,
+      initiatedAt: new Date(),
+      autoRefundAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
+      authorizationUrl: paymentResult.authorizationUrl,
+      clientSecret: paymentResult.clientSecret
+    };
+
+    // Add payment history
+    booking.paymentHistory = booking.paymentHistory || [];
+    booking.paymentHistory.push({
+      action: 'payment_initiated',
+      processor: booking.payment.processor,
+      paymentIntentId: paymentResult.paymentIntentId,
+      amount: paymentResult.amount,
+      currency: paymentResult.currency,
+      status: paymentResult.status,
+      timestamp: new Date()
+    });
+
+    await booking.save();
+
+    console.log('✅ Booking updated successfully with payment info');
+
+    res.json({
+      success: true,
+      message: 'Payment intent created successfully',
+      data: paymentResult
+    });
 
   } catch (error) {
-    console.error('❌ Payment creation error:', error);
+    console.error('❌ Create payment error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to create payment',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Payment service unavailable'
+      message: 'Failed to create payment intent',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      code: 'PAYMENT_CREATION_FAILED'
     });
   }
 });
+
+app.get('/api/debug/test-paystack', async (req, res) => {
+  try {
+    if (!paymentProcessors?.paystack) {
+      return res.json({
+        success: false,
+        message: 'Paystack not initialized'
+      });
+    }
+
+    console.log('🧪 Testing Paystack directly...');
+    
+    // Test with a small amount
+    const testPayload = {
+      amount: 10000, // 100 NGN
+      email: 'test@example.com',
+      currency: 'NGN',
+      callback_url: `${process.env.FRONTEND_URL}/payment-test`
+    };
+
+    const response = await paymentProcessors.paystack.transaction.initialize(testPayload);
+    
+    console.log('📥 Paystack test response:', {
+      status: response.status,
+      dataStatus: response.data?.status,
+      reference: response.data?.data?.reference,
+      authorizationUrl: response.data?.data?.authorization_url
+    });
+
+    res.json({
+      success: true,
+      data: {
+        response: response.data,
+        authorizationUrl: response.data?.data?.authorization_url,
+        reference: response.data?.data?.reference
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Paystack test failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      response: error.response?.data
+    });
+  }
+});
+
 
 // Production fallback handler
 async function handleProductionFallbackPayment(bookingId, amount, userId, res) {
