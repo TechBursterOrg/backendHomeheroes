@@ -876,11 +876,32 @@ console.log('STRIPE_PUBLISHABLE_KEY:', process.env.STRIPE_PUBLISHABLE_KEY ? 'Set
 console.log('PAYSTACK_SECRET_KEY:', process.env.PAYSTACK_SECRET_KEY ? 'Set' : 'NOT SET');
 console.log('NODE_ENV:', process.env.NODE_ENV);
 
+// Add this endpoint to debug payment processor initialization
+app.get('/api/debug/payment-processors', (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      paystack: {
+        configured: !!process.env.PAYSTACK_SECRET_KEY,
+        initialized: !!paymentProcessors?.paystack,
+        secretKey: process.env.PAYSTACK_SECRET_KEY ? '***' + process.env.PAYSTACK_SECRET_KEY.slice(-4) : 'NOT SET'
+      },
+      stripe: {
+        configured: !!process.env.STRIPE_SECRET_KEY,
+        initialized: !!paymentProcessors?.stripe
+      },
+      environment: process.env.NODE_ENV
+    }
+  });
+});
+
 const initializePaymentProcessors = async () => {
   const processors = {
     stripe: null,
     paystack: null
   };
+
+  console.log('💰 Payment Processor Initialization Starting...');
 
   // Initialize Stripe
   if (process.env.STRIPE_SECRET_KEY) {
@@ -897,33 +918,46 @@ const initializePaymentProcessors = async () => {
     console.log('⚠️ Stripe secret key not configured');
   }
 
-  // Initialize Paystack with axios client
+  // Initialize Paystack with enhanced error handling
   if (process.env.PAYSTACK_SECRET_KEY) {
     try {
-      console.log('🔧 Initializing Paystack with axios client...');
+      console.log('🔧 Initializing Paystack...');
+      
+      // Test if Paystack secret key is valid
+      if (!process.env.PAYSTACK_SECRET_KEY.startsWith('sk_')) {
+        throw new Error('Invalid Paystack secret key format. Should start with "sk_"');
+      }
+
       processors.paystack = await createPaystackClient();
       
-      // Test the connection
+      // Test the connection with a simple API call
       console.log('🧪 Testing Paystack connection...');
       const testResponse = await processors.paystack.transaction.list({ perPage: 1 });
       
-      if (testResponse.data.status === true) {
-        console.log('✅ Paystack axios client initialized successfully');
+      if (testResponse.data && testResponse.data.status === true) {
+        console.log('✅ Paystack initialized and tested successfully');
       } else {
-        console.log('⚠️ Paystack test response indicates issues:', testResponse.data.message);
+        console.log('⚠️ Paystack test response indicates issues:', testResponse.data?.message);
+        // Don't fail initialization, just log the warning
       }
       
     } catch (error) {
-      console.error('❌ Paystack axios client initialization failed:', error.message);
+      console.error('❌ Paystack initialization failed:', error.message);
       if (error.response) {
-        console.error('Paystack API error:', error.response.data);
+        console.error('Paystack API error details:', error.response.data);
       }
+      // Set to null but don't throw - allow the app to continue
       processors.paystack = null;
     }
   } else {
     console.log('⚠️ Paystack secret key not configured');
     processors.paystack = null;
   }
+
+  console.log('💰 Payment Processor Status:', {
+    stripe: !!processors.stripe,
+    paystack: !!processors.paystack
+  });
 
   return processors;
 };
@@ -1431,8 +1465,7 @@ app.post('/api/bookings/:bookingId/create-payment', authenticateToken, async (re
       bookingId,
       amount,
       customerCountry,
-      user: req.user.id,
-      body: req.body
+      user: req.user.id
     });
 
     // Input validation
@@ -1469,16 +1502,12 @@ app.post('/api/bookings/:bookingId/create-payment', authenticateToken, async (re
       bookingId: booking._id,
       customerId: booking.customerId?._id,
       currentUserId: req.user.id,
-      bookingStatus: booking.status,
-      existingPayment: booking.payment
+      bookingStatus: booking.status
     });
 
     // Check authorization
     if (booking.customerId._id.toString() !== req.user.id) {
-      console.log('❌ Authorization failed:', {
-        bookingCustomer: booking.customerId._id.toString(),
-        currentUser: req.user.id
-      });
+      console.log('❌ Authorization failed');
       return res.status(403).json({
         success: false,
         message: 'Not authorized to pay for this booking',
@@ -1489,33 +1518,48 @@ app.post('/api/bookings/:bookingId/create-payment', authenticateToken, async (re
     console.log('✅ Authorization passed, proceeding with payment...');
 
     const paymentAmount = parseFloat(amount);
-    const isNigeria = () => {
-  const country = customerCountry?.toLowerCase()?.trim();
-  return country === 'ng' || 
-         country === 'nigeria' || 
-         country === 'ngn' ||
-         country === 'naija' ||
-         country.includes('nigeria');
-};
     
+    // Enhanced country detection
+    const isNigeria = () => {
+      const country = customerCountry?.toLowerCase()?.trim();
+      return country === 'ng' || 
+             country === 'nigeria' || 
+             country === 'ngn' ||
+             country === 'naija' ||
+             country.includes('nigeria');
+    };
+
+    console.log('🌍 Country detection:', {
+      received: customerCountry,
+      isNigeria: isNigeria()
+    });
+
     let paymentResult;
 
-    if (isNigeria) {
+    if (isNigeria()) {
       // PAYSTACK PAYMENT (Nigeria)
       console.log('🌍 Using Paystack for Nigerian customer');
       
-      if (!paymentProcessors.paystack) {
-        console.log('❌ Paystack processor not configured');
+      // CRITICAL FIX: Check if Paystack is properly initialized
+      if (!paymentProcessors?.paystack) {
+        console.log('❌ Paystack processor not configured or initialized');
+        
+        // Provide detailed error information
         return res.status(503).json({
           success: false,
-          message: 'Paystack payment processor is not configured',
-          code: 'PAYMENT_PROCESSOR_UNAVAILABLE'
+          message: 'Paystack payment processor is not available',
+          code: 'PAYMENT_PROCESSOR_UNAVAILABLE',
+          details: {
+            configured: !!process.env.PAYSTACK_SECRET_KEY,
+            initialized: !!paymentProcessors?.paystack,
+            suggestion: 'Check Paystack secret key configuration'
+          }
         });
       }
 
       try {
         const paystackPayload = {
-          amount: Math.round(paymentAmount * 100),
+          amount: Math.round(paymentAmount * 100), // Convert to kobo
           email: req.user.email || booking.customerId.email,
           currency: 'NGN',
           metadata: {
@@ -1573,7 +1617,7 @@ app.post('/api/bookings/:bookingId/create-payment', authenticateToken, async (re
           paymentReference
         });
 
-        // ✅ Initialize paymentResult for Paystack
+        // Initialize paymentResult for Paystack
         paymentResult = {
           success: true,
           processor: 'paystack',
@@ -1590,6 +1634,7 @@ app.post('/api/bookings/:bookingId/create-payment', authenticateToken, async (re
           stack: paystackError.stack,
           response: paystackError.response?.data
         });
+        
         return res.status(502).json({
           success: false,
           message: 'Paystack payment service unavailable',
@@ -1598,10 +1643,10 @@ app.post('/api/bookings/:bookingId/create-payment', authenticateToken, async (re
         });
       }
     } else {
-      // STRIPE PAYMENT (International) - FIXED: Add proper Stripe implementation
+      // STRIPE PAYMENT (International)
       console.log('🌍 Using Stripe for international customer');
       
-      if (!paymentProcessors.stripe) {
+      if (!paymentProcessors?.stripe) {
         console.log('❌ Stripe processor not configured');
         return res.status(503).json({
           success: false,
@@ -1641,7 +1686,7 @@ app.post('/api/bookings/:bookingId/create-payment', authenticateToken, async (re
           clientSecret: paymentIntent.client_secret ? 'present' : 'missing'
         });
 
-        // ✅ Initialize paymentResult for Stripe
+        // Initialize paymentResult for Stripe
         paymentResult = {
           success: true,
           processor: 'stripe',
@@ -1670,7 +1715,7 @@ app.post('/api/bookings/:bookingId/create-payment', authenticateToken, async (re
       }
     }
 
-    // ✅ CRITICAL FIX: Check if paymentResult was properly initialized
+    // CRITICAL FIX: Check if paymentResult was properly initialized
     if (!paymentResult) {
       console.error('❌ paymentResult is undefined after payment processing');
       return res.status(500).json({
@@ -1680,7 +1725,7 @@ app.post('/api/bookings/:bookingId/create-payment', authenticateToken, async (re
       });
     }
 
-    // ✅ CRITICAL FIX: Check if paymentResult has required properties
+    // CRITICAL FIX: Check if paymentResult has required properties
     if (!paymentResult.paymentIntentId) {
       console.error('❌ paymentResult missing paymentIntentId:', paymentResult);
       return res.status(500).json({
@@ -1693,9 +1738,9 @@ app.post('/api/bookings/:bookingId/create-payment', authenticateToken, async (re
     // Update booking with payment info
     console.log('💾 Updating booking with payment information...');
     
-    // ✅ FIXED: Safely initialize booking.payment
+    // Initialize booking.payment safely
     booking.payment = {
-      processor: isNigeria ? 'paystack' : 'stripe',
+      processor: isNigeria() ? 'paystack' : 'stripe',
       paymentIntentId: paymentResult.paymentIntentId,
       amount: paymentResult.amount,
       currency: paymentResult.currency,
@@ -1746,6 +1791,43 @@ app.post('/api/bookings/:bookingId/create-payment', authenticateToken, async (re
       message: 'Failed to create payment intent',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined,
       code: 'PAYMENT_CREATION_FAILED'
+    });
+  }
+});
+
+app.get('/api/payments/health', async (req, res) => {
+  try {
+    const health = {
+      paystack: {
+        configured: !!process.env.PAYSTACK_SECRET_KEY,
+        initialized: !!paymentProcessors?.paystack,
+        test: null
+      },
+      stripe: {
+        configured: !!process.env.STRIPE_SECRET_KEY,
+        initialized: !!paymentProcessors?.stripe
+      },
+      timestamp: new Date().toISOString()
+    };
+
+    // Test Paystack if configured
+    if (paymentProcessors?.paystack) {
+      try {
+        const test = await paymentProcessors.paystack.transaction.list({ perPage: 1 });
+        health.paystack.test = test.data?.status === true ? 'healthy' : 'unhealthy';
+      } catch (error) {
+        health.paystack.test = 'error: ' + error.message;
+      }
+    }
+
+    res.json({
+      success: true,
+      data: health
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });
