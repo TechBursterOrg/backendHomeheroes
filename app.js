@@ -923,29 +923,60 @@ const initializePaymentProcessors = async () => {
     try {
       console.log('🔧 Initializing Paystack...');
       
-      // Test if Paystack secret key is valid
+      // Validate Paystack secret key
       if (!process.env.PAYSTACK_SECRET_KEY.startsWith('sk_')) {
-        throw new Error('Invalid Paystack secret key format. Should start with "sk_"');
+        console.error('❌ Invalid Paystack secret key format. Should start with "sk_"');
+        throw new Error('Invalid Paystack secret key format');
       }
 
+      if (process.env.PAYSTACK_SECRET_KEY.length < 20) {
+        console.error('❌ Paystack secret key appears too short');
+        throw new Error('Paystack secret key appears invalid');
+      }
+
+      console.log('🔑 Paystack secret key format is valid');
+      
+      // Create Paystack client
       processors.paystack = await createPaystackClient();
       
+      if (!processors.paystack) {
+        throw new Error('Paystack client creation returned null');
+      }
+
       // Test the connection with a simple API call
       console.log('🧪 Testing Paystack connection...');
       const testResponse = await processors.paystack.transaction.list({ perPage: 1 });
       
+      console.log('📥 Paystack test response:', {
+        status: testResponse.status,
+        dataStatus: testResponse.data?.status,
+        message: testResponse.data?.message
+      });
+
       if (testResponse.data && testResponse.data.status === true) {
         console.log('✅ Paystack initialized and tested successfully');
       } else {
-        console.log('⚠️ Paystack test response indicates issues:', testResponse.data?.message);
-        // Don't fail initialization, just log the warning
+        console.warn('⚠️ Paystack test response indicates potential issues:', testResponse.data?.message);
+        // Don't fail initialization for test mode responses
+        if (process.env.PAYSTACK_SECRET_KEY.startsWith('sk_test_')) {
+          console.log('🔧 Test mode detected, continuing despite warning...');
+        }
       }
       
     } catch (error) {
       console.error('❌ Paystack initialization failed:', error.message);
+      
       if (error.response) {
-        console.error('Paystack API error details:', error.response.data);
+        console.error('Paystack API error response:', {
+          status: error.response.status,
+          data: error.response.data
+        });
       }
+      
+      if (error.code === 'MODULE_NOT_FOUND') {
+        console.error('❌ Axios module not found. Make sure it is installed.');
+      }
+      
       // Set to null but don't throw - allow the app to continue
       processors.paystack = null;
     }
@@ -961,6 +992,43 @@ const initializePaymentProcessors = async () => {
 
   return processors;
 };
+
+
+app.post('/api/payments/reinitialize', async (req, res) => {
+  try {
+    console.log('🔄 Manually reinitializing payment processors...');
+    
+    // Reinitialize payment processors
+    const newProcessors = await initializePaymentProcessors();
+    
+    // Update the global paymentProcessors
+    paymentProcessors = newProcessors;
+    
+    res.json({
+      success: true,
+      message: 'Payment processors reinitialized',
+      data: {
+        paystack: {
+          configured: !!process.env.PAYSTACK_SECRET_KEY,
+          initialized: !!paymentProcessors.paystack
+        },
+        stripe: {
+          configured: !!process.env.STRIPE_SECRET_KEY,
+          initialized: !!paymentProcessors.stripe
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('Reinitialization error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reinitialize payment processors',
+      error: error.message
+    });
+  }
+});
+
 
 
 let paymentProcessors;
@@ -989,8 +1057,61 @@ const initializeAllServices = async () => {
     
   } catch (error) {
     console.error('❌ Failed to initialize services:', error);
+    // Don't throw here - we want the server to start even if payment processors fail
   }
 };
+
+// Call this when your server starts
+initializeAllServices();
+
+app.post('/api/bookings/:bookingId/create-payment-fallback', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const { amount } = req.body;
+
+    console.log('🔄 Using fallback payment method for booking:', bookingId);
+
+    // Generate a simple payment reference
+    const paymentReference = `HH_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    
+    const paymentResult = {
+      success: true,
+      processor: 'manual',
+      paymentIntentId: paymentReference,
+      authorizationUrl: `${process.env.FRONTEND_URL}/manual-payment?reference=${paymentReference}&amount=${amount}`,
+      amount: parseFloat(amount),
+      currency: 'NGN',
+      status: 'requires_payment_method',
+      instructions: 'Please make payment via bank transfer and upload proof'
+    };
+
+    // Update booking
+    const booking = await Booking.findById(bookingId);
+    booking.payment = {
+      processor: 'manual',
+      paymentIntentId: paymentReference,
+      amount: paymentResult.amount,
+      currency: paymentResult.currency,
+      status: paymentResult.status,
+      initiatedAt: new Date()
+    };
+    await booking.save();
+
+    res.json({
+      success: true,
+      message: 'Manual payment instructions generated',
+      data: paymentResult
+    });
+
+  } catch (error) {
+    console.error('Fallback payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create fallback payment'
+    });
+  }
+});
+
 
 app.get('/api/payments/status', (req, res) => {
   res.json({
@@ -1831,6 +1952,69 @@ app.get('/api/payments/health', async (req, res) => {
     });
   }
 });
+
+app.get('/api/debug/paystack-init', async (req, res) => {
+  try {
+    console.log('🔍 Debugging Paystack initialization...');
+    
+    const debugInfo = {
+      environment: {
+        NODE_ENV: process.env.NODE_ENV,
+        PAYSTACK_SECRET_KEY: process.env.PAYSTACK_SECRET_KEY ? '***' + process.env.PAYSTACK_SECRET_KEY.slice(-4) : 'NOT SET',
+        PAYSTACK_SECRET_KEY_LENGTH: process.env.PAYSTACK_SECRET_KEY ? process.env.PAYSTACK_SECRET_KEY.length : 0
+      },
+      currentState: {
+        paymentProcessorsExists: !!paymentProcessors,
+        paystackInitialized: !!paymentProcessors?.paystack,
+        paystackType: paymentProcessors?.paystack ? typeof paymentProcessors.paystack : 'undefined'
+      }
+    };
+
+    // Test Paystack initialization directly
+    if (process.env.PAYSTACK_SECRET_KEY) {
+      try {
+        console.log('🧪 Testing direct Paystack initialization...');
+        const testClient = await createPaystackClient();
+        
+        debugInfo.directTest = {
+          success: true,
+          clientCreated: !!testClient,
+          methods: testClient ? Object.keys(testClient) : []
+        };
+
+        // Test API call
+        const testResponse = await testClient.transaction.list({ perPage: 1 });
+        debugInfo.apiTest = {
+          success: true,
+          status: testResponse.data?.status,
+          message: testResponse.data?.message
+        };
+
+      } catch (testError) {
+        debugInfo.directTest = {
+          success: false,
+          error: testError.message,
+          stack: testError.stack
+        };
+      }
+    }
+
+    console.log('📊 Paystack Debug Info:', debugInfo);
+    
+    res.json({
+      success: true,
+      data: debugInfo
+    });
+
+  } catch (error) {
+    console.error('Paystack debug error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 
 
 app.post('/api/debug/check-payment-response', authenticateToken, async (req, res) => {
@@ -3190,6 +3374,18 @@ app.get('/api/debug/paystack-structure', (req, res) => {
 
 const createPaystackClient = async () => {
   try {
+    console.log('🔧 Creating Paystack client...');
+    
+    if (!process.env.PAYSTACK_SECRET_KEY) {
+      throw new Error('PAYSTACK_SECRET_KEY environment variable is not set');
+    }
+
+    // Validate the secret key format
+    if (!process.env.PAYSTACK_SECRET_KEY.startsWith('sk_')) {
+      console.error('❌ Invalid Paystack secret key format:', process.env.PAYSTACK_SECRET_KEY.substring(0, 10) + '...');
+      throw new Error('Paystack secret key must start with "sk_"');
+    }
+
     const axiosModule = await import('axios');
     const axios = axiosModule.default;
     
@@ -3199,15 +3395,29 @@ const createPaystackClient = async () => {
       'Content-Type': 'application/json'
     };
 
-    return {
+    console.log('✅ Paystack client configuration:', {
+      baseURL,
+      headers: { ...headers, Authorization: 'Bearer ***' + process.env.PAYSTACK_SECRET_KEY.slice(-4) }
+    });
+
+    // Create the client object
+    const client = {
       transaction: {
-        initialize: (data) => axios.post(`${baseURL}/transaction/initialize`, data, { headers }),
-        verify: (reference) => axios.get(`${baseURL}/transaction/verify/${reference}`, { headers }),
-        list: (params) => axios.get(`${baseURL}/transaction`, { headers, params })
+        initialize: (data) => {
+          console.log('📤 Paystack initialize called with:', data);
+          return axios.post(`${baseURL}/transaction/initialize`, data, { headers });
+        },
+        verify: (reference) => {
+          console.log('🔍 Paystack verify called with:', reference);
+          return axios.get(`${baseURL}/transaction/verify/${reference}`, { headers });
+        },
+        list: (params) => {
+          return axios.get(`${baseURL}/transaction`, { headers, params });
+        }
       },
       recipient: {
         create: (data) => axios.post(`${baseURL}/transferrecipient`, data, { headers }),
-        list: (params) => axios.get(`${baseURL}/transferrecipient`, { headers, params })
+        list: (params) => axios.get(`${baseOTURL}/transferrecipient`, { headers, params })
       },
       transfer: {
         create: (data) => axios.post(`${baseURL}/transfer`, data, { headers }),
@@ -3218,7 +3428,6 @@ const createPaystackClient = async () => {
         create: (data) => axios.post(`${baseURL}/refund`, data, { headers }),
         list: (params) => axios.get(`${baseURL}/refund`, { headers, params })
       },
-      // ADD BANK AND VERIFICATION METHODS
       bank: {
         list: (params) => axios.get(`${baseURL}/bank`, { headers, params })
       },
@@ -3232,11 +3441,17 @@ const createPaystackClient = async () => {
         })
       }
     };
+
+    console.log('✅ Paystack client created successfully');
+    return client;
+
   } catch (error) {
-    console.error('❌ Failed to create Paystack axios client:', error.message);
+    console.error('❌ Failed to create Paystack client:', error.message);
+    console.error('Error details:', error);
     throw error;
   }
 };
+
 
 async function processAutoRefunds() {
   try {
