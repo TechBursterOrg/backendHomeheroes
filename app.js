@@ -4480,6 +4480,179 @@ app.post('/api/service-requests/:jobId/request-refund', authenticateToken, async
   }
 });
 
+app.post('/api/payments/webhooks/paystack', async (req, res) => {
+  try {
+    const signature = req.headers['x-paystack-signature'];
+    const body = req.rawBody || JSON.stringify(req.body);
+    
+    console.log('🔔 Paystack Webhook Received:', {
+      signature: signature ? 'Present' : 'Missing',
+      body: body.substring(0, 200) + '...'
+    });
+
+    // Verify signature (recommended for production)
+    if (process.env.NODE_ENV === 'production' && signature) {
+      const crypto = require('crypto');
+      const hash = crypto.createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
+                        .update(body)
+                        .digest('hex');
+      
+      if (hash !== signature) {
+        console.error('❌ Invalid webhook signature');
+        return res.status(400).json({ success: false, message: 'Invalid signature' });
+      }
+    }
+
+    const event = typeof body === 'string' ? JSON.parse(body) : body;
+    console.log('📨 Webhook Event:', event.event);
+
+    // Handle different webhook events
+    if (event.event === 'charge.success') {
+      const { reference, amount, customer } = event.data;
+      
+      console.log('✅ Payment Successful:', {
+        reference,
+        amount: amount / 100,
+        customerEmail: customer.email
+      });
+
+      // Find booking by Paystack reference
+      const booking = await Booking.findOne({
+        'payment.paymentIntentId': reference
+      });
+
+      if (booking) {
+        console.log('🔍 Found booking:', {
+          bookingId: booking._id,
+          currentStatus: booking.status,
+          currentPaymentStatus: booking.payment?.status
+        });
+
+        // Update booking payment status to HELD
+        booking.payment.status = 'held';
+        booking.payment.heldAt = new Date();
+        booking.payment.verifiedAt = new Date();
+        booking.status = 'confirmed'; // Change from pending to confirmed
+        
+        // Set auto-refund timer (4 hours from now)
+        booking.autoRefundAt = new Date(Date.now() + 4 * 60 * 60 * 1000);
+        
+        await booking.save();
+
+        console.log('✅ Booking updated:', {
+          bookingId: booking._id,
+          newStatus: booking.status,
+          newPaymentStatus: booking.payment.status,
+          autoRefundAt: booking.autoRefundAt
+        });
+
+        // Send notification to provider
+        await Notification.createNotification({
+          userId: booking.providerId,
+          type: 'payment_received',
+          title: 'Payment Received!',
+          message: `A customer has made a payment of ${booking.payment.currency}${booking.payment.amount} for your ${booking.serviceType} service. Please confirm the booking.`,
+          relatedId: booking._id,
+          relatedType: 'booking',
+          priority: 'high'
+        });
+
+        // Send notification to customer
+        await Notification.createNotification({
+          userId: booking.customerId,
+          type: 'payment_confirmed',
+          title: 'Payment Confirmed!',
+          message: `Your payment of ${booking.payment.currency}${booking.payment.amount} has been confirmed and is now held in escrow.`,
+          relatedId: booking._id,
+          relatedType: 'booking',
+          priority: 'high'
+        });
+
+        console.log('✅ Notifications sent');
+      } else {
+        console.error('❌ Booking not found for reference:', reference);
+      }
+    } else if (event.event === 'transfer.success') {
+      console.log('✅ Transfer successful:', event.data);
+      // Handle successful transfer to provider/company
+    } else if (event.event === 'refund.processed') {
+      console.log('✅ Refund processed:', event.data);
+      // Handle refunds
+    }
+
+    res.json({ success: true, message: 'Webhook processed' });
+  } catch (error) {
+    console.error('❌ Webhook processing error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/debug/booking/:bookingId', authenticateToken, async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+
+    const booking = await Booking.findById(bookingId)
+      .populate('customerId', 'name email')
+      .populate('providerId', 'name email paymentSettings');
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Check Paystack verification
+    let paystackStatus = null;
+    if (booking.payment?.processor === 'paystack' && booking.payment?.paymentIntentId) {
+      try {
+        const verification = await paymentProcessors.paystack.transaction.verify(
+          booking.payment.paymentIntentId
+        );
+        paystackStatus = verification.data;
+      } catch (error) {
+        console.error('Paystack verification error:', error);
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        booking: {
+          id: booking._id,
+          status: booking.status,
+          payment: booking.payment,
+          providerArrived: booking.providerArrived,
+          showHeroHereButton: booking.showHeroHereButton,
+          heroHereConfirmed: booking.heroHereConfirmed,
+          autoRefundAt: booking.autoRefundAt,
+          timeRemaining: booking.autoRefundAt 
+            ? Math.max(0, new Date(booking.autoRefundAt).getTime() - Date.now()) 
+            : null
+        },
+        paystackStatus: paystackStatus,
+        escrow: {
+          amount: booking.payment?.amount,
+          status: booking.payment?.status,
+          shouldBeHeld: booking.payment?.status === 'held',
+          split: booking.payment?.amount ? {
+            platformFee: booking.payment.amount * 0.15,
+            providerAmount: booking.payment.amount * 0.85
+          } : null
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Debug booking error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+
 app.get('/api/payments/held-payments', authenticateToken, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
