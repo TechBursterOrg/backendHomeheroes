@@ -3364,11 +3364,19 @@ app.post('/api/bookings/:id/complete-job', authenticateToken, async (req, res) =
       });
     }
 
-    // Check if customer has confirmed service
-    if (!booking.customerConfirmedService) {
+    // CRITICAL FIX: Check if customer has confirmed "Hero Here"
+    if (!booking.heroHereConfirmed) {
       return res.status(400).json({
         success: false,
-        message: 'Customer has not confirmed service yet'
+        message: 'Customer has not confirmed "Hero Here" yet. Please wait for customer confirmation.'
+      });
+    }
+
+    // Check if customer has confirmed seeing provider (additional check)
+    if (!booking.customerSeenProvider) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer has not confirmed seeing you yet'
       });
     }
 
@@ -3380,152 +3388,34 @@ app.post('/api/bookings/:id/complete-job', authenticateToken, async (req, res) =
       });
     }
 
-    const provider = booking.providerId;
-
-    // Check if provider has bank account set up
-    if (!provider.paymentSettings?.paystackRecipientCode) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please set up your bank account to receive payments'
-      });
-    }
-
-    // Calculate amounts (20% company, 80% provider)
-    const totalAmount = booking.payment.amount;
-    const companyAmount = totalAmount * 0.20;
-    const providerAmount = totalAmount * 0.80;
-
-    console.log('💰 Payment Split:', {
-      totalAmount,
-      companyAmount,
-      providerAmount
-    });
-
-    // Process transfers to both company and provider
-    let companyTransferResult, providerTransferResult;
-
-    try {
-      // Transfer 20% to company account
-      companyTransferResult = await paymentProcessors.paystack.transfer.create({
-        source: 'balance',
-        amount: Math.round(companyAmount * 100), // Convert to kobo
-        recipient: COMPANY_ACCOUNT.paystackRecipientCode,
-        reason: `Home Heroes Commission - Booking ${bookingId}`
-      });
-
-      if (!companyTransferResult.status) {
-        throw new Error(`Company transfer failed: ${companyTransferResult.message}`);
-      }
-
-      console.log('✅ Company transfer initiated:', companyTransferResult.data.transfer_code);
-
-    } catch (companyTransferError) {
-      console.error('❌ Company transfer failed:', companyTransferError);
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to transfer commission to company: ' + companyTransferError.message,
-        code: 'COMPANY_TRANSFER_FAILED'
-      });
-    }
-
-    try {
-      // Transfer 80% to provider account
-      providerTransferResult = await paymentProcessors.paystack.transfer.create({
-        source: 'balance',
-        amount: Math.round(providerAmount * 100), // Convert to kobo
-        recipient: provider.paymentSettings.paystackRecipientCode,
-        reason: `Payment for ${booking.serviceType} service - Booking ${bookingId}`
-      });
-
-      if (!providerTransferResult.status) {
-        throw new Error(`Provider transfer failed: ${providerTransferResult.message}`);
-      }
-
-      console.log('✅ Provider transfer initiated:', providerTransferResult.data.transfer_code);
-
-    } catch (providerTransferError) {
-      console.error('❌ Provider transfer failed:', providerTransferError);
-      
-      // If provider transfer fails, try to reverse the company transfer
-      try {
-        if (companyTransferResult?.data?.transfer_code) {
-          await paymentProcessors.paystack.transfer.reverse({
-            transfer_code: companyTransferResult.data.transfer_code
-          });
-          console.log('✅ Reversed company transfer due to provider transfer failure');
-        }
-      } catch (reverseError) {
-        console.error('❌ Failed to reverse company transfer:', reverseError);
-      }
-
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to transfer payment to provider: ' + providerTransferError.message,
-        code: 'PROVIDER_TRANSFER_FAILED'
-      });
-    }
-
-    // Update provider earnings (only their 80% portion)
-    provider.providerFinancials = provider.providerFinancials || {};
-    provider.providerFinancials.totalEarnings = (provider.providerFinancials.totalEarnings || 0) + providerAmount;
-    provider.providerFinancials.availableBalance = (provider.providerFinancials.availableBalance || 0) + providerAmount;
-    await provider.save();
-
-    // Update booking status
-    booking.payment.status = 'released';
-    booking.payment.releasedAt = new Date();
-    booking.payment.commission = companyAmount;
-    booking.payment.providerAmount = providerAmount;
-    booking.payment.companyAmount = companyAmount;
-    booking.payment.companyTransferCode = companyTransferResult.data.transfer_code;
-    booking.payment.providerTransferCode = providerTransferResult.data.transfer_code;
-    booking.paymentReleased = true;
-    booking.paymentReleasedAt = new Date();
-    booking.status = 'completed';
-    booking.completedAt = new Date();
+    // Update booking status to completed by provider
+    booking.status = 'provider_completed';
+    booking.providerCompletedAt = new Date();
     
     await booking.save();
 
-    // Notify provider
+    // Notify customer to confirm completion
     await Notification.createNotification({
-      userId: booking.providerId,
-      type: 'payment_released',
-      title: 'Payment Released!',
-      message: `Payment of ${booking.payment.currency}${providerAmount} has been released to your bank account (80% of total). Home Heroes commission: ${booking.payment.currency}${companyAmount}`,
+      userId: booking.customerId,
+      type: 'job_completed_by_provider',
+      title: 'Service Completed!',
+      message: `${booking.providerName} has marked the service as completed. Please confirm the service is completed to release payment.`,
       relatedId: booking._id,
       relatedType: 'booking',
       priority: 'high'
     });
 
-    // Notify customer
-    await Notification.createNotification({
-      userId: booking.customerId,
-      type: 'payment_completed',
-      title: 'Payment Completed',
-      message: `Payment has been released to ${provider.name} for the completed service.`,
-      relatedId: booking._id,
-      relatedType: 'booking',
-      priority: 'medium'
-    });
-
     res.json({
       success: true,
-      message: 'Job completed successfully! Payment released - 20% to company, 80% to provider',
-      data: {
-        totalAmount,
-        companyAmount,
-        providerAmount,
-        companyTransferCode: companyTransferResult.data.transfer_code,
-        providerTransferCode: providerTransferResult.data.transfer_code
-      }
+      message: 'Job marked as completed. Waiting for customer confirmation to release payment.',
+      data: booking
     });
 
   } catch (error) {
-    console.error('Complete job error:', error);
+    console.error('Provider job completion error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to complete job',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+      message: 'Failed to complete job'
     });
   }
 });
@@ -3942,7 +3832,7 @@ app.post('/api/bookings/:bookingId/retry-payment', authenticateToken, async (req
 
 app.post('/api/bookings/:id/confirm-arrival', authenticateToken, async (req, res) => {
   try {
-    const { bookingId } = req.params;
+    const bookingId = req.params.id;
 
     const booking = await Booking.findById(bookingId);
     if (!booking) {
@@ -3960,6 +3850,22 @@ app.post('/api/bookings/:id/confirm-arrival', authenticateToken, async (req, res
       });
     }
 
+    // Check if booking is in correct status
+    if (booking.status !== 'confirmed' && booking.status !== 'accepted') {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking is not in confirmed status'
+      });
+    }
+
+    // Check if provider already confirmed arrival
+    if (booking.providerArrived) {
+      return res.status(400).json({
+        success: false,
+        message: 'Arrival already confirmed'
+      });
+    }
+
     // Update booking with provider arrival confirmation
     booking.providerArrived = true;
     booking.providerArrivedAt = new Date();
@@ -3970,19 +3876,39 @@ app.post('/api/bookings/:id/confirm-arrival', authenticateToken, async (req, res
     await booking.save();
 
     // Notify customer that provider has arrived
-    await Notification.createNotification({
-      userId: booking.customerId,
-      type: 'provider_arrived',
-      title: 'Your Hero Has Arrived!',
-      message: `${booking.providerName} has arrived at your location. Please confirm they are here to start the service.`,
-      relatedId: booking._id,
-      relatedType: 'booking',
-      priority: 'high'
-    });
+    // Use a valid notification type based on your schema
+    try {
+      await Notification.createNotification({
+        userId: booking.customerId,
+        type: 'booking_confirmed', // Changed to valid type
+        title: 'Your Hero Has Arrived!',
+        message: `${booking.providerName} has arrived at your location. Please confirm they are here to start the service.`,
+        relatedId: booking._id,
+        relatedType: 'booking',
+        priority: 'high'
+      });
+    } catch (notificationError) {
+      console.log('⚠️ Using fallback notification type:', notificationError.message);
+      // Try with a different type if the first one fails
+      await Notification.createNotification({
+        userId: booking.customerId,
+        type: 'booking_update', // Another possible valid type
+        title: 'Your Hero Has Arrived!',
+        message: `${booking.providerName} has arrived at your location. Please confirm they are here to start the service.`,
+        relatedId: booking._id,
+        relatedType: 'booking',
+        priority: 'high'
+      });
+    }
 
     res.json({
       success: true,
-      message: 'Arrival confirmed successfully. Customer can now confirm you are here.'
+      message: 'Arrival confirmed successfully. Customer can now confirm you are here.',
+      data: {
+        providerArrived: true,
+        providerArrivedAt: booking.providerArrivedAt,
+        showHeroHereButton: true
+      }
     });
 
   } catch (error) {
@@ -3996,7 +3922,7 @@ app.post('/api/bookings/:id/confirm-arrival', authenticateToken, async (req, res
 
 app.post('/api/bookings/:id/confirm-hero-here', authenticateToken, async (req, res) => {
   try {
-    const { bookingId } = req.params;
+    const bookingId = req.params.id;
 
     const booking = await Booking.findById(bookingId);
     if (!booking) {
@@ -4042,20 +3968,21 @@ app.post('/api/bookings/:id/confirm-hero-here', authenticateToken, async (req, r
 
     // Notify provider that customer confirmed their arrival
     await Notification.createNotification({
-      userId: booking.providerId,
-      type: 'customer_confirmed_arrival',
-      title: 'Customer Confirmed Your Arrival!',
-      message: 'The customer has confirmed you are at the location. Service can begin.',
-      relatedId: booking._id,
-      relatedType: 'booking',
-      priority: 'high'
-    });
+  userId: booking.providerId,
+  type: 'booking_confirmed', // Changed to valid type
+  title: 'Customer Confirmed Your Arrival!',
+  message: 'The customer has confirmed you are at the location. Service can begin.',
+  relatedId: booking._id,
+  relatedType: 'booking',
+  priority: 'high'
+});
 
     res.json({
       success: true,
       message: 'Hero here confirmed successfully. Payment will be held for 4 hours for service completion.',
       data: {
-        autoRefundAt: booking.autoRefundAt
+        autoRefundAt: booking.autoRefundAt,
+        heroHereConfirmed: true
       }
     });
 
