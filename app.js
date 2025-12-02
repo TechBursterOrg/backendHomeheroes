@@ -4483,11 +4483,22 @@ app.post('/api/service-requests/:jobId/request-refund', authenticateToken, async
 app.post('/api/payments/webhooks/paystack', async (req, res) => {
   try {
     const signature = req.headers['x-paystack-signature'];
-    const body = req.rawBody || JSON.stringify(req.body);
+    
+    // FIX: Get the raw body properly - always ensure it's a string
+    let body;
+    if (req.rawBody) {
+      body = req.rawBody.toString();
+    } else if (typeof req.body === 'string') {
+      body = req.body;
+    } else if (req.body) {
+      body = JSON.stringify(req.body);
+    } else {
+      body = '';
+    }
     
     console.log('🔔 Paystack Webhook Received:', {
       signature: signature ? 'Present' : 'Missing',
-      body: body.substring(0, 200) + '...'
+      body: body.substring(0, Math.min(body.length, 200)) + (body.length > 200 ? '...' : '')
     });
 
     // Verify signature (recommended for production)
@@ -4503,17 +4514,19 @@ app.post('/api/payments/webhooks/paystack', async (req, res) => {
       }
     }
 
+    // Parse the event data
     const event = typeof body === 'string' ? JSON.parse(body) : body;
     console.log('📨 Webhook Event:', event.event);
 
     // Handle different webhook events
     if (event.event === 'charge.success') {
-      const { reference, amount, customer } = event.data;
+      const { reference, amount, customer, metadata } = event.data;
       
       console.log('✅ Payment Successful:', {
         reference,
         amount: amount / 100,
-        customerEmail: customer.email
+        customerEmail: customer.email,
+        metadata: metadata || 'No metadata'
       });
 
       // Find booking by Paystack reference
@@ -4527,6 +4540,12 @@ app.post('/api/payments/webhooks/paystack', async (req, res) => {
           currentStatus: booking.status,
           currentPaymentStatus: booking.payment?.status
         });
+
+        // Check if booking is already confirmed to avoid duplicate processing
+        if (booking.payment?.status === 'held' || booking.status === 'confirmed') {
+          console.log('ℹ️ Booking already processed, skipping update');
+          return res.json({ success: true, message: 'Already processed' });
+        }
 
         // Update booking payment status to HELD
         booking.payment.status = 'held';
@@ -4547,43 +4566,95 @@ app.post('/api/payments/webhooks/paystack', async (req, res) => {
         });
 
         // Send notification to provider
-        await Notification.createNotification({
-          userId: booking.providerId,
-          type: 'payment_received',
-          title: 'Payment Received!',
-          message: `A customer has made a payment of ${booking.payment.currency}${booking.payment.amount} for your ${booking.serviceType} service. Please confirm the booking.`,
-          relatedId: booking._id,
-          relatedType: 'booking',
-          priority: 'high'
-        });
+        try {
+          await Notification.createNotification({
+            userId: booking.providerId,
+            type: 'payment_received',
+            title: 'Payment Received!',
+            message: `A customer has made a payment of ${booking.payment.currency}${booking.payment.amount} for your ${booking.serviceType} service. Please confirm the booking.`,
+            relatedId: booking._id,
+            relatedType: 'booking',
+            priority: 'high'
+          });
+        } catch (notifError) {
+          console.error('❌ Failed to send provider notification:', notifError);
+        }
 
         // Send notification to customer
-        await Notification.createNotification({
-          userId: booking.customerId,
-          type: 'payment_confirmed',
-          title: 'Payment Confirmed!',
-          message: `Your payment of ${booking.payment.currency}${booking.payment.amount} has been confirmed and is now held in escrow.`,
-          relatedId: booking._id,
-          relatedType: 'booking',
-          priority: 'high'
-        });
+        try {
+          await Notification.createNotification({
+            userId: booking.customerId,
+            type: 'payment_confirmed',
+            title: 'Payment Confirmed!',
+            message: `Your payment of ${booking.payment.currency}${booking.payment.amount} has been confirmed and is now held in escrow.`,
+            relatedId: booking._id,
+            relatedType: 'booking',
+            priority: 'high'
+          });
+        } catch (notifError) {
+          console.error('❌ Failed to send customer notification:', notifError);
+        }
 
         console.log('✅ Notifications sent');
       } else {
         console.error('❌ Booking not found for reference:', reference);
+        
+        // Optional: Try alternative search methods
+        if (metadata && metadata.bookingId) {
+          console.log('🔍 Trying to find booking by metadata.bookingId:', metadata.bookingId);
+          const bookingById = await Booking.findById(metadata.bookingId);
+          if (bookingById) {
+            console.log('✅ Found booking by ID, updating payment reference...');
+            bookingById.payment.paymentIntentId = reference;
+            await bookingById.save();
+          }
+        }
       }
     } else if (event.event === 'transfer.success') {
-      console.log('✅ Transfer successful:', event.data);
+      console.log('✅ Transfer successful:', {
+        reference: event.data.reference,
+        amount: event.data.amount / 100,
+        recipient: event.data.recipient.name || event.data.recipient.email
+      });
+      
       // Handle successful transfer to provider/company
+      // You might want to update a booking or payment record here
+      
     } else if (event.event === 'refund.processed') {
-      console.log('✅ Refund processed:', event.data);
-      // Handle refunds
+      console.log('✅ Refund processed:', {
+        reference: event.data.reference,
+        amount: event.data.amount / 100,
+        status: event.data.status
+      });
+      
+      // Handle refunds - find and update booking
+      const { reference } = event.data;
+      const booking = await Booking.findOne({
+        'payment.paymentIntentId': reference
+      });
+      
+      if (booking) {
+        booking.payment.status = 'refunded';
+        booking.status = 'cancelled';
+        await booking.save();
+        console.log('✅ Booking refund status updated:', booking._id);
+      }
+      
+    } else if (event.event === 'subscription.create') {
+      console.log('📋 Subscription created:', event.data);
+      
+    } else {
+      console.log('ℹ️ Unhandled webhook event:', event.event);
     }
 
     res.json({ success: true, message: 'Webhook processed' });
   } catch (error) {
     console.error('❌ Webhook processing error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
