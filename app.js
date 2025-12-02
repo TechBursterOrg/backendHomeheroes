@@ -4098,29 +4098,13 @@ app.post('/api/payments/release-to-provider', authenticateToken, async (req, res
       });
     }
 
-    // Check if Hero Here was confirmed
-    if (!booking.heroHereConfirmed) {
-      return res.status(400).json({
-        success: false,
-        message: 'Hero Here not confirmed by customer'
-      });
-    }
-
     const provider = booking.providerId;
 
-    // CRITICAL: Check if provider has set up their bank account
+    // Check if provider has bank account set up
     if (!provider.paymentSettings?.paystackRecipientCode) {
       return res.status(400).json({
         success: false,
-        message: 'Provider has not set up their bank account for payments. Please contact the provider to add their bank details.'
-      });
-    }
-
-    // Check if company account is set up
-    if (!COMPANY_ACCOUNT.paystackRecipientCode) {
-      return res.status(500).json({
-        success: false,
-        message: 'Company payment account not configured. Please contact support.'
+        message: 'Provider has not set up their bank account for payments. Payment will be held until provider adds account.'
       });
     }
 
@@ -4240,14 +4224,6 @@ app.post('/api/payments/release-to-provider', authenticateToken, async (req, res
       priority: 'medium'
     });
 
-    // Log platform fee (you might want to store this in a separate collection)
-    console.log('🏢 Platform Fee Recorded:', {
-      bookingId: booking._id,
-      amount: platformFee,
-      transferCode: platformTransferResult.data.transfer_code,
-      timestamp: new Date()
-    });
-
     res.json({
       success: true,
       message: 'Payment released successfully - 15% platform fee, 85% to provider',
@@ -4269,6 +4245,773 @@ app.post('/api/payments/release-to-provider', authenticateToken, async (req, res
     });
   }
 });
+
+app.post('/api/payments/auto-release-pending', authenticateToken, async (req, res) => {
+  try {
+    const provider = await User.findById(req.user.id);
+    
+    if (!provider.paymentSettings?.paystackRecipientCode) {
+      return res.json({
+        success: false,
+        message: 'No bank account added yet'
+      });
+    }
+
+    // Find all completed bookings with held payments for this provider
+    const pendingPayments = await Booking.find({
+      providerId: req.user.id,
+      'payment.status': 'held',
+      status: 'completed'
+    }).populate('customerId', 'name email');
+
+    console.log(`Found ${pendingPayments.length} pending payments to release`);
+
+    const releasedPayments = [];
+    const failedPayments = [];
+
+    for (const booking of pendingPayments) {
+      try {
+        const totalAmount = booking.payment.amount;
+        const platformFee = totalAmount * 0.15;
+        const providerAmount = totalAmount * 0.85;
+
+        // Transfer 15% to platform
+        const platformTransfer = await paymentProcessors.paystack.transfer.create({
+          source: 'balance',
+          amount: Math.round(platformFee * 100),
+          recipient: COMPANY_ACCOUNT.paystackRecipientCode,
+          reason: `Home Heroes Platform Fee - Booking ${booking._id}`
+        });
+
+        // Transfer 85% to provider
+        const providerTransfer = await paymentProcessors.paystack.transfer.create({
+          source: 'balance',
+          amount: Math.round(providerAmount * 100),
+          recipient: provider.paymentSettings.paystackRecipientCode,
+          reason: `Payment for ${booking.serviceType} service - Booking ${booking._id}`
+        });
+
+        // Update provider earnings
+        provider.providerFinancials = provider.providerFinancials || {};
+        provider.providerFinancials.totalEarnings = (provider.providerFinancials.totalEarnings || 0) + providerAmount;
+        provider.providerFinancials.availableBalance = (provider.providerFinancials.availableBalance || 0) + providerAmount;
+
+        // Update booking
+        booking.payment.status = 'released';
+        booking.payment.releasedAt = new Date();
+        booking.payment.platformFee = platformFee;
+        booking.payment.providerAmount = providerAmount;
+        booking.payment.platformTransferCode = platformTransfer.data.transfer_code;
+        booking.payment.providerTransferCode = providerTransfer.data.transfer_code;
+        booking.paymentReleased = true;
+        booking.paymentReleasedAt = new Date();
+
+        await booking.save();
+
+        releasedPayments.push({
+          bookingId: booking._id,
+          amount: providerAmount,
+          transferCode: providerTransfer.data.transfer_code
+        });
+
+        // Send notification
+        await Notification.createNotification({
+          userId: provider._id,
+          type: 'payment_released',
+          title: 'Payment Released!',
+          message: `Payment of ${booking.payment.currency}${providerAmount} has been automatically released to your bank account.`,
+          relatedId: booking._id,
+          relatedType: 'booking',
+          priority: 'high'
+        });
+
+      } catch (error) {
+        console.error(`Failed to release payment for booking ${booking._id}:`, error);
+        failedPayments.push({
+          bookingId: booking._id,
+          error: error.message
+        });
+      }
+    }
+
+    await provider.save();
+
+    res.json({
+      success: true,
+      message: `Auto-released ${releasedPayments.length} payments. ${failedPayments.length} failed.`,
+      data: {
+        released: releasedPayments,
+        failed: failedPayments
+      }
+    });
+
+  } catch (error) {
+    console.error('Auto-release error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to auto-release payments'
+    });
+  }
+});
+
+
+app.post('/api/service-requests/:jobId/request-refund', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { reason } = req.body;
+
+    console.log('🔄 Service request refund request:', { jobId, reason });
+
+    const serviceRequest = await ServiceRequest.findById(jobId).populate('customerId', 'name email');
+    if (!serviceRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service request not found'
+      });
+    }
+
+    // Check if user owns the service request
+    if (serviceRequest.customerId._id.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to request refund for this service request'
+      });
+    }
+
+    // Check if proposal has been accepted
+    if (serviceRequest.status === 'accepted' || serviceRequest.acceptedProposalId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot refund after proposal has been accepted'
+      });
+    }
+
+    // Check if payment exists and is held
+    if (!serviceRequest.payment || serviceRequest.payment.status !== 'held') {
+      return res.status(400).json({
+        success: false,
+        message: 'No payment found or payment is not in held status'
+      });
+    }
+
+    // Process refund based on payment processor
+    let refundResult;
+
+    if (serviceRequest.payment.processor === 'paystack') {
+      try {
+        const refundResponse = await paymentProcessors.paystack.refund.create({
+          transaction: serviceRequest.payment.paymentIntentId,
+          amount: Math.round(serviceRequest.payment.amount * 100)
+        });
+
+        if (refundResponse.data.status) {
+          refundResult = {
+            success: true,
+            processor: 'paystack',
+            refundId: refundResponse.data.data.id
+          };
+        } else {
+          throw new Error(refundResponse.data.message);
+        }
+      } catch (paystackError) {
+        console.error('❌ Paystack refund failed:', paystackError);
+        throw new Error(`Paystack refund failed: ${paystackError.message}`);
+      }
+    } else if (serviceRequest.payment.processor === 'stripe') {
+      try {
+        const refund = await paymentProcessors.stripe.refunds.create({
+          payment_intent: serviceRequest.payment.paymentIntentId
+        });
+
+        refundResult = {
+          success: true,
+          processor: 'stripe',
+          refundId: refund.id
+        };
+      } catch (stripeError) {
+        console.error('❌ Stripe refund failed:', stripeError);
+        throw new Error(`Stripe refund failed: ${stripeError.message}`);
+      }
+    }
+
+    // Update service request status
+    serviceRequest.status = 'cancelled';
+    serviceRequest.payment.status = 'refunded';
+    serviceRequest.payment.refundedAt = new Date();
+    serviceRequest.refundRequested = true;
+    serviceRequest.refundReason = reason;
+    serviceRequest.cancelledAt = new Date();
+
+    await serviceRequest.save();
+
+    console.log('✅ Service request refund processed successfully');
+
+    // Notify customer
+    await Notification.createNotification({
+      userId: serviceRequest.customerId._id,
+      type: 'payment_refunded',
+      title: 'Payment Refunded',
+      message: `Your payment of ${serviceRequest.payment.currency}${serviceRequest.payment.amount} has been refunded.`,
+      relatedId: serviceRequest._id,
+      relatedType: 'service_request',
+      priority: 'medium'
+    });
+
+    res.json({
+      success: true,
+      message: 'Refund processed successfully',
+      data: {
+        refund: refundResult,
+        serviceRequest: {
+          id: serviceRequest._id,
+          status: serviceRequest.status,
+          payment: serviceRequest.payment
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Service request refund error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to process refund',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.get('/api/payments/held-payments', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    
+    // For providers: get their held payments
+    if (user.userType.includes('provider') || user.userType === 'both') {
+      const heldBookings = await Booking.find({
+        providerId: req.user.id,
+        'payment.status': 'held',
+        status: 'completed'
+      }).select('_id serviceType payment.amount payment.currency createdAt');
+
+      const heldServiceRequests = await ServiceRequest.find({
+        providerId: req.user.id,
+        'payment.status': 'held',
+        status: 'completed'
+      }).select('_id serviceType payment.amount payment.currency createdAt');
+
+      res.json({
+        success: true,
+        data: {
+          hasBankAccount: !!user.paymentSettings?.paystackRecipientCode,
+          heldBookings,
+          heldServiceRequests,
+          totalHeldAmount: [
+            ...heldBookings.map(b => b.payment.amount),
+            ...heldServiceRequests.map(s => s.payment.amount)
+          ].reduce((sum, amount) => sum + amount, 0)
+        }
+      });
+    } else {
+      res.status(403).json({
+        success: false,
+        message: 'Only providers can access held payments'
+      });
+    }
+  } catch (error) {
+    console.error('Get held payments error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch held payments'
+    });
+  }
+});
+
+app.post('/api/service-requests/payment-verify', async (req, res) => {
+  try {
+    const { reference, jobId, processor } = req.query;
+
+    console.log('🔍 Verifying service request payment:', { reference, jobId, processor });
+
+    if (!reference || !jobId || !processor) {
+      return res.redirect(`${process.env.FRONTEND_URL}/service-requests/${jobId}?payment=error&message=missing_parameters`);
+    }
+
+    let paymentVerified = false;
+    let serviceRequest;
+
+    if (processor === 'paystack') {
+      // Verify Paystack payment
+      const verification = await paymentProcessors.paystack.transaction.verify(reference);
+      
+      console.log('📊 Paystack verification response:', {
+        status: verification.data.status,
+        message: verification.data.message,
+        data: verification.data.data
+      });
+
+      if (verification.data.status === 'success') {
+        paymentVerified = true;
+        serviceRequest = await ServiceRequest.findById(jobId)
+          .populate('customerId', 'name email')
+          .populate('providerId', 'name email paymentSettings');
+        
+        if (serviceRequest) {
+          // Update payment status to HELD in escrow
+          serviceRequest.payment.status = 'held';
+          serviceRequest.payment.heldAt = new Date();
+          serviceRequest.payment.verificationReference = reference;
+          serviceRequest.payment.verifiedAt = new Date();
+          serviceRequest.status = 'pending'; // Service request is now live with payment held
+          
+          // Set auto-refund time (customer can request refund before accepting proposal)
+          serviceRequest.autoRefundAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+          serviceRequest.canRefund = true; // Allow refunds before proposal acceptance
+          
+          await serviceRequest.save();
+
+          console.log('✅ Service request payment verified and held in escrow:', {
+            serviceRequestId: serviceRequest._id,
+            amount: serviceRequest.payment.amount,
+            status: serviceRequest.payment.status
+          });
+
+          // If provider is already assigned (accepted proposal), check if payment can be released
+          if (serviceRequest.providerId && serviceRequest.status === 'accepted') {
+            await checkAndReleaseServiceRequestPayment(serviceRequest._id);
+          }
+        }
+      }
+    } else if (processor === 'stripe') {
+      // For Stripe, verify payment intent
+      if (!paymentProcessors.stripe) {
+        console.log('❌ Stripe processor not available');
+        return res.redirect(`${process.env.FRONTEND_URL}/service-requests/${jobId}?payment=error&message=stripe_not_configured`);
+      }
+
+      try {
+        const paymentIntent = await paymentProcessors.stripe.paymentIntents.retrieve(reference);
+        
+        if (paymentIntent.status === 'succeeded') {
+          paymentVerified = true;
+          serviceRequest = await ServiceRequest.findById(jobId)
+            .populate('customerId', 'name email')
+            .populate('providerId', 'name email paymentSettings');
+          
+          if (serviceRequest) {
+            serviceRequest.payment.status = 'held';
+            serviceRequest.payment.heldAt = new Date();
+            serviceRequest.payment.verificationReference = reference;
+            serviceRequest.payment.verifiedAt = new Date();
+            serviceRequest.status = 'pending';
+            serviceRequest.autoRefundAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+            serviceRequest.canRefund = true;
+            
+            await serviceRequest.save();
+
+            console.log('✅ Stripe payment verified and held for service request');
+
+            if (serviceRequest.providerId && serviceRequest.status === 'accepted') {
+              await checkAndReleaseServiceRequestPayment(serviceRequest._id);
+            }
+          }
+        }
+      } catch (stripeError) {
+        console.error('❌ Stripe verification error:', stripeError);
+        return res.redirect(`${process.env.FRONTEND_URL}/service-requests/${jobId}?payment=error&message=stripe_verification_failed`);
+      }
+    }
+
+    if (paymentVerified && serviceRequest) {
+      console.log('✅ Service request payment verified, job is now live with payment held');
+      
+      // Send notification to customer
+      await Notification.createNotification({
+        userId: serviceRequest.customerId._id,
+        type: 'payment_held',
+        title: 'Payment Secured!',
+        message: `Your payment of ${serviceRequest.payment.currency}${serviceRequest.payment.amount} has been secured in escrow. Your job is now live for providers to apply.`,
+        relatedId: serviceRequest._id,
+        relatedType: 'service_request',
+        priority: 'high'
+      });
+
+      // Redirect to service request page
+      return res.redirect(`${process.env.FRONTEND_URL}/service-requests/${jobId}?payment=success&status=held`);
+    } else {
+      console.log('❌ Service request payment verification failed');
+      return res.redirect(`${process.env.FRONTEND_URL}/service-requests/${jobId}?payment=failed&status=verification_failed`);
+    }
+
+  } catch (error) {
+    console.error('❌ Service request payment verification error:', error);
+    return res.redirect(`${process.env.FRONTEND_URL}/service-requests?payment=error&message=verification_error`);
+  }
+});
+
+// Function to check and release service request payment (15%/85% split)
+async function checkAndReleaseServiceRequestPayment(serviceRequestId) {
+  try {
+    const serviceRequest = await ServiceRequest.findById(serviceRequestId)
+      .populate('providerId')
+      .populate('customerId');
+    
+    if (!serviceRequest || !serviceRequest.payment || serviceRequest.payment.status !== 'held') {
+      console.log(`⚠️ Service request ${serviceRequestId} not found or payment not held`);
+      return;
+    }
+
+    // Check if service is completed
+    if (serviceRequest.status !== 'completed') {
+      console.log(`⚠️ Service request ${serviceRequestId} not completed yet`);
+      return;
+    }
+
+    const provider = serviceRequest.providerId;
+    
+    // Check if provider has bank account set up
+    if (!provider.paymentSettings?.paystackRecipientCode) {
+      console.log(`⏳ Payment held for service request ${serviceRequestId} - provider needs to add bank account`);
+      
+      // Notify provider to add bank account
+      await Notification.createNotification({
+        userId: provider._id,
+        type: 'bank_account_required',
+        title: 'Add Bank Account to Receive Payment',
+        message: 'Please add your bank account details to receive payment for completed services.',
+        relatedId: serviceRequest._id,
+        relatedType: 'service_request',
+        priority: 'high'
+      });
+      
+      return;
+    }
+
+    // Calculate 15% platform fee and 85% to provider
+    const totalAmount = serviceRequest.payment.amount;
+    const platformFee = totalAmount * 0.15;
+    const providerAmount = totalAmount * 0.85;
+
+    console.log('💰 Service Request Payment Split:', {
+      serviceRequestId,
+      totalAmount,
+      platformFee,
+      providerAmount,
+      provider: provider.name
+    });
+
+    // Process transfers (15% to platform, 85% to provider)
+    let platformTransferResult, providerTransferResult;
+
+    try {
+      // Transfer 15% to platform account
+      platformTransferResult = await paymentProcessors.paystack.transfer.create({
+        source: 'balance',
+        amount: Math.round(platformFee * 100), // Convert to kobo
+        recipient: COMPANY_ACCOUNT.paystackRecipientCode,
+        reason: `Home Heroes Platform Fee - Service Request ${serviceRequestId}`
+      });
+
+      if (!platformTransferResult.status) {
+        throw new Error(`Platform transfer failed: ${platformTransferResult.message}`);
+      }
+
+      console.log('✅ Platform fee transfer initiated:', platformTransferResult.data.transfer_code);
+
+    } catch (platformTransferError) {
+      console.error('❌ Platform transfer failed:', platformTransferError);
+      throw new Error(`Platform transfer failed: ${platformTransferError.message}`);
+    }
+
+    try {
+      // Transfer 85% to provider account
+      providerTransferResult = await paymentProcessors.paystack.transfer.create({
+        source: 'balance',
+        amount: Math.round(providerAmount * 100), // Convert to kobo
+        recipient: provider.paymentSettings.paystackRecipientCode,
+        reason: `Payment for ${serviceRequest.serviceType} service - Service Request ${serviceRequestId}`
+      });
+
+      if (!providerTransferResult.status) {
+        throw new Error(`Provider transfer failed: ${providerTransferResult.message}`);
+      }
+
+      console.log('✅ Provider transfer initiated:', providerTransferResult.data.transfer_code);
+
+    } catch (providerTransferError) {
+      console.error('❌ Provider transfer failed:', providerTransferError);
+      
+      // If provider transfer fails, try to reverse the platform transfer
+      try {
+        if (platformTransferResult?.data?.transfer_code) {
+          await paymentProcessors.paystack.transfer.reverse({
+            transfer_code: platformTransferResult.data.transfer_code
+          });
+          console.log('✅ Reversed platform transfer due to provider transfer failure');
+        }
+      } catch (reverseError) {
+        console.error('❌ Failed to reverse platform transfer:', reverseError);
+      }
+
+      throw new Error(`Provider transfer failed: ${providerTransferError.message}`);
+    }
+
+    // Update provider earnings (only their 85% portion)
+    provider.providerFinancials = provider.providerFinancials || {};
+    provider.providerFinancials.totalEarnings = (provider.providerFinancials.totalEarnings || 0) + providerAmount;
+    provider.providerFinancials.availableBalance = (provider.providerFinancials.availableBalance || 0) + providerAmount;
+    await provider.save();
+
+    // Update service request payment status
+    serviceRequest.payment.status = 'released';
+    serviceRequest.payment.releasedAt = new Date();
+    serviceRequest.payment.platformFee = platformFee;
+    serviceRequest.payment.providerAmount = providerAmount;
+    serviceRequest.payment.platformTransferCode = platformTransferResult.data.transfer_code;
+    serviceRequest.payment.providerTransferCode = providerTransferResult.data.transfer_code;
+    serviceRequest.paymentReleased = true;
+    serviceRequest.paymentReleasedAt = new Date();
+    
+    await serviceRequest.save();
+
+    // Send notification to provider
+    await Notification.createNotification({
+      userId: provider._id,
+      type: 'payment_released',
+      title: 'Payment Released!',
+      message: `Payment of ${serviceRequest.payment.currency}${providerAmount} has been released to your bank account (85% of total). Platform fee: ${serviceRequest.payment.currency}${platformFee}`,
+      relatedId: serviceRequest._id,
+      relatedType: 'service_request',
+      priority: 'high'
+    });
+
+    // Send notification to customer
+    await Notification.createNotification({
+      userId: serviceRequest.customerId._id,
+      type: 'payment_completed',
+      title: 'Payment Completed',
+      message: `Payment has been released to ${provider.name} for the completed service.`,
+      relatedId: serviceRequest._id,
+      relatedType: 'service_request',
+      priority: 'medium'
+    });
+
+    console.log(`✅ Payment released for service request ${serviceRequestId}`);
+
+    return {
+      success: true,
+      totalAmount,
+      platformFee,
+      providerAmount,
+      platformTransferCode: platformTransferResult.data.transfer_code,
+      providerTransferCode: providerTransferResult.data.transfer_code
+    };
+
+  } catch (error) {
+    console.error(`❌ Failed to release payment for service request ${serviceRequestId}:`, error);
+    
+    // Notify admin of payment release failure
+    await Notification.createNotification({
+      userId: 'admin', // You'll need to implement admin user lookup
+      type: 'payment_release_failed',
+      title: 'Payment Release Failed',
+      message: `Failed to release payment for service request ${serviceRequestId}: ${error.message}`,
+      relatedId: serviceRequestId,
+      relatedType: 'service_request',
+      priority: 'critical'
+    });
+    
+    throw error;
+  }
+}
+
+app.post('/api/service-requests/:id/release-payment', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const serviceRequest = await ServiceRequest.findById(id)
+      .populate('customerId', 'name email')
+      .populate('providerId', 'name email paymentSettings');
+
+    if (!serviceRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service request not found'
+      });
+    }
+
+    // Verify authorization (customer or admin)
+    if (serviceRequest.customerId._id.toString() !== req.user.id && req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to release this payment'
+      });
+    }
+
+    // Check if service is completed
+    if (serviceRequest.status !== 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Service must be completed before releasing payment'
+      });
+    }
+
+    // Check if payment is held
+    if (serviceRequest.payment.status !== 'held') {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment is not in held status'
+      });
+    }
+
+    // Check if provider has bank account
+    if (!serviceRequest.providerId.paymentSettings?.paystackRecipientCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'Provider has not added bank account. Payment will be held until provider adds account.'
+      });
+    }
+
+    // Release payment with 15%/85% split
+    const releaseResult = await checkAndReleaseServiceRequestPayment(id);
+
+    res.json({
+      success: true,
+      message: 'Payment released successfully - 15% platform fee, 85% to provider',
+      data: releaseResult
+    });
+
+  } catch (error) {
+    console.error('❌ Manual payment release error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to release payment',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.post('/api/service-requests/auto-release-on-account-add', authenticateToken, async (req, res) => {
+  try {
+    const provider = await User.findById(req.user.id);
+    
+    if (!provider.paymentSettings?.paystackRecipientCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'No bank account added yet'
+      });
+    }
+
+    // Find all completed service requests with held payments for this provider
+    const heldServiceRequests = await ServiceRequest.find({
+      providerId: req.user.id,
+      'payment.status': 'held',
+      status: 'completed'
+    });
+
+    console.log(`Found ${heldServiceRequests.length} held service request payments to release`);
+
+    const releasedPayments = [];
+    const failedPayments = [];
+
+    for (const serviceRequest of heldServiceRequests) {
+      try {
+        const releaseResult = await checkAndReleaseServiceRequestPayment(serviceRequest._id);
+        releasedPayments.push({
+          serviceRequestId: serviceRequest._id,
+          amount: releaseResult.providerAmount,
+          transferCode: releaseResult.providerTransferCode
+        });
+      } catch (error) {
+        console.error(`Failed to release payment for service request ${serviceRequest._id}:`, error);
+        failedPayments.push({
+          serviceRequestId: serviceRequest._id,
+          error: error.message
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Auto-released ${releasedPayments.length} service request payments. ${failedPayments.length} failed.`,
+      data: {
+        released: releasedPayments,
+        failed: failedPayments
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Auto-release on account add error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to auto-release payments'
+    });
+  }
+});
+
+app.post('/api/webhooks/service-request-payment', async (req, res) => {
+  try {
+    const event = req.body;
+    console.log('🔔 Service request payment webhook received:', event.type);
+
+    if (event.type === 'payment_intent.succeeded' || event.type === 'charge.succeeded') {
+      const paymentIntentId = event.data.object.id || event.data.object.reference;
+      
+      // Find service request with this payment intent
+      const serviceRequest = await ServiceRequest.findOne({
+        'payment.paymentIntentId': paymentIntentId
+      });
+
+      if (serviceRequest) {
+        // Update payment status to held
+        serviceRequest.payment.status = 'held';
+        serviceRequest.payment.heldAt = new Date();
+        serviceRequest.payment.verificationReference = paymentIntentId;
+        serviceRequest.payment.verifiedAt = new Date();
+        
+        await serviceRequest.save();
+
+        console.log(`✅ Service request ${serviceRequest._id} payment verified via webhook`);
+
+        // If service is completed, check if payment can be released
+        if (serviceRequest.status === 'completed') {
+          await checkAndReleaseServiceRequestPayment(serviceRequest._id);
+        }
+      }
+    }
+
+    res.sendStatus(200);
+  } catch (error) {
+    console.error('❌ Service request payment webhook error:', error);
+    res.status(500).send('Webhook error');
+  }
+});
+
+// Cron job to auto-release payments for providers who added bank accounts
+cron.schedule('0 */6 * * *', async () => {
+  try {
+    console.log('🔄 Running service request payment auto-release check...');
+    
+    // Find all completed service requests with held payments
+    const heldServiceRequests = await ServiceRequest.find({
+      'payment.status': 'held',
+      status: 'completed'
+    }).populate('providerId', 'paymentSettings');
+
+    for (const serviceRequest of heldServiceRequests) {
+      if (serviceRequest.providerId?.paymentSettings?.paystackRecipientCode) {
+        try {
+          await checkAndReleaseServiceRequestPayment(serviceRequest._id);
+          console.log(`✅ Auto-released payment for service request ${serviceRequest._id}`);
+        } catch (error) {
+          console.error(`❌ Failed to auto-release payment for service request ${serviceRequest._id}:`, error);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('❌ Service request payment auto-release cron error:', error);
+  }
+});
+
+
 
 app.get('/api/payments/transfer-status/:transferCode', authenticateToken, async (req, res) => {
   try {
@@ -14271,7 +15014,7 @@ app.get('/api/providers', async (req, res) => {
 
 
       // Rating scoring
-      const rating = provider.averageRating || provider.rating || 4.0;
+      const rating = provider.averageRating || provider.rating || 1.0;
       score += rating * 10;
       
       // Verified providers get bonus
@@ -14300,8 +15043,8 @@ app.get('/api/providers', async (req, res) => {
         return b._matchScore - a._matchScore;
       }
       
-      const ratingA = a.averageRating || a.rating || 4.0;
-      const ratingB = b.averageRating || b.rating || 4.0;
+      const ratingA = a.averageRating || a.rating || 1.0;
+      const ratingB = b.averageRating || b.rating || 1.0;
       if (ratingB !== ratingA) {
         return ratingB - ratingA;
       }
@@ -14335,7 +15078,7 @@ app.get('/api/providers', async (req, res) => {
         _matchScore: undefined, // Remove from final output
         services: services,
         location: locationText,
-        averageRating: provider.averageRating || provider.rating || 4.0,
+        averageRating: provider.averageRating || provider.rating || 1.0,
         reviewCount: provider.reviewCount || 0,
         completedJobs: provider.completedJobs || 0,
         isVerified: provider.isVerified !== undefined ? provider.isVerified : false,
@@ -14637,7 +15380,7 @@ app.post('/api/debug/fix-availability', async (req, res) => {
           completedJobs: 0,
           isVerified: false,
           isTopRated: false,
-          rating: 4.0
+          rating: 1.0
         }
       }
     );
@@ -14673,7 +15416,7 @@ app.get('/api/debug/fix-availability-now', async (req, res) => {
           completedJobs: 0,
           isVerified: false,
           isTopRated: false,
-          rating: 4.0
+          rating: 1.0
         }
       }
     );
