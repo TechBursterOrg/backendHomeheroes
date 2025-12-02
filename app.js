@@ -4503,8 +4503,8 @@ app.post('/api/payments/webhooks/paystack', async (req, res) => {
 
     // Verify signature (recommended for production)
     if (process.env.NODE_ENV === 'production' && signature) {
-      // IMPORT crypto at the top of your file instead
-      const crypto = globalThis.crypto || require('crypto');
+      // Use Node.js crypto module directly
+      const crypto = await import('crypto');
       const hash = crypto.createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
                         .update(body)
                         .digest('hex');
