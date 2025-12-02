@@ -4484,7 +4484,7 @@ app.post('/api/payments/webhooks/paystack', async (req, res) => {
   try {
     const signature = req.headers['x-paystack-signature'];
     
-    // FIX: Get the raw body properly - always ensure it's a string
+    // Get the raw body properly - always ensure it's a string
     let body;
     if (req.rawBody) {
       body = req.rawBody.toString();
@@ -4503,7 +4503,8 @@ app.post('/api/payments/webhooks/paystack', async (req, res) => {
 
     // Verify signature (recommended for production)
     if (process.env.NODE_ENV === 'production' && signature) {
-      const crypto = require('crypto');
+      // IMPORT crypto at the top of your file instead
+      const crypto = globalThis.crypto || require('crypto');
       const hash = crypto.createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
                         .update(body)
                         .digest('hex');
@@ -4618,7 +4619,6 @@ app.post('/api/payments/webhooks/paystack', async (req, res) => {
       });
       
       // Handle successful transfer to provider/company
-      // You might want to update a booking or payment record here
       
     } else if (event.event === 'refund.processed') {
       console.log('✅ Refund processed:', {
@@ -4640,9 +4640,6 @@ app.post('/api/payments/webhooks/paystack', async (req, res) => {
         console.log('✅ Booking refund status updated:', booking._id);
       }
       
-    } else if (event.event === 'subscription.create') {
-      console.log('📋 Subscription created:', event.data);
-      
     } else {
       console.log('ℹ️ Unhandled webhook event:', event.event);
     }
@@ -4652,8 +4649,7 @@ app.post('/api/payments/webhooks/paystack', async (req, res) => {
     console.error('❌ Webhook processing error:', error);
     res.status(500).json({ 
       success: false, 
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: error.message
     });
   }
 });
