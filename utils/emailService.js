@@ -746,6 +746,161 @@ const generateVerificationEmailHTML = (name, verificationUrl) => {
   `;
 };
 
+
+const sendProposalNotification = async (toEmail, customerName, providerName, serviceType, jobId) => {
+  try {
+    const emailTransporter = await getEmailTransporter();
+    if (!emailTransporter) {
+      console.log('📧 Email service not available, skipping notification');
+      return false;
+    }
+
+    const mailOptions = {
+      from: process.env.EMAIL_FROM || 'noreply@homeheroes.help',
+      to: toEmail,
+      subject: `New Proposal Received - ${serviceType}`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background: linear-gradient(135deg, #10B981, #059669); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+                .content { background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; }
+                .button { background: #10B981; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 20px 0; }
+                .footer { text-align: center; margin-top: 30px; color: #6B7280; font-size: 14px; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>🎉 New Proposal Received!</h1>
+                </div>
+                <div class="content">
+                    <h2>Hello ${customerName},</h2>
+                    <p>Great news! <strong>${providerName}</strong> has submitted a proposal for your <strong>${serviceType}</strong> service request.</p>
+                    
+                    <div style="background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #10B981; margin: 20px 0;">
+                        <h3 style="margin-top: 0;">Service Details:</h3>
+                        <p><strong>Service Type:</strong> ${serviceType}</p>
+                        <p><strong>Provider:</strong> ${providerName}</p>
+                        <p><strong>Status:</strong> Waiting for your review</p>
+                    </div>
+
+                    <p>Review the proposal details and choose the best provider for your needs.</p>
+                    
+                    <a href="${process.env.FRONTEND_URL}/jobs/${jobId}" class="button">View Proposal</a>
+                    
+                    <p>You'll be able to:</p>
+                    <ul>
+                        <li>Review the provider's proposed budget and timeline</li>
+                        <li>Check their profile and ratings</li>
+                        <li>Message the provider directly</li>
+                        <li>Accept the proposal when ready</li>
+                    </ul>
+
+                    <p><strong>Need help?</strong> Our support team is here to assist you.</p>
+                </div>
+                <div class="footer">
+                    <p>Best regards,<br>The HomeHeroes Team</p>
+                    <p><small>This is an automated message. Please do not reply to this email.</small></p>
+                </div>
+            </div>
+        </body>
+        </html>
+      `
+    };
+
+    const result = await emailTransporter.sendMail(mailOptions);
+    console.log('✅ Proposal notification email sent to:', toEmail);
+    return true;
+  } catch (error) {
+    console.error('❌ Failed to send proposal notification email:', error);
+    return false;
+  }
+};
+
+const sendProposalAcceptedNotification = async (toEmail, providerName, customerName, serviceType, jobId) => {
+  try {
+    const emailTransporter = await getEmailTransporter();
+    if (!emailTransporter) {
+      console.log('📧 Email service not available, skipping notification');
+      return false;
+    }
+
+    const mailOptions = {
+      from: process.env.EMAIL_FROM || 'noreply@homeheroes.help',
+      to: toEmail,
+      subject: `🎉 Your Proposal Was Accepted! - ${serviceType}`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background: linear-gradient(135deg, #10B981, #059669); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+                .content { background: #f9fafb; padding: 30px; border-radius: 0 0 10px 10px; }
+                .button { background: #10B981; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 20px 0; }
+                .footer { text-align: center; margin-top: 30px; color: #6B7280; font-size: 14px; }
+                .celebrate { font-size: 48px; text-align: center; margin: 20px 0; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>🎉 Proposal Accepted!</h1>
+                </div>
+                <div class="content">
+                    <div class="celebrate">🥳</div>
+                    <h2>Congratulations ${providerName}!</h2>
+                    <p>Great news! <strong>${customerName}</strong> has accepted your proposal for the <strong>${serviceType}</strong> service.</p>
+                    
+                    <div style="background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #10B981; margin: 20px 0;">
+                        <h3 style="margin-top: 0;">Next Steps:</h3>
+                        <p><strong>Contact the customer:</strong> Reach out to discuss details and schedule the service</p>
+                        <p><strong>Review requirements:</strong> Make sure you understand all service requirements</p>
+                        <p><strong>Plan your work:</strong> Prepare your tools and schedule</p>
+                    </div>
+
+                    <p><strong>Important:</strong> The payment is held securely in escrow and will be released after the customer confirms satisfactory completion of the work.</p>
+                    
+                    <a href="${process.env.FRONTEND_URL}/provider/job-board" class="button">View Job Details</a>
+                    
+                    <div style="background: #EFF6FF; padding: 15px; border-radius: 6px; margin: 20px 0;">
+                        <h4 style="margin-top: 0; color: #1E40AF;">💡 Tips for Success:</h4>
+                        <ul style="color: #374151;">
+                            <li>Communicate clearly with the customer</li>
+                            <li>Confirm the schedule and location</li>
+                            <li>Deliver quality work on time</li>
+                            <li>Update the job status when completed</li>
+                        </ul>
+                    </div>
+
+                    <p>Ready to get started? Contact the customer now to arrange the service!</p>
+                </div>
+                <div class="footer">
+                    <p>Best regards,<br>The HomeHeroes Team</p>
+                    <p><small>This is an automated message. Please do not reply to this email.</small></p>
+                </div>
+            </div>
+        </body>
+        </html>
+      `
+    };
+
+    const result = await emailTransporter.sendMail(mailOptions);
+    console.log('✅ Proposal accepted notification email sent to:', toEmail);
+    return true;
+  } catch (error) {
+    console.error('❌ Failed to send proposal accepted notification email:', error);
+    return false;
+  }
+};
+
+
+
 // Plain text email template
 const generateVerificationEmailText = (name, verificationUrl) => {
   return `

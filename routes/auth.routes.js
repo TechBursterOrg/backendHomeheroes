@@ -742,6 +742,99 @@ router.post('/login', [
   }
 });
 
+router.post('/api/providers/:providerId/favorite', authenticateToken, async (req, res) => {
+  try {
+    const { providerId } = req.params;
+    const userId = req.user.id;
+    
+    console.log(`⭐ Favorite request - User: ${userId}, Provider: ${providerId}`);
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+    
+    // Check if already in favorites
+    const existingIndex = user.favorites.findIndex(fav => 
+      fav.providerId && fav.providerId.toString() === providerId
+    );
+    
+    if (existingIndex >= 0) {
+      // Remove from favorites
+      user.favorites.splice(existingIndex, 1);
+      await user.save();
+      
+      console.log(`✅ Removed provider ${providerId} from favorites for user ${user.email}`);
+      
+      return res.json({
+        success: true,
+        message: 'Removed from favorites',
+        data: { 
+          isFavorite: false, 
+          favorites: user.favorites 
+        }
+      });
+    } else {
+      // Add to favorites
+      user.favorites.push({
+        providerId: providerId,
+        addedAt: new Date()
+      });
+      await user.save();
+      
+      console.log(`✅ Added provider ${providerId} to favorites for user ${user.email}`);
+      
+      return res.json({
+        success: true,
+        message: 'Added to favorites',
+        data: { 
+          isFavorite: true, 
+          favorites: user.favorites 
+        }
+      });
+    }
+  } catch (error) {
+    console.error('❌ Error toggling favorite:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to update favorites' 
+    });
+  }
+});
+
+// GET - Get user's favorite providers
+router.get('/api/favorites', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id)
+      .populate('favorites.providerId', 'name email services hourlyRate city state country profileImage isAvailableNow experience rating reviewCount phoneNumber address completedJobs isVerified isTopRated responseTime');
+    
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+    
+    console.log(`📋 Retrieved ${user.favorites.length} favorites for user ${user.email}`);
+    
+    res.json({
+      success: true,
+      data: {
+        favorites: user.favorites || []
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error fetching favorites:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch favorites' 
+    });
+  }
+});
+
 
 router.post('/resend-verification', async (req, res) => {
   try {

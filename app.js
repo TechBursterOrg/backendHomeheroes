@@ -26,7 +26,7 @@ import ratingRoutes from './routes/ratings.routes.js';
 import Schedule from './models/Schedule.js'; // Adjust path as needed
 import providerRoutes from './routes/providers.routes.js';
 import cron from 'node-cron';
-
+import favoritesRoutes from './routes/favorites.js';
 
 
 // Import models
@@ -42,6 +42,7 @@ import verificationRoutes from './routes/verification.routes.js';
 // Get __dirname equivalent in ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
 
 // Load the appropriate .env file based on environment
 const envFile = process.env.NODE_ENV === 'production' 
@@ -159,7 +160,7 @@ envFiles.forEach(envFile => {
   }
 });
 
-
+app.use('/api/providers', favoritesRoutes);
 console.log('\n🔧 Current Process Environment:');
 console.log('GOOGLE_APPLICATION_CREDENTIALS:', process.env.GOOGLE_APPLICATION_CREDENTIALS || 'NOT SET');
 console.log('GCLOUD_PROJECT_ID:', process.env.GCLOUD_PROJECT_ID || 'NOT SET');
@@ -308,7 +309,72 @@ const uploadToGCS = (file, folder = 'gallery') => {
     }
   });
 };
+app.get('/api/test-providers', async (req, res) => {
+  try {
+    console.log('✅ Test endpoint hit from origin:', req.headers.origin);
+    
+    const { limit = 20, availableNow } = req.query;
+    
+    // Set proper CORS headers
+    res.header('Access-Control-Allow-Origin', req.headers.origin || 'http://localhost:5173');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    
+    // Simple query
+    let query = { userType: { $in: ['provider', 'both'] } };
+    
+    if (availableNow === 'true') {
+      query.isAvailableNow = true;
+    }
+    
+    const providers = await User.find(query)
+      .select('name email services hourlyRate city state country profileImage isAvailableNow experience rating reviewCount phoneNumber address completedJobs isVerified isTopRated responseTime')
+      .limit(parseInt(limit))
+      .lean();
+    
+    res.json({
+      success: true,
+      data: {
+        providers: providers.map(p => ({
+          ...p,
+          id: p._id,
+          averageRating: p.rating || 0,
+          location: `${p.city || ''}, ${p.state || ''}`.trim() || 'Location not specified'
+        }))
+      }
+    });
+  } catch (error) {
+    console.error('Test providers error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch test providers'
+    });
+  }
+});
 
+app.get('/api/cors-test', (req, res) => {
+  console.log('🌐 CORS Test Request:', {
+    origin: req.headers.origin,
+    host: req.headers.host,
+    method: req.method,
+    url: req.url
+  });
+  
+  res.header('Access-Control-Allow-Origin', req.headers.origin || 'http://localhost:5173');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
+  res.json({
+    success: true,
+    message: 'CORS test successful!',
+    data: {
+      timestamp: new Date().toISOString(),
+      origin: req.headers.origin,
+      allowed: true,
+      environment: process.env.NODE_ENV
+    }
+  });
+});
 
 app.get('/api/debug/gcs-setup', async (req, res) => {
   try {
@@ -557,7 +623,20 @@ app.use(cors({
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
-    if (allowedOrigins.indexOf(origin) !== -1) {
+    const allowedOrigins = process.env.NODE_ENV === 'production' 
+      ? [
+          'https://homeheroes.help',
+          'https://www.homeheroes.help',
+          'https://backendhomeheroes.onrender.com'
+        ]
+      : [
+          'http://localhost:5173',
+          'http://localhost:5174',
+          'http://localhost:3000',
+          'http://localhost:5175'
+        ];
+    
+    if (allowedOrigins.indexOf(origin) !== -1 || origin.includes('localhost')) {
       callback(null, true);
     } else {
       console.log('CORS blocked origin:', origin);
@@ -568,6 +647,7 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
 }));
+
 
 
 app.options('*', cors());
@@ -1954,6 +2034,871 @@ app.get('/api/debug/test-paystack', async (req, res) => {
     });
   }
 });
+
+
+app.post('/api/jobs/create', authenticateToken, async (req, res) => {
+  try {
+    const {
+      serviceType,
+      description,
+      location,
+      urgency = 'normal',
+      timeframe = 'ASAP',
+      budget,
+      category,
+      skillsRequired = [],
+      estimatedDuration,
+      preferredSchedule
+    } = req.body;
+
+    console.log('📝 Creating new job posting:', {
+      serviceType,
+      customerId: req.user.id,
+      location,
+      budget
+    });
+
+    // Validate required fields
+    if (!serviceType || !description || !location) {
+      return res.status(400).json({
+        success: false,
+        message: 'Service type, description, and location are required'
+      });
+    }
+
+    // Extract budget amount for payment processing
+    let budgetAmount = 0;
+    if (budget) {
+      const numericMatch = budget.match(/(\d+)/);
+      if (numericMatch) {
+        budgetAmount = parseInt(numericMatch[1]);
+      }
+    }
+
+    // Create service request
+    const serviceRequest = new ServiceRequest({
+      serviceType,
+      description,
+      location,
+      urgency,
+      timeframe,
+      budget,
+      budgetAmount,
+      category: category || 'general',
+      customerId: req.user.id,
+      skillsRequired: Array.isArray(skillsRequired) ? skillsRequired : [skillsRequired],
+      estimatedDuration,
+      preferredSchedule,
+      status: 'pending',
+      canRefund: true
+    });
+
+    await serviceRequest.save();
+    await serviceRequest.populate('customerId', 'name email phoneNumber');
+
+    console.log('✅ Job posting created:', serviceRequest._id);
+
+    res.status(201).json({
+      success: true,
+      message: 'Job posted successfully',
+      data: {
+        job: serviceRequest,
+        requiresPayment: budgetAmount > 0,
+        nextStep: budgetAmount > 0 ? 'Make payment to secure your job posting' : 'Job is now live'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Create job posting error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create job posting',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.post('/api/jobs/:jobId/create-payment', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { amount, customerCountry = 'NIGERIA' } = req.body;
+
+    console.log('💰 Job payment creation:', {
+      jobId,
+      amount,
+      customerCountry,
+      user: req.user.id
+    });
+
+    // Validate job exists and user owns it
+    const job = await ServiceRequest.findById(jobId);
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: 'Job not found'
+      });
+    }
+
+    if (job.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to pay for this job'
+      });
+    }
+
+    // Check if job already has payment
+    if (job.payment && job.payment.status === 'held') {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment already made for this job'
+      });
+    }
+
+    const paymentAmount = parseFloat(amount);
+    
+    // Determine payment processor based on country
+    const isNigeria = () => {
+      const country = customerCountry?.toLowerCase()?.trim();
+      return country === 'ng' || country === 'nigeria' || country === 'ngn';
+    };
+
+    const isUK = customerCountry === 'GB' || customerCountry === 'UK';
+
+    console.log('🌍 Payment processor selection:', {
+      country: customerCountry,
+      isNigeria: isNigeria(),
+      isUK: isUK
+    });
+
+    let paymentResult;
+
+    if (isNigeria()) {
+      // PAYSTACK PAYMENT (Nigeria)
+      console.log('🇳🇬 Using Paystack for Nigerian customer');
+
+      if (!paymentProcessors?.paystack) {
+        return res.status(503).json({
+          success: false,
+          message: 'Paystack payment processor not available'
+        });
+      }
+
+      try {
+        const paystackPayload = {
+          amount: Math.round(paymentAmount * 100), // Convert to kobo
+          email: req.user.email,
+          currency: 'NGN',
+          metadata: {
+            jobId: jobId,
+            customerId: req.user.id,
+            type: 'job_posting'
+          },
+          callback_url: `${process.env.FRONTEND_URL}/job-payment-status?jobId=${jobId}&processor=paystack`
+        };
+
+        console.log('📤 Paystack job payment payload:', paystackPayload);
+
+        const paystackResponse = await paymentProcessors.paystack.transaction.initialize(paystackPayload);
+
+        if (!paystackResponse.data || paystackResponse.data.status !== true) {
+          throw new Error(paystackResponse.data?.message || 'Paystack initialization failed');
+        }
+
+        const paymentData = paystackResponse.data.data;
+        
+        paymentResult = {
+          success: true,
+          processor: 'paystack',
+          paymentIntentId: paymentData.reference,
+          authorizationUrl: paymentData.authorization_url,
+          amount: paymentAmount,
+          currency: 'NGN',
+          status: 'requires_payment_method'
+        };
+
+        console.log('✅ Paystack job payment initialized');
+
+      } catch (paystackError) {
+        console.error('❌ Paystack job payment failed:', paystackError);
+        throw new Error(`Paystack payment failed: ${paystackError.message}`);
+      }
+    } else if (isUK) {
+      // STRIPE PAYMENT (UK)
+      console.log('🇬🇧 Using Stripe for UK customer');
+
+      if (!paymentProcessors?.stripe) {
+        return res.status(503).json({
+          success: false,
+          message: 'Stripe payment processor not available'
+        });
+      }
+
+      try {
+        const stripePayload = {
+          amount: Math.round(paymentAmount * 100), // Convert to pence
+          currency: 'gbp',
+          metadata: {
+            jobId: jobId,
+            customerId: req.user.id,
+            type: 'job_posting'
+          },
+          automatic_payment_methods: {
+            enabled: true,
+          }
+        };
+
+        const paymentIntent = await paymentProcessors.stripe.paymentIntents.create(stripePayload);
+
+        paymentResult = {
+          success: true,
+          processor: 'stripe',
+          paymentIntentId: paymentIntent.id,
+          clientSecret: paymentIntent.client_secret,
+          amount: paymentAmount,
+          currency: 'GBP',
+          status: paymentIntent.status
+        };
+
+        console.log('✅ Stripe job payment initialized');
+
+      } catch (stripeError) {
+        console.error('❌ Stripe job payment failed:', stripeError);
+        throw new Error(`Stripe payment failed: ${stripeError.message}`);
+      }
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment not supported for your country'
+      });
+    }
+
+    // Update job with payment info
+    job.payment = {
+      processor: isNigeria() ? 'paystack' : 'stripe',
+      paymentIntentId: paymentResult.paymentIntentId,
+      amount: paymentResult.amount,
+      currency: paymentResult.currency,
+      status: 'pending',
+      authorizationUrl: paymentResult.authorizationUrl,
+      clientSecret: paymentResult.clientSecret
+    };
+
+    job.autoRefundAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days for refund
+    await job.save();
+
+    console.log('✅ Job payment info updated');
+
+    res.json({
+      success: true,
+      message: 'Payment initialized successfully',
+      data: paymentResult
+    });
+
+  } catch (error) {
+    console.error('❌ Job payment creation error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create payment',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.post('/api/jobs/:jobId/proposals', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const {
+      proposalText,
+      proposedAmount,
+      estimatedDuration,
+      proposedSchedule
+    } = req.body;
+
+    console.log('📨 New proposal submission:', {
+      jobId,
+      providerId: req.user.id,
+      proposedAmount
+    });
+
+    // Validate user is a provider
+    const user = await User.findById(req.user.id);
+    if (!user.userType.includes('provider') && user.userType !== 'both') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only providers can submit proposals'
+      });
+    }
+
+    // Find job
+    const job = await ServiceRequest.findById(jobId);
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: 'Job not found'
+      });
+    }
+
+    // Check if job is still open
+    if (job.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: 'This job is no longer accepting proposals'
+      });
+    }
+
+    // Check if provider already submitted a proposal
+    const existingProposal = job.proposals.find(
+      proposal => proposal.providerId.toString() === req.user.id
+    );
+
+    if (existingProposal) {
+      return res.status(400).json({
+        success: false,
+        message: 'You have already submitted a proposal for this job'
+      });
+    }
+
+    // Add new proposal
+    job.proposals.push({
+      providerId: req.user.id,
+      proposalText,
+      proposedAmount,
+      estimatedDuration,
+      proposedSchedule,
+      status: 'pending',
+      submittedAt: new Date()
+    });
+
+    await job.save();
+    await job.populate('proposals.providerId', 'name profileImage rating reviewCount');
+
+    console.log('✅ Proposal submitted successfully');
+
+    // Notify customer about new proposal
+    await Notification.createNotification({
+      userId: job.customerId,
+      type: 'new_proposal',
+      title: 'New Proposal Received',
+      message: `${user.name} has submitted a proposal for your ${job.serviceType} job`,
+      relatedId: job._id,
+      relatedType: 'job',
+      priority: 'medium'
+    });
+
+    res.json({
+      success: true,
+      message: 'Proposal submitted successfully',
+      data: {
+        proposal: job.proposals[job.proposals.length - 1]
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Proposal submission error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to submit proposal'
+    });
+  }
+});
+
+
+app.post('/api/jobs/:jobId/proposals/:proposalId/accept', authenticateToken, async (req, res) => {
+  try {
+    const { jobId, proposalId } = req.params;
+    const userId = req.user.id;
+
+    console.log('🔄 Unified proposal acceptance:', { jobId, proposalId, userId });
+
+    // First try ServiceRequest
+    let serviceRequest = await ServiceRequest.findById(jobId);
+    if (serviceRequest) {
+      console.log('✅ Found in ServiceRequest, calling ServiceRequest endpoint logic...');
+      
+      // Instead of redirecting with require(), duplicate the logic here
+      // Check if user owns the service request
+      if (serviceRequest.customerId.toString() !== userId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Not authorized to accept proposals for this job'
+        });
+      }
+
+      // Find the proposal
+      let proposal = null;
+      for (const p of serviceRequest.proposals) {
+        if (p._id.toString() === proposalId) {
+          proposal = p;
+          break;
+        }
+      }
+
+      if (!proposal) {
+        return res.status(404).json({
+          success: false,
+          message: 'Proposal not found'
+        });
+      }
+
+      // Check if already accepted
+      if (proposal.status === 'accepted') {
+        return res.json({
+          success: true,
+          message: 'Proposal was already accepted',
+          data: {
+            serviceRequestId: serviceRequest._id,
+            proposalId: proposal._id,
+            providerId: proposal.providerId,
+            alreadyAccepted: true
+          }
+        });
+      }
+
+      // Accept the proposal
+      proposal.status = 'accepted';
+      proposal.acceptedAt = new Date();
+      serviceRequest.status = 'awaiting_hero';
+      serviceRequest.providerId = proposal.providerId;
+      serviceRequest.acceptedAt = new Date();
+      serviceRequest.acceptedProposalId = proposal._id;
+
+      // Reject other proposals
+      serviceRequest.proposals.forEach(p => {
+        if (p._id.toString() !== proposalId && p.status === 'pending') {
+          p.status = 'rejected';
+        }
+      });
+
+      await serviceRequest.save();
+
+      // Send notification
+      try {
+        await Notification.createNotification({
+          userId: proposal.providerId,
+          type: 'proposal_accepted',
+          title: 'Proposal Accepted!',
+          message: `Your proposal for "${serviceRequest.serviceType}" has been accepted by the customer`,
+          relatedId: serviceRequest._id,
+          relatedType: 'job'
+        });
+      } catch (notifError) {
+        console.error('❌ Notification error:', notifError);
+      }
+
+      return res.json({
+        success: true,
+        message: 'Proposal accepted successfully',
+        data: {
+          serviceRequestId: serviceRequest._id,
+          proposalId: proposal._id,
+          providerId: proposal.providerId
+        }
+      });
+    }
+
+    // If not found in ServiceRequest, try Job collection
+    console.log('🔄 ServiceRequest not found, trying Job collection...');
+    const job = await Job.findById(jobId);
+    if (!job) {
+      console.log('❌ Job not found in any collection:', jobId);
+      return res.status(404).json({
+        success: false,
+        message: 'Job not found'
+      });
+    }
+
+    console.log('✅ Found in Job collection:', {
+      id: job._id,
+      customerId: job.customerId,
+      applicationsCount: job.applications?.length
+    });
+
+    // Check if user owns the job
+    if (job.customerId.toString() !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to accept proposals for this job'
+      });
+    }
+
+    // Check if applications exist
+    if (!job.applications || job.applications.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No applications found for this job'
+      });
+    }
+
+    // Find the application
+    let application = null;
+    for (const app of job.applications) {
+      if (app._id.toString() === proposalId) {
+        application = app;
+        break;
+      }
+    }
+
+    if (!application) {
+      console.log('❌ Application not found:', proposalId);
+      return res.status(404).json({
+        success: false,
+        message: 'Application not found'
+      });
+    }
+
+    // Check if application is already accepted
+    if (application.status === 'accepted') {
+      return res.json({
+        success: true,
+        message: 'Application already accepted',
+        data: {
+          jobId: job._id,
+          applicationId: application._id,
+          providerId: application.providerId,
+          alreadyAccepted: true
+        }
+      });
+    }
+
+    // Update application status to accepted
+    application.status = 'accepted';
+
+    // Update job status and assign provider
+    job.status = 'accepted';
+    job.providerId = application.providerId;
+
+    // Reject all other pending applications
+    if (job.applications && job.applications.length > 0) {
+      job.applications.forEach(app => {
+        if (app._id.toString() !== proposalId && app.status === 'pending') {
+          app.status = 'rejected';
+        }
+      });
+    }
+
+    await job.save();
+
+    // Send notification to provider
+    try {
+      await Notification.createNotification({
+        userId: application.providerId,
+        type: 'proposal_accepted',
+        title: 'Proposal Accepted!',
+        message: `Your proposal for "${job.title}" has been accepted by the customer`,
+        relatedId: job._id,
+        relatedType: 'job'
+      });
+    } catch (notifError) {
+      console.error('❌ Notification error:', notifError);
+    }
+
+    console.log('✅ Job application accepted successfully');
+
+    res.json({
+      success: true,
+      message: 'Proposal accepted successfully',
+      data: {
+        jobId: job._id,
+        applicationId: application._id,
+        providerId: application.providerId
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Unified accept proposal error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to accept proposal',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.post('/api/service-requests/:jobId/hero-here', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const userId = req.user.id;
+
+    console.log('🎯 Customer confirming provider arrival:', { jobId, userId });
+
+    const serviceRequest = await ServiceRequest.findById(jobId);
+    if (!serviceRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service request not found'
+      });
+    }
+
+    // Check if user owns the service request
+    if (serviceRequest.customerId.toString() !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to update this service request'
+      });
+    }
+
+    // Check if job is in correct status
+    if (serviceRequest.status !== 'awaiting_hero') {
+      return res.status(400).json({
+        success: false,
+        message: 'Service request is not in awaiting hero status'
+      });
+    }
+
+    // Update status to in_progress
+    serviceRequest.status = 'in_progress';
+    serviceRequest.startedAt = new Date();
+
+    await serviceRequest.save();
+
+    // Send notification to provider
+    await Notification.createNotification({
+      userId: serviceRequest.providerId,
+      type: 'job_started',
+      title: 'Job Started!',
+      message: `The customer has confirmed your arrival and the job has started`,
+      relatedId: serviceRequest._id,
+      relatedType: 'job'
+    });
+
+    console.log('✅ Hero Here confirmed, job status updated to in_progress');
+
+    res.json({
+      success: true,
+      message: 'Provider arrival confirmed, job started!',
+      data: {
+        serviceRequestId: serviceRequest._id,
+        status: serviceRequest.status,
+        startedAt: serviceRequest.startedAt
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Hero Here confirmation error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to confirm provider arrival',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+app.post('/api/jobs/:jobId/request-refund', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { reason } = req.body;
+
+    console.log('🔄 Refund request:', { jobId, reason });
+
+    // Find job
+    const job = await ServiceRequest.findById(jobId).populate('customerId', 'name email');
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: 'Job not found'
+      });
+    }
+
+    // Check if user owns the job
+    if (job.customerId._id.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to request refund for this job'
+      });
+    }
+
+    // Check if refund is allowed
+    if (!job.canRefund) {
+      return res.status(400).json({
+        success: false,
+        message: 'Refund is not available for this job. A proposal has already been accepted.'
+      });
+    }
+
+    // Check if payment exists and is held
+    if (!job.payment || job.payment.status !== 'held') {
+      return res.status(400).json({
+        success: false,
+        message: 'No payment found or payment is not in held status'
+      });
+    }
+
+    // Process refund based on payment processor
+    let refundResult;
+
+    if (job.payment.processor === 'paystack') {
+      // Paystack refund
+      try {
+        const refundResponse = await paymentProcessors.paystack.refund.create({
+          transaction: job.payment.paymentIntentId,
+          amount: Math.round(job.payment.amount * 100)
+        });
+
+        if (refundResponse.data.status === 'processed') {
+          refundResult = {
+            success: true,
+            processor: 'paystack',
+            refundId: refundResponse.data.data.id
+          };
+        } else {
+          throw new Error(refundResponse.data.message);
+        }
+      } catch (paystackError) {
+        console.error('❌ Paystack refund failed:', paystackError);
+        throw new Error(`Paystack refund failed: ${paystackError.message}`);
+      }
+    } else if (job.payment.processor === 'stripe') {
+      // Stripe refund
+      try {
+        const refund = await paymentProcessors.stripe.refunds.create({
+          payment_intent: job.payment.paymentIntentId
+        });
+
+        refundResult = {
+          success: true,
+          processor: 'stripe',
+          refundId: refund.id
+        };
+      } catch (stripeError) {
+        console.error('❌ Stripe refund failed:', stripeError);
+        throw new Error(`Stripe refund failed: ${stripeError.message}`);
+      }
+    }
+
+    // Update job status
+    job.status = 'cancelled';
+    job.payment.status = 'refunded';
+    job.payment.refundedAt = new Date();
+    job.refundRequested = true;
+    job.refundReason = reason;
+
+    await job.save();
+
+    console.log('✅ Refund processed successfully');
+
+    res.json({
+      success: true,
+      message: 'Refund processed successfully',
+      data: {
+        refund: refundResult,
+        job: {
+          id: job._id,
+          status: job.status,
+          payment: job.payment
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Refund request error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to process refund',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.post('/api/jobs/payment-verify', async (req, res) => {
+  try {
+    const { reference, jobId, processor } = req.query;
+
+    console.log('🔍 Verifying job payment:', { reference, jobId, processor });
+
+    let paymentVerified = false;
+    let job;
+
+    if (processor === 'paystack') {
+      // Verify Paystack payment
+      const verification = await paymentProcessors.paystack.transaction.verify(reference);
+      
+      if (verification.data.status === 'success') {
+        paymentVerified = true;
+        job = await ServiceRequest.findById(jobId);
+        
+        if (job) {
+          job.payment.status = 'held';
+          job.payment.heldAt = new Date();
+          job.status = 'pending'; // Job is now live with payment held
+          await job.save();
+        }
+      }
+    } else if (processor === 'stripe') {
+      // For Stripe, we typically use webhooks, but this is a simple verification
+      job = await ServiceRequest.findById(jobId);
+      if (job && job.payment) {
+        job.payment.status = 'held';
+        job.payment.heldAt = new Date();
+        job.status = 'pending';
+        await job.save();
+        paymentVerified = true;
+      }
+    }
+
+    if (paymentVerified && job) {
+      console.log('✅ Job payment verified, job is now live');
+      
+      // Redirect to job page
+      res.redirect(`${process.env.FRONTEND_URL}/jobs/${jobId}?payment=success`);
+    } else {
+      res.redirect(`${process.env.FRONTEND_URL}/jobs/${jobId}?payment=failed`);
+    }
+
+  } catch (error) {
+    console.error('❌ Job payment verification error:', error);
+    res.redirect(`${process.env.FRONTEND_URL}/jobs?payment=error`);
+  }
+});
+
+app.get('/api/jobs/:jobId', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+
+    const job = await ServiceRequest.findById(jobId)
+      .populate('customerId', 'name email profileImage')
+      .populate('providerId', 'name email profileImage rating reviewCount')
+      .populate('proposals.providerId', 'name profileImage rating reviewCount completedJobs');
+
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: 'Job not found'
+      });
+    }
+
+    // Check if user can view this job
+    const canView = job.customerId._id.toString() === req.user.id || 
+                   (job.providerId && job.providerId._id.toString() === req.user.id) ||
+                   req.user.userType.includes('provider');
+
+    if (!canView) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to view this job'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        job,
+        canSubmitProposal: req.user.userType.includes('provider') && 
+                          job.status === 'pending' &&
+                          job.customerId._id.toString() !== req.user.id,
+        canRequestRefund: job.customerId._id.toString() === req.user.id && 
+                         job.canRefund && 
+                         job.payment?.status === 'held'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get job error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch job details'
+    });
+  }
+});
+
 
 
 // Production fallback handler
@@ -6267,6 +7212,1068 @@ app.post('/api/payments/confirm-stripe-payment', authenticateToken, async (req, 
 });
 
 
+app.get('/api/service-requests/:jobId/proposals', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    
+    console.log('📨 Fetching proposals for ServiceRequest:', jobId);
+    
+    // Validate jobId
+    if (!jobId || jobId === 'undefined' || !mongoose.Types.ObjectId.isValid(jobId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid job ID is required'
+      });
+    }
+
+    const serviceRequest = await ServiceRequest.findById(jobId)
+      .populate('proposals.providerId', 'name email profileImage rating reviewCount completedJobs')
+      .populate('customerId', 'name email');
+
+    if (!serviceRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service request not found'
+      });
+    }
+
+    // Check authorization
+    const canView = serviceRequest.customerId._id.toString() === req.user.id || 
+                   req.user.userType.includes('provider');
+    
+    if (!canView) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to view these proposals'
+      });
+    }
+
+    console.log('✅ Proposals found:', serviceRequest.proposals?.length);
+
+    res.json({
+      success: true,
+      data: {
+        proposals: serviceRequest.proposals || [],
+        jobTitle: serviceRequest.serviceType,
+        jobStatus: serviceRequest.status,
+        isCustomer: serviceRequest.customerId._id.toString() === req.user.id
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get proposals error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch proposals',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+
+app.post('/api/admin/init-proposals-array/:jobId', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    
+    console.log('🔄 Initializing proposals array for job:', jobId);
+    
+    // Check if user is admin
+    if (req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    const serviceRequest = await ServiceRequest.findById(jobId);
+    if (!serviceRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'ServiceRequest not found'
+      });
+    }
+
+    console.log('🔍 Before initialization:', {
+      hasProposals: !!serviceRequest.proposals,
+      isArray: Array.isArray(serviceRequest.proposals),
+      proposals: serviceRequest.proposals
+    });
+
+    // Initialize proposals array if it doesn't exist or isn't an array
+    if (!serviceRequest.proposals || !Array.isArray(serviceRequest.proposals)) {
+      serviceRequest.proposals = [];
+      await serviceRequest.save();
+      console.log('✅ Proposals array initialized');
+    } else {
+      console.log('ℹ️ Proposals array already exists');
+    }
+
+    console.log('🔍 After initialization:', {
+      hasProposals: !!serviceRequest.proposals,
+      isArray: Array.isArray(serviceRequest.proposals),
+      proposalsCount: serviceRequest.proposals.length
+    });
+
+    res.json({
+      success: true,
+      message: 'Proposals array initialized',
+      data: {
+        jobId: jobId,
+        proposalsCount: serviceRequest.proposals.length,
+        wasInitialized: !serviceRequest.proposals || !Array.isArray(serviceRequest.proposals)
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Init proposals error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to initialize proposals',
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/admin/add-test-proposal/:jobId', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { providerId = '6921db643a14cec399ce928a' } = req.body;
+    
+    console.log('🧪 Adding test proposal to job:', jobId);
+    
+    // Check if user is admin
+    if (req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    const serviceRequest = await ServiceRequest.findById(jobId);
+    if (!serviceRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'ServiceRequest not found'
+      });
+    }
+
+    // Ensure proposals array exists
+    if (!serviceRequest.proposals || !Array.isArray(serviceRequest.proposals)) {
+      serviceRequest.proposals = [];
+    }
+
+    // Add test proposal
+    const testProposal = {
+      providerId: providerId,
+      proposalText: 'Test proposal - I can help with this service!',
+      proposedAmount: 5000,
+      estimatedDuration: '2-3 hours',
+      status: 'pending',
+      submittedAt: new Date(),
+      createdAt: new Date()
+    };
+
+    serviceRequest.proposals.push(testProposal);
+    await serviceRequest.save();
+
+    console.log('✅ Test proposal added:', testProposal._id);
+
+    res.json({
+      success: true,
+      message: 'Test proposal added successfully',
+      data: {
+        jobId: jobId,
+        proposalId: testProposal._id,
+        proposalsCount: serviceRequest.proposals.length
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Add test proposal error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to add test proposal',
+      error: error.message
+    });
+  }
+});
+
+
+
+app.get('/api/jobs/:jobId/proposals', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    
+    console.log('📨 Unified fetching proposals for:', jobId);
+    
+    // Validate jobId
+    if (!jobId || jobId === 'undefined' || !mongoose.Types.ObjectId.isValid(jobId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid job ID is required'
+      });
+    }
+
+    // Try ServiceRequest first
+    let serviceRequest = await ServiceRequest.findById(jobId)
+      .populate('proposals.providerId', 'name email profileImage rating reviewCount completedJobs')
+      .populate('customerId', 'name email');
+
+    if (serviceRequest) {
+      console.log('✅ Found in ServiceRequest, proposals:', serviceRequest.proposals?.length);
+      
+      // Check if user can view these proposals
+      const canView = serviceRequest.customerId._id.toString() === req.user.id || 
+                     req.user.userType.includes('provider');
+      
+      if (!canView) {
+        return res.status(403).json({
+          success: false,
+          message: 'Not authorized to view these proposals'
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          proposals: serviceRequest.proposals || [],
+          jobTitle: serviceRequest.serviceType,
+          jobStatus: serviceRequest.status,
+          isCustomer: serviceRequest.customerId._id.toString() === req.user.id
+        }
+      });
+    }
+
+    // Try Job collection as fallback
+    const job = await Job.findById(jobId)
+      .populate('applications.providerId', 'name email profileImage rating reviewCount')
+      .populate('customerId', 'name email');
+
+    if (job) {
+      console.log('✅ Found in Job collection, applications:', job.applications?.length);
+      
+      const canView = job.customerId._id.toString() === req.user.id || 
+                     req.user.userType.includes('provider');
+      
+      if (!canView) {
+        return res.status(403).json({
+          success: false,
+          message: 'Not authorized to view these applications'
+        });
+      }
+
+      // Transform applications to proposals format
+      const proposals = (job.applications || []).map(app => ({
+        _id: app._id,
+        providerId: app.providerId,
+        proposalText: app.message || app.proposalText || 'No message provided',
+        proposedAmount: app.proposedBudget || app.budget,
+        estimatedDuration: app.timeline || app.estimatedDuration,
+        status: app.status || 'pending',
+        submittedAt: app.createdAt || app.submittedAt,
+        createdAt: app.createdAt
+      }));
+
+      return res.json({
+        success: true,
+        data: {
+          proposals: proposals,
+          jobTitle: job.title || job.serviceType,
+          jobStatus: job.status,
+          isCustomer: job.customerId._id.toString() === req.user.id
+        }
+      });
+    }
+
+    console.log('❌ Job not found in any collection:', jobId);
+    return res.status(404).json({
+      success: false,
+      message: 'Job not found'
+    });
+
+  } catch (error) {
+    console.error('❌ Unified get proposals error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch proposals',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+
+app.post('/api/admin/migrate-jobs-to-service-requests', authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    console.log('🔄 Starting job migration from Job to ServiceRequest collection...');
+
+    // Find all jobs that don't have corresponding ServiceRequest
+    const allJobs = await Job.find({});
+    let migratedCount = 0;
+    let errors = [];
+
+    for (const job of allJobs) {
+      try {
+        // Check if ServiceRequest already exists
+        const existingServiceRequest = await ServiceRequest.findById(job._id);
+        if (existingServiceRequest) {
+          console.log(`ℹ️ ServiceRequest already exists for job: ${job._id}`);
+          continue;
+        }
+
+        // Create new ServiceRequest from Job data
+        const serviceRequest = new ServiceRequest({
+          _id: job._id,
+          serviceType: job.title || job.serviceType || 'General Service',
+          description: job.description || 'No description provided',
+          location: job.location || 'Location not specified',
+          budget: job.budget || 'Not specified',
+          budgetAmount: job.budget ? parseInt(job.budget.replace(/\D/g, '')) || 0 : 0,
+          customerId: job.customerId,
+          status: job.status || 'pending',
+          createdAt: job.createdAt,
+          proposals: []
+        });
+
+        // Copy applications from Job to proposals in ServiceRequest
+        if (job.applications && job.applications.length > 0) {
+          serviceRequest.proposals = job.applications.map(app => ({
+            providerId: app.providerId,
+            proposalText: app.message || 'No message provided',
+            proposedAmount: app.proposedBudget,
+            estimatedDuration: app.timeline,
+            status: app.status || 'pending',
+            submittedAt: app.createdAt,
+            createdAt: app.createdAt
+          }));
+        }
+
+        await serviceRequest.save();
+        migratedCount++;
+        console.log(`✅ Migrated job: ${job._id} with ${serviceRequest.proposals.length} proposals`);
+
+      } catch (error) {
+        errors.push({
+          jobId: job._id,
+          error: error.message
+        });
+        console.error(`❌ Failed to migrate job: ${job._id}`, error.message);
+      }
+    }
+
+    console.log(`🎉 Migration completed: ${migratedCount} jobs migrated, ${errors.length} errors`);
+
+    res.json({
+      success: true,
+      message: `Migrated ${migratedCount} jobs to ServiceRequest collection`,
+      data: {
+        migratedCount,
+        errorCount: errors.length,
+        errors: errors
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Migration error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to migrate jobs',
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/admin/sync-proposals/:jobId', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    
+    console.log('🔄 Syncing proposals for job:', jobId);
+    
+    // Check if user is admin
+    if (req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    // Find job in Job collection
+    const job = await Job.findById(jobId)
+      .populate('applications.providerId');
+
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        message: 'Job not found in Job collection'
+      });
+    }
+
+    // Find or create corresponding ServiceRequest
+    let serviceRequest = await ServiceRequest.findById(jobId);
+    
+    if (!serviceRequest) {
+      // Create a ServiceRequest from the Job data
+      serviceRequest = new ServiceRequest({
+        _id: jobId,
+        serviceType: job.serviceType || job.title,
+        description: job.description,
+        location: job.location,
+        budget: job.budget,
+        customerId: job.customerId,
+        status: job.status,
+        createdAt: job.createdAt,
+        proposals: []
+      });
+    }
+
+    // Sync applications from Job to proposals in ServiceRequest
+    if (job.applications && job.applications.length > 0) {
+      serviceRequest.proposals = job.applications.map(app => ({
+        providerId: app.providerId._id,
+        proposalText: app.message || 'No message provided',
+        proposedAmount: app.proposedBudget,
+        estimatedDuration: app.timeline,
+        status: app.status || 'pending',
+        submittedAt: app.createdAt,
+        createdAt: app.createdAt
+      }));
+    }
+
+    await serviceRequest.save();
+
+    console.log('✅ Synced proposals:', serviceRequest.proposals.length);
+
+    res.json({
+      success: true,
+      message: `Synced ${serviceRequest.proposals.length} proposals from Job to ServiceRequest`,
+      data: {
+        jobId: jobId,
+        proposalsCount: serviceRequest.proposals.length
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Sync proposals error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to sync proposals'
+    });
+  }
+});
+
+app.get('/api/debug/job-proposals-check/:jobId', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    
+    console.log('🔍 Checking proposals in both systems for job:', jobId);
+    
+    // Check ServiceRequest
+    const serviceRequest = await ServiceRequest.findById(jobId)
+      .populate('proposals.providerId', 'name email');
+    
+    // Check Job
+    const job = await Job.findById(jobId)
+      .populate('applications.providerId', 'name email');
+
+    const result = {
+      serviceRequest: {
+        exists: !!serviceRequest,
+        proposalsCount: serviceRequest?.proposals?.length || 0,
+        proposals: serviceRequest?.proposals || []
+      },
+      job: {
+        exists: !!job,
+        applicationsCount: job?.applications?.length || 0,
+        applications: job?.applications || []
+      }
+    };
+
+    console.log('🔍 Debug result:', result);
+
+    res.json({
+      success: true,
+      data: result
+    });
+
+  } catch (error) {
+    console.error('❌ Debug check error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check proposals'
+    });
+  }
+});
+
+app.get('/api/debug/job-proposals-detailed/:jobId', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    
+    console.log('🔍 DETAILED DEBUG: Checking job:', jobId);
+    
+    // Check ServiceRequest collection
+    const serviceRequest = await ServiceRequest.findById(jobId);
+    console.log('🔍 ServiceRequest found:', !!serviceRequest);
+    if (serviceRequest) {
+      console.log('🔍 ServiceRequest data:', {
+        id: serviceRequest._id,
+        serviceType: serviceRequest.serviceType,
+        proposalsCount: serviceRequest.proposals?.length,
+        proposals: serviceRequest.proposals
+      });
+    }
+
+    // Check Job collection
+    const job = await Job.findById(jobId);
+    console.log('🔍 Job found:', !!job);
+    if (job) {
+      console.log('🔍 Job data:', {
+        id: job._id,
+        title: job.title,
+        applicationsCount: job.applications?.length,
+        applications: job.applications
+      });
+    }
+
+    // Check if jobId exists in both collections
+    const serviceRequestExists = !!serviceRequest;
+    const jobExists = !!job;
+
+    res.json({
+      success: true,
+      data: {
+        jobId: jobId,
+        collections: {
+          serviceRequest: {
+            exists: serviceRequestExists,
+            data: serviceRequest ? {
+              serviceType: serviceRequest.serviceType,
+              proposalsCount: serviceRequest.proposals?.length,
+              proposals: serviceRequest.proposals
+            } : null
+          },
+          job: {
+            exists: jobExists,
+            data: job ? {
+              title: job.title,
+              applicationsCount: job.applications?.length,
+              applications: job.applications
+            } : null
+          }
+        },
+        summary: {
+          jobFoundInServiceRequest: serviceRequestExists,
+          jobFoundInJobCollection: jobExists,
+          totalProposals: (serviceRequest?.proposals?.length || 0) + (job?.applications?.length || 0)
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Detailed debug error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to debug job',
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/jobs/:jobId/apply', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const {
+      proposedBudget,
+      timeline,
+      message,
+      proposedSchedule
+    } = req.body;
+
+    console.log('📨 New job application:', {
+      jobId,
+      providerId: req.user.id,
+      proposedBudget,
+      timeline
+    });
+
+    // Validate jobId
+    if (!jobId || !mongoose.Types.ObjectId.isValid(jobId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid job ID is required'
+      });
+    }
+
+    // Validate user is a provider
+    const user = await User.findById(req.user.id);
+    if (!user.userType.includes('provider') && user.userType !== 'both') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only providers can submit proposals'
+      });
+    }
+
+    // Try ServiceRequest first
+    let serviceRequest = await ServiceRequest.findById(jobId);
+    if (serviceRequest) {
+      console.log('✅ Applying to ServiceRequest');
+      
+      // Check if job is still open
+      if (serviceRequest.status !== 'pending') {
+        return res.status(400).json({
+          success: false,
+          message: 'This job is no longer accepting proposals'
+        });
+      }
+
+      // Check if provider already submitted a proposal
+      const existingProposal = serviceRequest.proposals.find(
+        proposal => proposal.providerId.toString() === req.user.id
+      );
+
+      if (existingProposal) {
+        return res.status(400).json({
+          success: false,
+          message: 'You have already submitted a proposal for this job'
+        });
+      }
+
+      // Add new proposal
+      const newProposal = {
+        providerId: req.user.id,
+        proposalText: message,
+        proposedAmount: proposedBudget ? parseInt(proposedBudget.replace(/\D/g, '')) : 0,
+        estimatedDuration: timeline,
+        proposedSchedule: proposedSchedule,
+        status: 'pending',
+        submittedAt: new Date()
+      };
+
+      serviceRequest.proposals.push(newProposal);
+      await serviceRequest.save();
+
+      // Populate the new proposal for response
+      await serviceRequest.populate('proposals.providerId', 'name profileImage rating reviewCount');
+
+      const savedProposal = serviceRequest.proposals[serviceRequest.proposals.length - 1];
+
+      console.log('✅ Proposal submitted to ServiceRequest successfully');
+
+      // Notify customer
+      await Notification.createNotification({
+        userId: serviceRequest.customerId,
+        type: 'new_proposal',
+        title: 'New Proposal Received',
+        message: `${user.name} has submitted a proposal for your ${serviceRequest.serviceType} job`,
+        relatedId: serviceRequest._id,
+        relatedType: 'job',
+        priority: 'medium'
+      });
+
+      return res.json({
+        success: true,
+        message: 'Proposal submitted successfully',
+        data: {
+          proposal: savedProposal,
+          jobId: serviceRequest._id
+        }
+      });
+    }
+
+    // Try Job collection as fallback
+    const job = await Job.findById(jobId);
+    if (job) {
+      console.log('✅ Applying to Job collection');
+      
+      if (job.status !== 'pending') {
+        return res.status(400).json({
+          success: false,
+          message: 'This job is no longer accepting applications'
+        });
+      }
+
+      // Check if already applied
+      const existingApplication = job.applications?.find(
+        app => app.providerId.toString() === req.user.id
+      );
+
+      if (existingApplication) {
+        return res.status(400).json({
+          success: false,
+          message: 'You have already applied for this job'
+        });
+      }
+
+      // Add application
+      const newApplication = {
+        providerId: req.user.id,
+        message: message,
+        proposedBudget: proposedBudget,
+        timeline: timeline,
+        proposedSchedule: proposedSchedule,
+        status: 'pending',
+        createdAt: new Date()
+      };
+
+      if (!job.applications) {
+        job.applications = [];
+      }
+      job.applications.push(newApplication);
+      await job.save();
+
+      console.log('✅ Application submitted to Job collection successfully');
+
+      // Notify customer
+      await Notification.createNotification({
+        userId: job.customerId,
+        type: 'new_application',
+        title: 'New Application Received',
+        message: `${user.name} has applied for your ${job.title} job`,
+        relatedId: job._id,
+        relatedType: 'job',
+        priority: 'medium'
+      });
+
+      return res.json({
+        success: true,
+        message: 'Application submitted successfully',
+        data: {
+          application: job.applications[job.applications.length - 1],
+          jobId: job._id
+        }
+      });
+    }
+
+    console.log('❌ Job not found in any collection:', jobId);
+    return res.status(404).json({
+      success: false,
+      message: 'Job not found'
+    });
+
+  } catch (error) {
+    console.error('❌ Proposal submission error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to submit proposal',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+async function sendProposalNotification(customerEmail, customerName, providerName, serviceType, jobId) {
+  try {
+    const emailSubject = `New Proposal Received for Your ${serviceType} Job`;
+    const emailBody = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2>Hello ${customerName},</h2>
+        <p>Great news! You've received a new proposal from <strong>${providerName}</strong> for your ${serviceType} job.</p>
+        
+        <div style="background-color: #f5f5f5; padding: 20px; border-radius: 5px; margin: 20px 0;">
+          <h3>Next Steps:</h3>
+          <ul>
+            <li>Review the proposal details</li>
+            <li>Check the provider's profile and reviews</li>
+            <li>Respond to the proposal within 48 hours</li>
+          </ul>
+        </div>
+        
+        <a href="${process.env.CLIENT_URL}/jobs/${jobId}/proposals" 
+           style="background-color: #007bff; color: white; padding: 12px 24px; 
+                  text-decoration: none; border-radius: 5px; display: inline-block;">
+          View Proposal
+        </a>
+        
+        <p style="margin-top: 30px; color: #666; font-size: 14px;">
+          This is an automated notification. Please do not reply to this email.
+        </p>
+      </div>
+    `;
+
+    // Send email using your email service (Nodemailer, SendGrid, etc.)
+    // Example with Nodemailer:
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+      }
+    });
+
+    await transporter.sendMail({
+      from: process.env.EMAIL_FROM,
+      to: customerEmail,
+      subject: emailSubject,
+      html: emailBody
+    });
+
+    return true;
+  } catch (error) {
+    console.error('Error sending proposal notification email:', error);
+    throw error;
+  }
+}
+
+
+
+app.post('/api/admin/clear-proposals/:jobId', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    
+    console.log('🧹 Clearing proposals for job:', jobId);
+    
+    // Check if user is admin
+    if (req.user.userType !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
+      });
+    }
+
+    // Clear proposals from ServiceRequest
+    const serviceRequest = await ServiceRequest.findById(jobId);
+    if (serviceRequest) {
+      const previousCount = serviceRequest.proposals?.length || 0;
+      serviceRequest.proposals = [];
+      await serviceRequest.save();
+      console.log(`✅ Cleared ${previousCount} proposals from ServiceRequest`);
+    }
+
+    // Clear applications from Job
+    const job = await Job.findById(jobId);
+    if (job) {
+      const previousCount = job.applications?.length || 0;
+      job.applications = [];
+      await job.save();
+      console.log(`✅ Cleared ${previousCount} applications from Job`);
+    }
+
+    res.json({
+      success: true,
+      message: 'Proposals cleared successfully',
+      data: {
+        jobId: jobId,
+        clearedFrom: {
+          serviceRequest: !!serviceRequest,
+          job: !!job
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Clear proposals error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to clear proposals',
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/debug/current-proposals/:jobId', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    
+    console.log('🔍 CHECKING CURRENT PROPOSALS FOR:', jobId);
+    
+    // Check ServiceRequest
+    const serviceRequest = await ServiceRequest.findById(jobId)
+      .populate('proposals.providerId', 'name email');
+    
+    // Check Job
+    const job = await Job.findById(jobId)
+      .populate('applications.providerId', 'name email');
+
+    const currentState = {
+      serviceRequest: {
+        exists: !!serviceRequest,
+        proposals: serviceRequest?.proposals || [],
+        proposalsCount: serviceRequest?.proposals?.length || 0,
+        proposalIds: serviceRequest?.proposals?.map(p => ({
+          id: p._id,
+          providerId: p.providerId?._id,
+          providerName: p.providerId?.name
+        })) || []
+      },
+      job: {
+        exists: !!job,
+        applications: job?.applications || [],
+        applicationsCount: job?.applications?.length || 0,
+        applicationIds: job?.applications?.map(a => ({
+          id: a._id,
+          providerId: a.providerId?._id,
+          providerName: a.providerId?.name
+        })) || []
+      }
+    };
+
+    console.log('📊 CURRENT STATE:', currentState);
+
+    res.json({
+      success: true,
+      data: currentState
+    });
+
+  } catch (error) {
+    console.error('❌ Check current proposals error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check current proposals',
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/debug/notification-types', authenticateToken, async (req, res) => {
+  try {
+    // Check Notification model schema to see valid types
+    const notificationTypes = [
+      'booking_request',
+      'booking_confirmed', 
+      'booking_cancelled',
+      'booking_reminder',
+      'payment_received',
+      'payment_failed',
+      'rating_received',
+      'message_received',
+      'system_alert',
+      'job_update',
+      'verification_submitted',
+      'verification_status_updated',
+      'proposal_accepted'
+      // Add any other types from your Notification model
+    ];
+
+    res.json({
+      success: true,
+      data: {
+        validTypes: notificationTypes,
+        currentModel: 'Check your Notification.js model for the exact enum values'
+      }
+    });
+  } catch (error) {
+    console.error('Debug notification types error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get notification types'
+    });
+  }
+});
+
+app.get('/api/debug/verify-proposal/:jobId', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    
+    console.log('🔍 Verifying proposal for job:', jobId);
+    
+    // Check ServiceRequest
+    const serviceRequest = await ServiceRequest.findById(jobId)
+      .populate('proposals.providerId', 'name email')
+      .populate('customerId', 'name email');
+
+    if (!serviceRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'ServiceRequest not found'
+      });
+    }
+
+    console.log('🔍 ServiceRequest proposals:', serviceRequest.proposals);
+
+    res.json({
+      success: true,
+      data: {
+        jobId: jobId,
+        serviceRequest: {
+          _id: serviceRequest._id,
+          serviceType: serviceRequest.serviceType,
+          customer: serviceRequest.customerId,
+          proposalsCount: serviceRequest.proposals?.length || 0,
+          proposals: serviceRequest.proposals || []
+        },
+        summary: `Found ${serviceRequest.proposals?.length || 0} proposals`
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Verify proposal error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to verify proposal',
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/debug/service-request-proposals/:jobId', authenticateToken, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    
+    console.log('🔍 DETAILED DEBUG: Checking ServiceRequest proposals for:', jobId);
+    
+    const serviceRequest = await ServiceRequest.findById(jobId)
+      .populate('proposals.providerId', 'name email profileImage');
+
+    if (!serviceRequest) {
+      console.log('❌ ServiceRequest not found');
+      return res.json({
+        success: false,
+        message: 'ServiceRequest not found'
+      });
+    }
+
+    console.log('🔍 ServiceRequest details:', {
+      _id: serviceRequest._id,
+      serviceType: serviceRequest.serviceType,
+      proposalsCount: serviceRequest.proposals?.length,
+      proposalsRaw: serviceRequest.proposals
+    });
+
+    // Check if proposals array exists and has data
+    if (serviceRequest.proposals && serviceRequest.proposals.length > 0) {
+      console.log('✅ Proposals found, checking each one:');
+      serviceRequest.proposals.forEach((proposal, index) => {
+        console.log(`   Proposal ${index + 1}:`, {
+          _id: proposal._id,
+          providerId: proposal.providerId?._id,
+          providerName: proposal.providerId?.name,
+          proposalText: proposal.proposalText?.substring(0, 50) + '...',
+          status: proposal.status
+        });
+      });
+    } else {
+      console.log('❌ No proposals array or empty array');
+    }
+
+    res.json({
+      success: true,
+      data: {
+        serviceRequest: {
+          _id: serviceRequest._id,
+          serviceType: serviceRequest.serviceType,
+          proposalsCount: serviceRequest.proposals?.length || 0,
+          proposals: serviceRequest.proposals || []
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Debug error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Debug failed',
+      error: error.message
+    });
+  }
+});
+
 
 //NIN
 app.post('/api/auth/verify-identity', authenticateToken, upload.single('nepaBill'), async (req, res) => {
@@ -7169,7 +9176,8 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
   ? [
       'https://homeheroes.help',
       'https://www.homeheroes.help',
-      'https://backendhomeheroes.onrender.com'
+      'https://backendhomeheroes.onrender.com',
+      'http://localhost:5173',
     ]
   : [
       'http://localhost:5173',
@@ -7178,17 +9186,46 @@ const allowedOrigins = process.env.NODE_ENV === 'production'
       'http://localhost:4173',
       'http://localhost:5174',
       'http://localhost:5175',
+      'http://localhost:3001'
     ];
 
 
+app.use('/api/providers/:id/favorite', (req, res, next) => {
+  const origin = req.headers.origin;
+  
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+  }
+  
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
+  next();
+});
 
-
-const corsOptions = {
+app.use(cors({
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
-    if (allowedOrigins.indexOf(origin) !== -1) {
+    const allowedOrigins = process.env.NODE_ENV === 'production' 
+      ? [
+          'https://homeheroes.help',
+          'https://www.homeheroes.help',
+          'https://backendhomeheroes.onrender.com'
+        ]
+      : [
+          'http://localhost:5173',
+          'http://localhost:5174',
+          'http://localhost:3000',
+          'http://localhost:5175'
+        ];
+    
+    if (allowedOrigins.indexOf(origin) !== -1 || origin.includes('localhost')) {
       callback(null, true);
     } else {
       console.log('CORS blocked origin:', origin);
@@ -7198,14 +9235,11 @@ const corsOptions = {
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
-};
+}));
+
+app.options('*', cors());
 
 
-
-app.use(cors(corsOptions));
-
-
-app.options('*', cors(corsOptions));
 
 app.use(express.json({ 
   limit: '10mb',
@@ -7377,7 +9411,9 @@ app.options('*', cors({
     'Accept', 
     'Origin',
     'Cache-Control',
-    'Pragma'
+    'Pragma',
+    'x-access-token'
+
   ]
 }));
 
@@ -9495,12 +11531,9 @@ app.post('/api/test-upload', async (req, res) => {
 app.get('/api/auth/verification-status', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    console.log('🔍 Fetching verification status for user:', userId);
-    
-    const user = await User.findById(userId).select('identityVerification hasSubmittedVerification');
+    const user = await User.findById(userId).select('identityVerification hasSubmittedVerification verificationStatus userType');
     
     if (!user) {
-      console.log('❌ User not found:', userId);
       return res.status(404).json({
         success: false,
         message: 'User not found'
@@ -9509,35 +11542,36 @@ app.get('/api/auth/verification-status', authenticateToken, async (req, res) => 
 
     const verificationData = user.identityVerification || {};
     
-    console.log('📊 Verification data:', {
-      hasSubmittedVerification: user.hasSubmittedVerification,
-      verificationStatus: verificationData.verificationStatus,
-      isNinVerified: verificationData.isNinVerified
-    });
-
-    // Determine verification status
+    // Determine verification status with proper mapping
     let verificationStatus = 'not_submitted';
     let isVerified = false;
+    let isNinVerified = false;
+    let isNepaVerified = false;
     
     if (user.hasSubmittedVerification) {
       if (verificationData.verificationStatus === 'approved') {
         verificationStatus = 'verified';
         isVerified = true;
+        isNinVerified = verificationData.isNinVerified || false;
+        isNepaVerified = verificationData.isNepaVerified || false;
       } else if (verificationData.verificationStatus === 'rejected') {
         verificationStatus = 'rejected';
       } else if (verificationData.verificationStatus === 'pending') {
-        verificationStatus = 'pending_review';
+        verificationStatus = 'pending';
       } else {
         verificationStatus = 'submitted';
       }
     }
 
+    // Return the exact structure that frontend expects
     res.json({
       success: true,
       data: {
-        hasSubmittedVerification: user.hasSubmittedVerification || false,
+        hasSubmittedVerification: user.hasSubmittedVerification,
         verificationStatus: verificationStatus,
         isVerified: isVerified,
+        isNinVerified: isNinVerified, // Add this field
+        isNepaVerified: isNepaVerified, // Add this field
         details: {
           ninVerified: verificationData.isNinVerified || false,
           nepaVerified: verificationData.isNepaVerified || false,
@@ -9550,10 +11584,54 @@ app.get('/api/auth/verification-status', authenticateToken, async (req, res) => 
     });
 
   } catch (error) {
-    console.error('❌ Check verification status error:', error);
+    console.error('Check verification status error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to check verification status'
+    });
+  }
+});
+
+app.get('/api/debug/verification-data', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId).select('identityVerification hasSubmittedVerification');
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Return raw data for debugging
+    res.json({
+      success: true,
+      data: {
+        rawUserData: {
+          hasSubmittedVerification: user.hasSubmittedVerification,
+          identityVerification: user.identityVerification
+        },
+        frontendExpected: {
+          hasSubmittedVerification: user.hasSubmittedVerification,
+          verificationStatus: user.identityVerification?.verificationStatus || 'not_submitted',
+          isVerified: user.identityVerification?.verificationStatus === 'approved',
+          isNinVerified: user.identityVerification?.isNinVerified || false,
+          isNepaVerified: user.identityVerification?.isNepaVerified || false,
+          details: {
+            ninVerified: user.identityVerification?.isNinVerified || false,
+            nepaVerified: user.identityVerification?.isNepaVerified || false,
+            selfieVerified: user.identityVerification?.isSelfieVerified || false
+          }
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Debug verification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch debug verification data'
     });
   }
 });
@@ -16000,6 +18078,8 @@ app.get('/api/service-requests/customer', authenticateToken, async (req, res) =>
     const limit = parseInt(req.query.limit) || 20;
     const status = req.query.status;
 
+    console.log('📊 Fetching service requests for customer:', req.user.id);
+
     let filter = { customerId: req.user.id };
     
     if (status && status !== 'all') {
@@ -16010,24 +18090,54 @@ app.get('/api/service-requests/customer', authenticateToken, async (req, res) =>
       page,
       limit,
       sort: { createdAt: -1 },
-      populate: { 
-        path: 'customerId', 
-        select: 'name email phoneNumber profileImage' 
-      }
+      populate: [
+        { 
+          path: 'customerId', 
+          select: 'name email phoneNumber profileImage' 
+        },
+        { 
+          path: 'proposals.providerId', 
+          select: 'name email profileImage' 
+        }
+      ],
+      lean: true // Use lean for better performance
     };
 
     // Use ServiceRequest model to fetch jobs
     const result = await ServiceRequest.paginate(filter, options);
+
+    console.log('✅ Found', result.docs.length, 'service requests for customer');
 
     // Add cache control headers to prevent 304 responses
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
 
+    // Debug: Check for missing _id
+    const jobsWithMissingId = result.docs.filter(job => !job._id);
+    if (jobsWithMissingId.length > 0) {
+      console.error('❌ Found jobs with missing _id:', jobsWithMissingId.length);
+      console.error('Sample job without _id:', jobsWithMissingId[0]);
+    }
+
+    // Ensure all jobs have _id
+    const safeJobs = result.docs.map(job => {
+      if (!job._id) {
+        console.warn('⚠️ Job without _id found, generating temporary ID:', {
+          serviceType: job.serviceType,
+          description: job.description?.substring(0, 50)
+        });
+        // Generate a temporary ID for jobs without _id
+        job._id = `temp-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+        job.id = job._id;
+      }
+      return job;
+    });
+
     res.json({
       success: true,
       data: {
-        jobs: result.docs,
+        jobs: safeJobs,
         totalDocs: result.totalDocs,
         limit: result.limit,
         totalPages: result.totalPages,
@@ -16040,7 +18150,7 @@ app.get('/api/service-requests/customer', authenticateToken, async (req, res) =>
       }
     });
   } catch (error) {
-    console.error('Get customer service requests error:', error);
+    console.error('❌ Get customer service requests error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch customer service requests',
@@ -16350,6 +18460,138 @@ app.get('/api/service-requests/provider/:providerId', authenticateToken, async (
     });
   }
 });
+
+app.post('/api/service-requests/:jobId/proposals/:proposalId/accept', authenticateToken, async (req, res) => {
+  try {
+    const { jobId, proposalId } = req.params;
+    const userId = req.user.id;
+
+    console.log('🔄 Accepting proposal:', { jobId, proposalId, userId });
+
+    // Validate IDs
+    if (!jobId || !mongoose.Types.ObjectId.isValid(jobId) || 
+        !proposalId || !mongoose.Types.ObjectId.isValid(proposalId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid job ID and proposal ID are required'
+      });
+    }
+
+    const serviceRequest = await ServiceRequest.findById(jobId);
+    if (!serviceRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service request not found'
+      });
+    }
+
+    // Check if user owns the service request
+    if (serviceRequest.customerId.toString() !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to accept proposals for this job'
+      });
+    }
+
+    // Find the proposal
+    const proposal = serviceRequest.proposals.id(proposalId);
+    if (!proposal) {
+      return res.status(404).json({
+        success: false,
+        message: 'Proposal not found'
+      });
+    }
+
+    // Check if already accepted
+    if (proposal.status === 'accepted') {
+      return res.json({
+        success: true,
+        message: 'Proposal was already accepted',
+        data: {
+          serviceRequestId: serviceRequest._id,
+          proposalId: proposal._id,
+          providerId: proposal.providerId,
+          alreadyAccepted: true
+        }
+      });
+    }
+
+    // Accept the proposal
+    proposal.status = 'accepted';
+    proposal.acceptedAt = new Date();
+    
+    // Update service request
+    serviceRequest.status = 'accepted';
+    serviceRequest.providerId = proposal.providerId;
+    serviceRequest.acceptedAt = new Date();
+    serviceRequest.acceptedProposalId = proposal._id;
+
+    // Disable refunds once a proposal is accepted
+    serviceRequest.canRefund = false;
+
+    // Reject other proposals
+    serviceRequest.proposals.forEach(p => {
+      if (p._id.toString() !== proposalId && p.status === 'pending') {
+        p.status = 'rejected';
+      }
+    });
+
+    await serviceRequest.save();
+
+    console.log('✅ Proposal accepted successfully:', {
+      proposalId: proposal._id,
+      providerId: proposal.providerId,
+      newStatus: serviceRequest.status
+    });
+
+    // Send notification to provider
+    try {
+      await Notification.createNotification({
+        userId: proposal.providerId,
+        type: 'proposal_accepted',
+        title: 'Proposal Accepted! 🎉',
+        message: `Your proposal for "${serviceRequest.serviceType}" has been accepted! Contact the customer to schedule the service.`,
+        relatedId: serviceRequest._id,
+        relatedType: 'job',
+        priority: 'high'
+      });
+
+      // Also notify customer
+      await Notification.createNotification({
+        userId: serviceRequest.customerId,
+        type: 'proposal_accepted',
+        title: 'Proposal Accepted',
+        message: `You have accepted ${user.name}'s proposal. They will contact you soon.`,
+        relatedId: serviceRequest._id,
+        relatedType: 'job',
+        priority: 'medium'
+      });
+    } catch (notifError) {
+      console.error('❌ Notification error:', notifError);
+    }
+
+    res.json({
+      success: true,
+      message: 'Proposal accepted successfully! The provider has been notified.',
+      data: {
+        serviceRequestId: serviceRequest._id,
+        proposalId: proposal._id,
+        providerId: proposal.providerId,
+        newStatus: serviceRequest.status
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Accept proposal error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to accept proposal',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
 
 app.get('/api/debug/fix-test-user', async (req, res) => {
   try {

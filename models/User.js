@@ -76,10 +76,16 @@ const userSchema = new mongoose.Schema({
   }],
 
   favorites: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
+    providerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Provider',
+      // Remove required: true or make it optional
+    },
+    addedAt: {
+      type: Date,
+      default: Date.now
+    }
   }],
-
   isAvailableNow: {
     type: Boolean,
     default: false
@@ -475,6 +481,15 @@ const userSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+userSchema.pre('save', function(next) {
+  if (this.favorites && Array.isArray(this.favorites)) {
+    // Remove any favorites without providerId
+    this.favorites = this.favorites.filter(fav => fav && fav.providerId);
+  }
+  next();
+});
+
 
 // Index for better query performance
 userSchema.index({ email: 1 });
