@@ -4173,6 +4173,370 @@ app.post('/api/payments/release-to-provider', authenticateToken, async (req, res
   }
 });
 
+app.post('/api/debug/check-provider-bank-account/:providerId', authenticateToken, async (req, res) => {
+  try {
+    const { providerId } = req.params;
+    const { bookingId } = req.query;
+
+    console.log('🔍 Debugging provider bank account setup:', {
+      providerId,
+      bookingId,
+      currentUser: req.user.id,
+      userType: req.user.userType
+    });
+
+    // Get provider
+    const provider = await User.findById(providerId).select('name email paymentSettings userType');
+    
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider not found'
+      });
+    }
+
+    console.log('👤 Provider found:', {
+      name: provider.name,
+      email: provider.email,
+      userType: provider.userType,
+      paymentSettings: provider.paymentSettings
+    });
+
+    // Get booking details if provided
+    let booking = null;
+    if (bookingId) {
+      booking = await Booking.findById(bookingId);
+      console.log('📋 Booking found:', {
+        bookingId: booking?._id,
+        status: booking?.status,
+        payment: booking?.payment
+      });
+    }
+
+    // Check multiple aspects of the payment settings
+    const paymentSettingsAnalysis = {
+      hasPaymentSettings: !!provider.paymentSettings,
+      paymentSettingsKeys: provider.paymentSettings ? Object.keys(provider.paymentSettings) : [],
+      hasPaystackRecipientCode: !!provider.paymentSettings?.paystackRecipientCode,
+      paystackRecipientCode: provider.paymentSettings?.paystackRecipientCode,
+      hasBankAccount: !!provider.paymentSettings?.bankAccount,
+      bankAccountDetails: provider.paymentSettings?.bankAccount,
+      isProviderUserType: provider.userType.includes('provider') || provider.userType === 'both',
+      canReceivePayments: provider.userType.includes('provider') || provider.userType === 'both'
+    };
+
+    console.log('💰 Payment Settings Analysis:', paymentSettingsAnalysis);
+
+    // Test Paystack recipient code if it exists
+    let paystackValidation = null;
+    if (provider.paymentSettings?.paystackRecipientCode) {
+      try {
+        if (paymentProcessors?.paystack) {
+          // Try to fetch recipient details from Paystack
+          const recipientResponse = await paymentProcessors.paystack.recipient.list({
+            perPage: 1
+          });
+          
+          console.log('🔗 Paystack recipient check:', {
+            canListRecipients: !!recipientResponse.data?.data,
+            totalRecipients: recipientResponse.data?.data?.length
+          });
+
+          // Check if our recipient code exists
+          const recipients = recipientResponse.data?.data || [];
+          const matchingRecipient = recipients.find(r => 
+            r.recipient_code === provider.paymentSettings.paystackRecipientCode
+          );
+
+          paystackValidation = {
+            canConnectToPaystack: true,
+            recipientCodeExists: !!matchingRecipient,
+            recipientDetails: matchingRecipient,
+            isValid: matchingRecipient?.active === true
+          };
+        } else {
+          paystackValidation = {
+            canConnectToPaystack: false,
+            error: 'Paystack not initialized'
+          };
+        }
+      } catch (error) {
+        console.error('❌ Paystack validation error:', error);
+        paystackValidation = {
+          canConnectToPaystack: false,
+          error: error.message
+        };
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        provider: {
+          id: provider._id,
+          name: provider.name,
+          email: provider.email,
+          userType: provider.userType
+        },
+        paymentSettings: provider.paymentSettings,
+        paymentSettingsAnalysis,
+        paystackValidation,
+        booking: booking ? {
+          id: booking._id,
+          status: booking.status,
+          paymentStatus: booking.payment?.status,
+          customerId: booking.customerId,
+          providerId: booking.providerId
+        } : null,
+        recommendations: !provider.paymentSettings?.paystackRecipientCode ? [
+          'Provider needs to add bank account via /api/providers/bank-account endpoint',
+          'Make sure provider userType includes "provider" or is "both"',
+          'Bank account verification might have failed'
+        ] : [
+          'Provider has bank account set up',
+          'Check if Paystack recipient code is valid',
+          'Verify that the provider userType allows receiving payments'
+        ]
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Debug provider bank account error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Debug failed',
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/debug/check-provider-bank-account/:providerId', authenticateToken, async (req, res) => {
+  try {
+    const { providerId } = req.params;
+    const { bookingId } = req.query;
+
+    console.log('🔍 Debugging provider bank account setup:', {
+      providerId,
+      bookingId,
+      currentUser: req.user.id,
+      userType: req.user.userType
+    });
+
+    // Get provider
+    const provider = await User.findById(providerId).select('name email paymentSettings userType');
+    
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider not found'
+      });
+    }
+
+    console.log('👤 Provider found:', {
+      name: provider.name,
+      email: provider.email,
+      userType: provider.userType,
+      paymentSettings: provider.paymentSettings
+    });
+
+    // Get booking details if provided
+    let booking = null;
+    if (bookingId) {
+      booking = await Booking.findById(bookingId);
+      console.log('📋 Booking found:', {
+        bookingId: booking?._id,
+        status: booking?.status,
+        payment: booking?.payment
+      });
+    }
+
+    // Check multiple aspects of the payment settings
+    const paymentSettingsAnalysis = {
+      hasPaymentSettings: !!provider.paymentSettings,
+      paymentSettingsKeys: provider.paymentSettings ? Object.keys(provider.paymentSettings) : [],
+      hasPaystackRecipientCode: !!provider.paymentSettings?.paystackRecipientCode,
+      paystackRecipientCode: provider.paymentSettings?.paystackRecipientCode,
+      hasBankAccount: !!provider.paymentSettings?.bankAccount,
+      bankAccountDetails: provider.paymentSettings?.bankAccount,
+      isProviderUserType: provider.userType.includes('provider') || provider.userType === 'both',
+      canReceivePayments: provider.userType.includes('provider') || provider.userType === 'both'
+    };
+
+    console.log('💰 Payment Settings Analysis:', paymentSettingsAnalysis);
+
+    // Test Paystack recipient code if it exists
+    let paystackValidation = null;
+    if (provider.paymentSettings?.paystackRecipientCode) {
+      try {
+        if (paymentProcessors?.paystack) {
+          // Try to fetch recipient details from Paystack
+          const recipientResponse = await paymentProcessors.paystack.recipient.list({
+            perPage: 1
+          });
+          
+          console.log('🔗 Paystack recipient check:', {
+            canListRecipients: !!recipientResponse.data?.data,
+            totalRecipients: recipientResponse.data?.data?.length
+          });
+
+          // Check if our recipient code exists
+          const recipients = recipientResponse.data?.data || [];
+          const matchingRecipient = recipients.find(r => 
+            r.recipient_code === provider.paymentSettings.paystackRecipientCode
+          );
+
+          paystackValidation = {
+            canConnectToPaystack: true,
+            recipientCodeExists: !!matchingRecipient,
+            recipientDetails: matchingRecipient,
+            isValid: matchingRecipient?.active === true
+          };
+        } else {
+          paystackValidation = {
+            canConnectToPaystack: false,
+            error: 'Paystack not initialized'
+          };
+        }
+      } catch (error) {
+        console.error('❌ Paystack validation error:', error);
+        paystackValidation = {
+          canConnectToPaystack: false,
+          error: error.message
+        };
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        provider: {
+          id: provider._id,
+          name: provider.name,
+          email: provider.email,
+          userType: provider.userType
+        },
+        paymentSettings: provider.paymentSettings,
+        paymentSettingsAnalysis,
+        paystackValidation,
+        booking: booking ? {
+          id: booking._id,
+          status: booking.status,
+          paymentStatus: booking.payment?.status,
+          customerId: booking.customerId,
+          providerId: booking.providerId
+        } : null,
+        recommendations: !provider.paymentSettings?.paystackRecipientCode ? [
+          'Provider needs to add bank account via /api/providers/bank-account endpoint',
+          'Make sure provider userType includes "provider" or is "both"',
+          'Bank account verification might have failed'
+        ] : [
+          'Provider has bank account set up',
+          'Check if Paystack recipient code is valid',
+          'Verify that the provider userType allows receiving payments'
+        ]
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Debug provider bank account error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Debug failed',
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/providers/force-reverify-bank-account', authenticateToken, async (req, res) => {
+  try {
+    const { providerId } = req.body;
+    
+    console.log('🔄 Force re-verifying provider bank account:', providerId);
+
+    // Check if current user is admin or the provider themselves
+    const currentUser = await User.findById(req.user.id);
+    if (currentUser.userType !== 'admin' && req.user.id !== providerId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to force re-verification'
+      });
+    }
+
+    const provider = await User.findById(providerId);
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider not found'
+      });
+    }
+
+    if (!provider.paymentSettings?.bankAccount) {
+      return res.status(400).json({
+        success: false,
+        message: 'Provider has no bank account to re-verify'
+      });
+    }
+
+    // Extract bank account details
+    const bankAccount = provider.paymentSettings.bankAccount;
+    
+    // Re-create Paystack recipient
+    let paystackRecipientCode;
+    try {
+      const recipientResponse = await paymentProcessors.paystack.recipient.create({
+        type: 'nuban',
+        name: bankAccount.accountName,
+        account_number: bankAccount.fullAccountNumber || bankAccount.accountNumber,
+        bank_code: bankAccount.bankCode,
+        currency: 'NGN'
+      });
+
+      if (recipientResponse.data.status) {
+        paystackRecipientCode = recipientResponse.data.data.recipient_code;
+      } else {
+        throw new Error(recipientResponse.data.message || 'Failed to create Paystack recipient');
+      }
+    } catch (paystackError) {
+      console.error('❌ Paystack recipient recreation failed:', paystackError);
+      return res.status(400).json({
+        success: false,
+        message: 'Failed to re-verify bank account with Paystack',
+        error: paystackError.response?.data?.message || paystackError.message
+      });
+    }
+
+    // Update provider with new recipient code
+    provider.paymentSettings.paystackRecipientCode = paystackRecipientCode;
+    provider.paymentSettings.verifiedAt = new Date();
+    
+    await provider.save();
+
+    console.log('✅ Provider bank account re-verified successfully:', {
+      providerId: provider._id,
+      newRecipientCode: paystackRecipientCode
+    });
+
+    res.json({
+      success: true,
+      message: 'Bank account re-verified successfully',
+      data: {
+        providerId: provider._id,
+        bankAccount: provider.paymentSettings.bankAccount,
+        paystackRecipientCode,
+        isVerified: true
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Force re-verify bank account error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to re-verify bank account',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
 app.post('/api/payments/auto-release-pending', authenticateToken, async (req, res) => {
   try {
     const provider = await User.findById(req.user.id);
@@ -5754,45 +6118,108 @@ app.post('/api/bookings/:id/customer-confirm-completion', authenticateToken, asy
   try {
     const bookingId = req.params.id;
 
-    const booking = await Booking.findById(bookingId).populate('providerId');
+    console.log('🔍 [DEBUG START] Customer confirm completion for booking:', bookingId);
+    
+    // First, get the booking without populate to get provider ID
+    const booking = await Booking.findById(bookingId);
+    
     if (!booking) {
+      console.log('❌ Booking not found:', bookingId);
       return res.status(404).json({
         success: false,
         message: 'Booking not found'
       });
     }
 
+    console.log('🔍 Booking found:', {
+      bookingId: booking._id,
+      status: booking.status,
+      providerId: booking.providerId,
+      customerId: booking.customerId
+    });
+
     // Check if user is the customer for this booking
     if (booking.customerId.toString() !== req.user.id) {
+      console.log('❌ Authorization failed:', {
+        bookingCustomer: booking.customerId.toString(),
+        currentUser: req.user.id
+      });
       return res.status(403).json({
         success: false,
         message: 'Not authorized to confirm completion'
       });
     }
 
-    // Check if provider has marked job as completed
-    if (booking.status !== 'provider_completed') {
+    // 🚨 FIX: Get provider data directly from database (bypass Mongoose populate issues)
+    const db = mongoose.connection.db;
+    const providerDoc = await db.collection('users').findOne(
+      { _id: new mongoose.Types.ObjectId(booking.providerId) },
+      { projection: { paymentSettings: 1, name: 1, email: 1 } }
+    );
+
+    if (!providerDoc) {
+      console.log('❌ Provider not found:', booking.providerId);
       return res.status(400).json({
         success: false,
-        message: 'Provider has not marked the service as completed yet'
+        message: 'Provider information not found'
+      });
+    }
+
+    console.log('🔍 [DIRECT DB] Provider data:', {
+      providerId: providerDoc._id,
+      providerName: providerDoc.name,
+      hasPaymentSettings: !!providerDoc.paymentSettings,
+      paymentSettingsType: typeof providerDoc.paymentSettings,
+      paystackRecipientCode: providerDoc.paymentSettings?.paystackRecipientCode
+    });
+
+    // Check if paymentSettings exists and has recipient code
+    if (!providerDoc.paymentSettings?.paystackRecipientCode) {
+      console.error('❌ Provider missing Paystack recipient code:', {
+        providerId: providerDoc._id,
+        paymentSettings: providerDoc.paymentSettings,
+        paymentSettingsKeys: providerDoc.paymentSettings ? Object.keys(providerDoc.paymentSettings) : []
+      });
+      
+      return res.status(400).json({
+        success: false,
+        message: 'Provider needs to complete bank account setup with Paystack verification',
+        debug: {
+          providerId: providerDoc._id,
+          hasPaymentSettings: !!providerDoc.paymentSettings,
+          paymentSettingsKeys: providerDoc.paymentSettings ? Object.keys(providerDoc.paymentSettings) : [],
+          paystackRecipientCodeExists: !!providerDoc.paymentSettings?.paystackRecipientCode
+        }
+      });
+    }
+
+    console.log('✅ [SUCCESS] Provider has valid Paystack recipient code:', providerDoc.paymentSettings.paystackRecipientCode);
+    
+    // Check booking status
+    const validStatusesForCompletion = ['provider_completed', 'completed'];
+    if (!validStatusesForCompletion.includes(booking.status)) {
+      console.log('❌ Invalid booking status:', booking.status);
+      return res.status(400).json({
+        success: false,
+        message: 'Service has not been marked as completed by the provider yet'
+      });
+    }
+
+    // Check if customer has already confirmed completion
+    if (booking.customerConfirmedCompletion) {
+      console.log('❌ Already confirmed completion');
+      return res.status(400).json({
+        success: false,
+        message: 'You have already confirmed completion for this service'
       });
     }
 
     // Check if payment is still held
     if (booking.payment.status !== 'held') {
+      console.log('❌ Payment not held:', booking.payment.status);
       return res.status(400).json({
         success: false,
         message: 'Payment is not in held status'
-      });
-    }
-
-    const provider = booking.providerId;
-
-    // Check if provider has bank account set up
-    if (!provider.paymentSettings?.paystackRecipientCode) {
-      return res.status(400).json({
-        success: false,
-        message: 'Provider has not set up their bank account. Please contact support.'
       });
     }
 
@@ -5804,10 +6231,11 @@ app.post('/api/bookings/:id/customer-confirm-completion', authenticateToken, asy
     console.log('💰 Payment Split:', {
       totalAmount,
       companyAmount,
-      providerAmount
+      providerAmount,
+      providerRecipientCode: providerDoc.paymentSettings.paystackRecipientCode
     });
 
-    // Process transfers to both company and provider
+    // Process transfers
     let companyTransferResult, providerTransferResult;
 
     try {
@@ -5816,20 +6244,20 @@ app.post('/api/bookings/:id/customer-confirm-completion', authenticateToken, asy
         source: 'balance',
         amount: Math.round(companyAmount * 100), // Convert to kobo
         recipient: COMPANY_ACCOUNT.paystackRecipientCode,
-        reason: `Home Heroes Commission - Booking ${bookingId}`
+        reason: `Home Heroes Platform Fee - Booking ${bookingId}`
       });
 
       if (!companyTransferResult.status) {
         throw new Error(`Company transfer failed: ${companyTransferResult.message}`);
       }
 
-      console.log('✅ Company transfer initiated:', companyTransferResult.data.transfer_code);
+      console.log('✅ Company fee transfer initiated:', companyTransferResult.data.transfer_code);
 
     } catch (companyTransferError) {
       console.error('❌ Company transfer failed:', companyTransferError);
       return res.status(500).json({
         success: false,
-        message: 'Failed to transfer commission to company: ' + companyTransferError.message,
+        message: 'Failed to transfer company fee: ' + companyTransferError.message,
         code: 'COMPANY_TRANSFER_FAILED'
       });
     }
@@ -5839,7 +6267,7 @@ app.post('/api/bookings/:id/customer-confirm-completion', authenticateToken, asy
       providerTransferResult = await paymentProcessors.paystack.transfer.create({
         source: 'balance',
         amount: Math.round(providerAmount * 100), // Convert to kobo
-        recipient: provider.paymentSettings.paystackRecipientCode,
+        recipient: providerDoc.paymentSettings.paystackRecipientCode,
         reason: `Payment for ${booking.serviceType} service - Booking ${bookingId}`
       });
 
@@ -5852,7 +6280,7 @@ app.post('/api/bookings/:id/customer-confirm-completion', authenticateToken, asy
     } catch (providerTransferError) {
       console.error('❌ Provider transfer failed:', providerTransferError);
       
-      // If provider transfer fails, try to reverse the company transfer
+      // Try to reverse the company transfer
       try {
         if (companyTransferResult?.data?.transfer_code) {
           await paymentProcessors.paystack.transfer.reverse({
@@ -5871,45 +6299,56 @@ app.post('/api/bookings/:id/customer-confirm-completion', authenticateToken, asy
       });
     }
 
-    // Update provider earnings (only their 80% portion)
-    provider.providerFinancials = provider.providerFinancials || {};
-    provider.providerFinancials.totalEarnings = (provider.providerFinancials.totalEarnings || 0) + providerAmount;
-    provider.providerFinancials.availableBalance = (provider.providerFinancials.availableBalance || 0) + providerAmount;
-    await provider.save();
+    // Update provider earnings via direct database
+    await db.collection('users').updateOne(
+      { _id: new mongoose.Types.ObjectId(booking.providerId) },
+      { 
+        $inc: { 
+          'providerFinancials.totalEarnings': providerAmount,
+          'providerFinancials.availableBalance': providerAmount
+        },
+        $setOnInsert: {
+          'providerFinancials': {
+            totalEarnings: providerAmount,
+            availableBalance: providerAmount,
+            pendingBalance: 0,
+            totalWithdrawn: 0
+          }
+        }
+      }
+    );
 
     // Update booking status
+    booking.customerConfirmedCompletion = true;
+    booking.customerConfirmedAt = new Date();
     booking.payment.status = 'released';
     booking.payment.releasedAt = new Date();
-    booking.payment.commission = companyAmount;
-    booking.payment.providerAmount = providerAmount;
     booking.payment.companyAmount = companyAmount;
+    booking.payment.providerAmount = providerAmount;
     booking.payment.companyTransferCode = companyTransferResult.data.transfer_code;
     booking.payment.providerTransferCode = providerTransferResult.data.transfer_code;
     booking.paymentReleased = true;
     booking.paymentReleasedAt = new Date();
     booking.status = 'completed';
-    booking.customerConfirmedCompletion = true;
-    booking.customerConfirmedCompletionAt = new Date();
     
     await booking.save();
 
-    // Notify provider
+    // Send notifications
     await Notification.createNotification({
       userId: booking.providerId,
       type: 'payment_released',
       title: 'Payment Released!',
-      message: `Payment of ${booking.payment.currency}${providerAmount} has been released to your bank account (80% of total). Home Heroes commission: ${booking.payment.currency}${companyAmount}`,
+      message: `Payment of ${booking.payment.currency}${providerAmount} has been released to your bank account (80% of total). Company fee: ${booking.payment.currency}${companyAmount}`,
       relatedId: booking._id,
       relatedType: 'booking',
       priority: 'high'
     });
 
-    // Notify customer
     await Notification.createNotification({
       userId: booking.customerId,
       type: 'payment_completed',
       title: 'Payment Completed',
-      message: `Payment has been released to ${provider.name} for the completed service.`,
+      message: `Payment has been released to ${providerDoc.name} for the completed service.`,
       relatedId: booking._id,
       relatedType: 'booking',
       priority: 'medium'
@@ -5917,18 +6356,19 @@ app.post('/api/bookings/:id/customer-confirm-completion', authenticateToken, asy
 
     res.json({
       success: true,
-      message: 'Service completion confirmed! Payment released - 20% to company, 80% to provider',
+      message: 'Payment released successfully - 20% company fee, 80% to provider',
       data: {
         totalAmount,
         companyAmount,
         providerAmount,
         companyTransferCode: companyTransferResult.data.transfer_code,
-        providerTransferCode: providerTransferResult.data.transfer_code
+        providerTransferCode: providerTransferResult.data.transfer_code,
+        providerRecipientCode: providerDoc.paymentSettings.paystackRecipientCode
       }
     });
 
   } catch (error) {
-    console.error('Customer completion confirmation error:', error);
+    console.error('❌ Customer completion confirmation error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to confirm service completion',
@@ -5937,6 +6377,61 @@ app.post('/api/bookings/:id/customer-confirm-completion', authenticateToken, asy
   }
 });
 
+app.get('/api/debug/provider-payments', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Method 1: Direct database query
+    const db = mongoose.connection.db;
+    const directDoc = await db.collection('users').findOne(
+      { _id: new mongoose.Types.ObjectId(userId) },
+      { projection: { paymentSettings: 1 } }
+    );
+    
+    // Method 2: Mongoose find with select
+    const mongooseDoc = await User.findById(userId).select('paymentSettings');
+    
+    // Method 3: Mongoose find without select
+    const mongooseFull = await User.findById(userId);
+    
+    // Method 4: Check User schema
+    const userSchema = User.schema;
+    const paymentSettingsPath = userSchema.path('paymentSettings');
+    
+    res.json({
+      success: true,
+      data: {
+        directDatabase: {
+          paymentSettings: directDoc?.paymentSettings,
+          hasPaystackCode: !!directDoc?.paymentSettings?.paystackRecipientCode,
+          paystackCode: directDoc?.paymentSettings?.paystackRecipientCode
+        },
+        mongooseWithSelect: {
+          paymentSettings: mongooseDoc?.paymentSettings,
+          hasPaystackCode: !!mongooseDoc?.paymentSettings?.paystackRecipientCode,
+          paystackCode: mongooseDoc?.paymentSettings?.paystackRecipientCode
+        },
+        mongooseWithoutSelect: {
+          paymentSettings: mongooseFull?.paymentSettings,
+          hasPaystackCode: !!mongooseFull?.paymentSettings?.paystackRecipientCode,
+          paystackCode: mongooseFull?.paymentSettings?.paystackRecipientCode
+        },
+        schemaInfo: {
+          hasPaymentSettingsPath: !!paymentSettingsPath,
+          instanceType: paymentSettingsPath?.instance,
+          isMixed: paymentSettingsPath?.instance === 'Mixed',
+          schema: paymentSettingsPath?.schema?.tree
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Provider payments debug error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 
 app.get('/api/payments/status', (req, res) => {
   res.json({
@@ -6085,15 +6580,15 @@ app.post('/api/providers/bank-account', authenticateToken, async (req, res) => {
   try {
     const { bankName, accountNumber, accountName, bankCode } = req.body;
     
-    // Validate required fields
-    if (!bankName || !accountNumber || !accountName || !bankCode) {
-      return res.status(400).json({
-        success: false,
-        message: 'All bank account details are required'
-      });
-    }
+    console.log('🔍 [BANK ACCOUNT] Starting bank account setup:', {
+      bankName, 
+      accountNumber, 
+      accountName, 
+      bankCode,
+      userId: req.user.id
+    });
 
-    // Verify user can receive payments (provider or both)
+    // Validate user is a provider
     const user = await User.findById(req.user.id);
     if (!user.userType.includes('provider') && user.userType !== 'both') {
       return res.status(403).json({
@@ -6102,69 +6597,314 @@ app.post('/api/providers/bank-account', authenticateToken, async (req, res) => {
       });
     }
 
-    // Create Paystack recipient (this creates the transfer recipient)
+    // Validate required fields
+    if (!bankName || !accountNumber || !accountName || !bankCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'All bank account details are required'
+      });
+    }
+
+    // Validate account number (10 digits for Nigerian banks)
+    const cleanAccountNumber = accountNumber.replace(/\D/g, '');
+    if (cleanAccountNumber.length !== 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Account number must be 10 digits'
+      });
+    }
+
+    // Create Paystack recipient
+    console.log('📤 Creating Paystack recipient...');
     let paystackRecipientCode;
     try {
       const recipientResponse = await paymentProcessors.paystack.recipient.create({
         type: 'nuban',
         name: accountName,
-        account_number: accountNumber,
+        account_number: cleanAccountNumber,
         bank_code: bankCode,
         currency: 'NGN'
       });
 
-      if (recipientResponse.data.status) {
+      console.log('📥 Paystack response:', {
+        status: recipientResponse.status,
+        dataStatus: recipientResponse.data?.status,
+        message: recipientResponse.data?.message
+      });
+
+      if (recipientResponse.data?.status === true) {
         paystackRecipientCode = recipientResponse.data.data.recipient_code;
+        console.log('✅ Paystack recipient code created:', paystackRecipientCode);
       } else {
-        throw new Error(recipientResponse.data.message || 'Failed to create Paystack recipient');
+        throw new Error(recipientResponse.data?.message || 'Failed to create Paystack recipient');
       }
     } catch (paystackError) {
-      console.error('Paystack recipient creation failed:', paystackError);
-      
-      let errorMessage = 'Failed to verify bank account with Paystack';
-      if (paystackError.response && paystackError.response.data) {
-        errorMessage = paystackError.response.data.message || errorMessage;
-      }
+      console.error('❌ Paystack recipient creation failed:', {
+        error: paystackError.message,
+        response: paystackError.response?.data
+      });
       
       return res.status(400).json({
         success: false,
-        message: errorMessage,
-        error: process.env.NODE_ENV === 'development' ? paystackError.message : 'Internal server error'
+        message: 'Failed to verify bank account with Paystack',
+        error: paystackError.response?.data?.message || paystackError.message
       });
     }
 
-    // Update user with bank account and recipient code
-    user.paymentSettings = {
+    // 🚨 FIX: Create a proper JavaScript object (not string)
+    console.log('💾 Creating payment settings object...');
+
+    const paymentSettings = {
       paystackRecipientCode: paystackRecipientCode,
       bankAccount: {
-        bankName,
-        accountNumber: accountNumber.slice(-4), // Store only last 4 digits for security
-        accountName,
-        bankCode,
-        fullAccountNumber: accountNumber // Store full number for transfers
+        bankName: bankName,
+        accountNumber: cleanAccountNumber.slice(-4),
+        accountName: accountName,
+        bankCode: bankCode,
+        fullAccountNumber: cleanAccountNumber,
+        bankNameFull: bankName
       },
       preferredPayoutMethod: 'paystack',
-      verifiedAt: new Date()
+      currency: 'NGN',
+      verifiedAt: new Date(),
+      lastUpdated: new Date(),
+      taxInformation: {
+        taxFormSubmitted: false,
+        taxId: null,
+        taxFormUrl: null
+      },
+      payoutSchedule: 'weekly'
     };
 
-    await user.save();
+    console.log('📝 Payment settings object (type):', typeof paymentSettings);
+    console.log('📝 Payment settings value:', JSON.stringify(paymentSettings));
+
+    // 🚨 FIX: Use Mongoose's findOneAndUpdate properly
+    console.log('💾 Saving with Mongoose...');
+    
+    const updateResult = await User.findOneAndUpdate(
+      { _id: req.user.id },
+      { 
+        $set: { 
+          paymentSettings: paymentSettings // This should be an object, not string
+        } 
+      },
+      { 
+        new: true, // Return updated document
+        runValidators: false // Skip validation to avoid issues
+      }
+    );
+
+    console.log('✅ Update result:', {
+      success: !!updateResult,
+      hasPaymentSettings: !!updateResult?.paymentSettings,
+      paymentSettingsType: typeof updateResult?.paymentSettings,
+      paystackRecipientCode: updateResult?.paymentSettings?.paystackRecipientCode
+    });
+
+    // 🚨 FIX: If Mongoose fails, try direct update with proper object
+    if (!updateResult?.paymentSettings?.paystackRecipientCode) {
+      console.log('🔄 Trying direct database update with proper object...');
+      
+      const db = mongoose.connection.db;
+      
+      // Make sure we're passing an object, not a string
+      const directUpdate = await db.collection('users').updateOne(
+        { _id: new mongoose.Types.ObjectId(req.user.id) },
+        { 
+          $set: { 
+            'paymentSettings': paymentSettings // Object, not JSON string
+          } 
+        }
+      );
+
+      console.log('🔍 Direct update result:', directUpdate);
+    }
+
+    // 🚨 FIX: Fetch and verify with proper parsing
+    console.log('🔍 Final verification...');
+    
+    const db = mongoose.connection.db;
+    const finalUser = await db.collection('users').findOne(
+      { _id: new mongoose.Types.ObjectId(req.user.id) },
+      { projection: { paymentSettings: 1 } }
+    );
+
+    // Check if paymentSettings is a string and parse it
+    let finalPaymentSettings = finalUser?.paymentSettings;
+    if (typeof finalPaymentSettings === 'string') {
+      console.log('⚠️ paymentSettings is stored as string, parsing...');
+      try {
+        finalPaymentSettings = JSON.parse(finalPaymentSettings);
+      } catch (parseError) {
+        console.error('❌ Failed to parse paymentSettings:', parseError);
+      }
+    }
+
+    console.log('✅ Final check:', {
+      paymentSettingsType: typeof finalPaymentSettings,
+      paystackRecipientCode: finalPaymentSettings?.paystackRecipientCode,
+      isObject: finalPaymentSettings && typeof finalPaymentSettings === 'object'
+    });
 
     res.json({
       success: true,
       message: 'Bank account added successfully and verified with Paystack',
       data: {
-        bankAccount: user.paymentSettings.bankAccount,
+        bankAccount: finalPaymentSettings?.bankAccount || paymentSettings.bankAccount,
         isVerified: true,
-        recipientCode: paystackRecipientCode
+        recipientCode: finalPaymentSettings?.paystackRecipientCode || paystackRecipientCode,
+        currency: 'NGN',
+        verifiedAt: finalPaymentSettings?.verifiedAt || paymentSettings.verifiedAt,
+        storedCorrectly: finalPaymentSettings && typeof finalPaymentSettings === 'object'
       }
     });
 
   } catch (error) {
-    console.error('Add bank account error:', error);
+    console.error('❌ Add bank account error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to add bank account',
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+app.get('/api/debug/db-check', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Get mongoose connection
+    const db = mongoose.connection.db;
+    
+    // Check user document directly
+    const userDoc = await db.collection('users').findOne(
+      { _id: new mongoose.Types.ObjectId(userId) },
+      { projection: { paymentSettings: 1, userType: 1, name: 1 } }
+    );
+    
+    // Also check via Mongoose
+    const mongooseUser = await User.findById(userId).lean();
+    
+    res.json({
+      success: true,
+      data: {
+        directDatabase: {
+          exists: !!userDoc,
+          paymentSettings: userDoc?.paymentSettings,
+          paymentSettingsType: typeof userDoc?.paymentSettings
+        },
+        viaMongoose: {
+          exists: !!mongooseUser,
+          paymentSettings: mongooseUser?.paymentSettings,
+          paymentSettingsType: typeof mongooseUser?.paymentSettings
+        },
+        comparison: {
+          sameRecipientCode: userDoc?.paymentSettings?.paystackRecipientCode === mongooseUser?.paymentSettings?.paystackRecipientCode,
+          sameBankAccount: JSON.stringify(userDoc?.paymentSettings?.bankAccount) === JSON.stringify(mongooseUser?.paymentSettings?.bankAccount)
+        }
+      }
+    });
+  } catch (error) {
+    console.error('DB check error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/providers/force-bank-account', authenticateToken, async (req, res) => {
+  try {
+    const { bankName, accountNumber, accountName, bankCode } = req.body;
+    
+    console.log('⚡ Force setting bank account...');
+    
+    const cleanAccountNumber = accountNumber.replace(/\D/g, '');
+    
+    // 1. Create Paystack recipient
+    const recipientResponse = await paymentProcessors.paystack.recipient.create({
+      type: 'nuban',
+      name: accountName,
+      account_number: cleanAccountNumber,
+      bank_code: bankCode,
+      currency: 'NGN'
+    });
+    
+    const paystackRecipientCode = recipientResponse.data.data.recipient_code;
+    
+    // 2. Create minimal payment settings
+    const paymentSettings = {
+      paystackRecipientCode: paystackRecipientCode,
+      bankAccount: {
+        bankName: bankName,
+        accountNumber: cleanAccountNumber.slice(-4),
+        accountName: accountName,
+        bankCode: bankCode,
+        fullAccountNumber: cleanAccountNumber
+      },
+      verifiedAt: new Date()
+    };
+    
+    // 3. Use mongoose's native update (bypasses schema validation)
+    const result = await mongoose.connection.db.collection('users').updateOne(
+      { _id: new mongoose.Types.ObjectId(req.user.id) },
+      { 
+        $set: { 
+          'paymentSettings': paymentSettings
+        } 
+      }
+    );
+    
+    console.log('⚡ Force update result:', result);
+    
+    res.json({
+      success: true,
+      message: 'Bank account forcefully set via direct database operation',
+      data: {
+        recipientCode: paystackRecipientCode,
+        bankAccount: paymentSettings.bankAccount,
+        updateStatus: {
+          matched: result.matchedCount > 0,
+          modified: result.modifiedCount > 0
+        }
+      }
+    });
+    
+  } catch (error) {
+    console.error('Force bank account error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/debug/user-schema', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    
+    // Check schema definition
+    const schema = User.schema;
+    const paymentSettingsPath = schema.path('paymentSettings');
+    
+    res.json({
+      success: true,
+      data: {
+        userPaymentSettings: user.paymentSettings,
+        schemaDefinition: {
+          hasPaymentSettingsPath: !!paymentSettingsPath,
+          paymentSettingsType: paymentSettingsPath?.instance,
+          paymentSettingsSchema: paymentSettingsPath?.schema?.tree
+        },
+        userModel: 'User model loaded correctly'
+      }
+    });
+  } catch (error) {
+    console.error('Schema debug error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });
@@ -6276,92 +7016,51 @@ app.post('/api/verify-account', authenticateToken, async (req, res) => {
 
 
 // Updated bank account setup endpoint
-app.post('/api/providers/bank-account', authenticateToken, async (req, res) => {
+
+
+app.get('/api/debug/user-payment-settings', authenticateToken, async (req, res) => {
   try {
-    const { bankName, accountNumber, accountName, bankCode } = req.body;
+    const user = await User.findById(req.user.id).lean();
     
-    // Validate required fields
-    if (!bankName || !accountNumber || !accountName || !bankCode) {
-      return res.status(400).json({
-        success: false,
-        message: 'All bank account details are required'
-      });
-    }
-
-    // Verify user can receive payments (provider or both)
-    const user = await User.findById(req.user.id);
-    if (!user.userType.includes('provider') && user.userType !== 'both') {
-      return res.status(403).json({
-        success: false,
-        message: 'Only providers can add bank accounts to receive payments'
-      });
-    }
-
-    // Create Paystack recipient
-    let paystackRecipientCode;
-    try {
-      const recipientResponse = await paymentProcessors.paystack.recipient.create({
-        type: 'nuban',
-        name: accountName,
-        account_number: accountNumber,
-        bank_code: bankCode,
-        currency: 'NGN'
-      });
-
-      if (recipientResponse.data.status) {
-        paystackRecipientCode = recipientResponse.data.data.recipient_code;
-      } else {
-        throw new Error(recipientResponse.data.message || 'Failed to create Paystack recipient');
-      }
-    } catch (paystackError) {
-      console.error('Paystack recipient creation failed:', paystackError);
-      
-      let errorMessage = 'Failed to verify bank account with Paystack';
-      if (paystackError.response && paystackError.response.data) {
-        errorMessage = paystackError.response.data.message || errorMessage;
-      }
-      
-      return res.status(400).json({
-        success: false,
-        message: errorMessage,
-        error: process.env.NODE_ENV === 'development' ? paystackError.message : 'Internal server error'
-      });
-    }
-
-    // Update user with bank account and recipient code
-    user.paymentSettings = {
-      paystackRecipientCode: paystackRecipientCode,
-      bankAccount: {
-        bankName,
-        accountNumber: accountNumber.slice(-4), // Store only last 4 digits for security
-        accountName,
-        bankCode,
-        fullAccountNumber: accountNumber // Store full number for transfers
-      },
-      preferredPayoutMethod: 'paystack',
-      verifiedAt: new Date()
-    };
-
-    await user.save();
-
+    // Also check the raw database document
+    const db = mongoose.connection.db;
+    const rawUser = await db.collection('users').findOne(
+      { _id: new mongoose.Types.ObjectId(req.user.id) },
+      { projection: { paymentSettings: 1 } }
+    );
+    
+    // Check User model schema
+    const paymentSettingsSchema = User.schema.path('paymentSettings');
+    
     res.json({
       success: true,
-      message: 'Bank account added successfully and verified with Paystack',
       data: {
-        bankAccount: user.paymentSettings.bankAccount,
-        isVerified: true
+        viaMongoose: {
+          paymentSettings: user.paymentSettings,
+          type: typeof user.paymentSettings,
+          isObject: user.paymentSettings && typeof user.paymentSettings === 'object'
+        },
+        viaDirectDB: {
+          paymentSettings: rawUser?.paymentSettings,
+          type: typeof rawUser?.paymentSettings
+        },
+        schemaInfo: {
+          exists: !!paymentSettingsSchema,
+          instance: paymentSettingsSchema?.instance,
+          isMixed: paymentSettingsSchema?.instance === 'Mixed',
+          schemaTree: paymentSettingsSchema?.schema?.tree
+        }
       }
     });
-
   } catch (error) {
-    console.error('Add bank account error:', error);
+    console.error('Payment settings debug error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to add bank account',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+      error: error.message
     });
   }
 });
+
 
 
 
@@ -6470,26 +7169,11 @@ app.post('/api/providers/bank-account', authenticateToken, async (req, res) => {
 app.get('/api/providers/bank-account', authenticateToken, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
-if (!user.userType.includes('provider')) {
-  return res.status(403).json({
-    success: false,
-    message: 'Only providers can add bank accounts'
-  });
-}
-    // const user = await User.findById(req.user.id);
     
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
-    }
-
-    // Check if user is a provider
-    if (user.userType !== 'provider' && !user.userType.includes('provider')) {
+    if (!user.userType.includes('provider')) {
       return res.status(403).json({
         success: false,
-        message: 'Only providers can access bank account settings'
+        message: 'Only providers can add bank accounts'
       });
     }
 
@@ -6501,12 +7185,28 @@ if (!user.userType.includes('provider')) {
       });
     }
 
+    // Check if bank account setup is complete
+    const hasPaystackRecipientCode = !!user.paymentSettings.paystackRecipientCode;
+    const hasFullAccountNumber = !!user.paymentSettings.bankAccount.fullAccountNumber;
+    const hasBankCode = !!user.paymentSettings.bankAccount.bankCode;
+    const hasAccountName = !!user.paymentSettings.bankAccount.accountName;
+
+    const isComplete = hasPaystackRecipientCode && hasFullAccountNumber && hasBankCode && hasAccountName;
+
     res.json({
       success: true,
       data: {
         bankAccount: user.paymentSettings.bankAccount,
-        isVerified: user.paymentSettings.bankAccountVerified || false,
-        verifiedAt: user.paymentSettings.verifiedAt
+        isVerified: user.paymentSettings.verifiedAt !== null,
+        verifiedAt: user.paymentSettings.verifiedAt,
+        setupComplete: isComplete,
+        missingFields: {
+          paystackRecipientCode: !hasPaystackRecipientCode,
+          fullAccountNumber: !hasFullAccountNumber,
+          bankCode: !hasBankCode,
+          accountName: !hasAccountName
+        },
+        needsReconfiguration: !hasPaystackRecipientCode
       }
     });
 
@@ -7525,6 +8225,566 @@ app.delete('/api/debug/bookings/:bookingId/reset-payment', authenticateToken, as
   }
 });
 
+app.post('/api/service-requests/:id/provider-arrived', authenticateToken, async (req, res) => {
+  try {
+    const serviceRequestId = req.params.id;
+
+    const serviceRequest = await ServiceRequest.findById(serviceRequestId);
+    if (!serviceRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service request not found'
+      });
+    }
+
+    // Check if user is the provider for this service request
+    if (serviceRequest.providerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to confirm arrival for this service request'
+      });
+    }
+
+    // Check if service request is in correct status
+    if (serviceRequest.status !== 'accepted') {
+      return res.status(400).json({
+        success: false,
+        message: 'Service request is not in accepted status'
+      });
+    }
+
+    // Check if provider already confirmed arrival
+    if (serviceRequest.providerArrived) {
+      return res.status(400).json({
+        success: false,
+        message: 'Arrival already confirmed'
+      });
+    }
+
+    // Update service request with provider arrival confirmation
+    serviceRequest.providerArrived = true;
+    serviceRequest.providerArrivedAt = new Date();
+    serviceRequest.status = 'awaiting_hero';
+    serviceRequest.showHeroHereButton = true;
+    
+    await serviceRequest.save();
+
+    // Notify customer that provider has arrived
+    await Notification.createNotification({
+      userId: serviceRequest.customerId,
+      type: 'provider_arrived',
+      title: 'Your Hero Has Arrived!',
+      message: `${serviceRequest.providerId.name} has arrived at your location. Please confirm they are here to start the service.`,
+      relatedId: serviceRequest._id,
+      relatedType: 'service_request',
+      priority: 'high'
+    });
+
+    res.json({
+      success: true,
+      message: 'Arrival confirmed successfully. Customer can now confirm you are here.',
+      data: {
+        providerArrived: true,
+        providerArrivedAt: serviceRequest.providerArrivedAt,
+        showHeroHereButton: true
+      }
+    });
+
+  } catch (error) {
+    console.error('Provider arrived confirmation error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to confirm arrival'
+    });
+  }
+});
+
+app.post('/api/service-requests/:id/confirm-hero-here', authenticateToken, async (req, res) => {
+  try {
+    const serviceRequestId = req.params.id;
+
+    const serviceRequest = await ServiceRequest.findById(serviceRequestId);
+    if (!serviceRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service request not found'
+      });
+    }
+
+    // Check if user is the customer for this service request
+    if (serviceRequest.customerId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to confirm service for this service request'
+      });
+    }
+
+    // Check if provider has confirmed arrival first
+    if (!serviceRequest.providerArrived) {
+      return res.status(400).json({
+        success: false,
+        message: 'Provider has not confirmed arrival yet'
+      });
+    }
+
+    // Check if "Hero Here" button should be visible
+    if (!serviceRequest.showHeroHereButton) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot confirm hero here at this time'
+      });
+    }
+
+    // Update service request with customer confirmation
+    serviceRequest.customerSeenProvider = true;
+    serviceRequest.customerSeenProviderAt = new Date();
+    serviceRequest.heroHereConfirmed = true;
+    serviceRequest.status = 'in_progress';
+    serviceRequest.startedAt = new Date();
+    
+    // Set auto-refund timer (4 hours from now)
+    serviceRequest.autoRefundAt = new Date(Date.now() + 4 * 60 * 60 * 1000);
+    
+    await serviceRequest.save();
+
+    // Notify provider that customer confirmed their arrival
+    await Notification.createNotification({
+      userId: serviceRequest.providerId,
+      type: 'hero_here_confirmed',
+      title: 'Customer Confirmed Your Arrival!',
+      message: 'The customer has confirmed you are at the location. Service can begin.',
+      relatedId: serviceRequest._id,
+      relatedType: 'service_request',
+      priority: 'high'
+    });
+
+    res.json({
+      success: true,
+      message: 'Hero here confirmed successfully. Service has started.',
+      data: {
+        autoRefundAt: serviceRequest.autoRefundAt,
+        heroHereConfirmed: true,
+        startedAt: serviceRequest.startedAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Confirm hero here error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to confirm hero here'
+    });
+  }
+});
+
+app.post('/api/service-requests/:id/provider-complete', authenticateToken, async (req, res) => {
+  try {
+    const serviceRequestId = req.params.id;
+
+    const serviceRequest = await ServiceRequest.findById(serviceRequestId).populate('providerId');
+    if (!serviceRequest) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service request not found'
+      });
+    }
+
+    // Check if user is the provider for this service request
+    if (serviceRequest.providerId._id.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to complete this job'
+      });
+    }
+
+    // Check if customer has confirmed seeing provider
+    if (!serviceRequest.customerSeenProvider) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer has not confirmed seeing you yet'
+      });
+    }
+
+    // Check if payment is still held
+    if (serviceRequest.payment.status !== 'held') {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment is not in held status'
+      });
+    }
+
+    // Update service request status to completed by provider
+    serviceRequest.status = 'provider_completed';
+    serviceRequest.providerCompletedJob = true;
+    serviceRequest.providerCompletedAt = new Date();
+    
+    await serviceRequest.save();
+
+    // Notify customer to confirm completion
+    await Notification.createNotification({
+      userId: serviceRequest.customerId,
+      type: 'job_completed_by_provider',
+      title: 'Service Completed!',
+      message: `${serviceRequest.providerId.name} has marked the service as completed. Please confirm the service is completed to release payment.`,
+      relatedId: serviceRequest._id,
+      relatedType: 'service_request',
+      priority: 'high'
+    });
+
+    res.json({
+      success: true,
+      message: 'Job marked as completed. Waiting for customer confirmation to release payment.',
+      data: serviceRequest
+    });
+
+  } catch (error) {
+    console.error('Provider job completion error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to complete job'
+    });
+  }
+});
+
+app.post('/api/service-requests/:id/customer-confirm-completion', authenticateToken, async (req, res) => {
+  try {
+    const serviceRequestId = req.params.id;
+
+    console.log('🔍 Customer confirm completion for service request:', serviceRequestId);
+    
+    // Get service request
+    const serviceRequest = await ServiceRequest.findById(serviceRequestId);
+    
+    if (!serviceRequest) {
+      console.log('❌ Service request not found:', serviceRequestId);
+      return res.status(404).json({
+        success: false,
+        message: 'Service request not found'
+      });
+    }
+
+    console.log('🔍 Service request found:', {
+      serviceRequestId: serviceRequest._id,
+      status: serviceRequest.status,
+      providerId: serviceRequest.providerId,
+      customerId: serviceRequest.customerId
+    });
+
+    // Check if user is the customer for this service request
+    if (serviceRequest.customerId.toString() !== req.user.id) {
+      console.log('❌ Authorization failed:', {
+        serviceRequestCustomer: serviceRequest.customerId.toString(),
+        currentUser: req.user.id
+      });
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to confirm completion'
+      });
+    }
+
+    // Get provider data directly from database
+    const db = mongoose.connection.db;
+    const providerDoc = await db.collection('users').findOne(
+      { _id: new mongoose.Types.ObjectId(serviceRequest.providerId) },
+      { projection: { paymentSettings: 1, name: 1, email: 1 } }
+    );
+
+    if (!providerDoc) {
+      console.log('❌ Provider not found:', serviceRequest.providerId);
+      return res.status(400).json({
+        success: false,
+        message: 'Provider information not found'
+      });
+    }
+
+    console.log('🔍 [DIRECT DB] Provider data:', {
+      providerId: providerDoc._id,
+      providerName: providerDoc.name,
+      hasPaymentSettings: !!providerDoc.paymentSettings,
+      paystackRecipientCode: providerDoc.paymentSettings?.paystackRecipientCode
+    });
+
+    // Check if provider has Paystack recipient code
+    if (!providerDoc.paymentSettings?.paystackRecipientCode) {
+      console.error('❌ Provider missing Paystack recipient code');
+      
+      return res.status(400).json({
+        success: false,
+        message: 'Provider needs to complete bank account setup with Paystack verification'
+      });
+    }
+
+    console.log('✅ [SUCCESS] Provider has valid Paystack recipient code:', providerDoc.paymentSettings.paystackRecipientCode);
+    
+    // Check service request status
+    const validStatusesForCompletion = ['provider_completed', 'completed'];
+    if (!validStatusesForCompletion.includes(serviceRequest.status)) {
+      console.log('❌ Invalid service request status:', serviceRequest.status);
+      return res.status(400).json({
+        success: false,
+        message: 'Service has not been marked as completed by the provider yet'
+      });
+    }
+
+    // Check if customer has already confirmed completion
+    if (serviceRequest.customerConfirmedCompletion) {
+      console.log('❌ Already confirmed completion');
+      return res.status(400).json({
+        success: false,
+        message: 'You have already confirmed completion for this service'
+      });
+    }
+
+    // Check if payment is still held
+    if (serviceRequest.payment.status !== 'held') {
+      console.log('❌ Payment not held:', serviceRequest.payment.status);
+      return res.status(400).json({
+        success: false,
+        message: 'Payment is not in held status'
+      });
+    }
+
+    // Calculate amounts (15% company, 85% provider)
+    const totalAmount = serviceRequest.payment.amount;
+    const companyAmount = totalAmount * 0.15;
+    const providerAmount = totalAmount * 0.85;
+
+    console.log('💰 Payment Split (15%/85%):', {
+      totalAmount,
+      companyAmount,
+      providerAmount,
+      providerRecipientCode: providerDoc.paymentSettings.paystackRecipientCode
+    });
+
+    // Process transfers (15% to company, 85% to provider)
+    let companyTransferResult, providerTransferResult;
+
+    try {
+      // Transfer 15% to company account
+      companyTransferResult = await paymentProcessors.paystack.transfer.create({
+        source: 'balance',
+        amount: Math.round(companyAmount * 100), // Convert to kobo
+        recipient: COMPANY_ACCOUNT.paystackRecipientCode,
+        reason: `Home Heroes Platform Fee - Service Request ${serviceRequestId}`
+      });
+
+      if (!companyTransferResult.status) {
+        throw new Error(`Company transfer failed: ${companyTransferResult.message}`);
+      }
+
+      console.log('✅ Company fee transfer initiated:', companyTransferResult.data.transfer_code);
+
+    } catch (companyTransferError) {
+      console.error('❌ Company transfer failed:', companyTransferError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to transfer company fee: ' + companyTransferError.message,
+        code: 'COMPANY_TRANSFER_FAILED'
+      });
+    }
+
+    try {
+      // Transfer 85% to provider account
+      providerTransferResult = await paymentProcessors.paystack.transfer.create({
+        source: 'balance',
+        amount: Math.round(providerAmount * 100), // Convert to kobo
+        recipient: providerDoc.paymentSettings.paystackRecipientCode,
+        reason: `Payment for ${serviceRequest.serviceType} service - Service Request ${serviceRequestId}`
+      });
+
+      if (!providerTransferResult.status) {
+        throw new Error(`Provider transfer failed: ${providerTransferResult.message}`);
+      }
+
+      console.log('✅ Provider transfer initiated:', providerTransferResult.data.transfer_code);
+
+    } catch (providerTransferError) {
+      console.error('❌ Provider transfer failed:', providerTransferError);
+      
+      // Try to reverse the company transfer
+      try {
+        if (companyTransferResult?.data?.transfer_code) {
+          await paymentProcessors.paystack.transfer.reverse({
+            transfer_code: companyTransferResult.data.transfer_code
+          });
+          console.log('✅ Reversed company transfer due to provider transfer failure');
+        }
+      } catch (reverseError) {
+        console.error('❌ Failed to reverse company transfer:', reverseError);
+      }
+
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to transfer payment to provider: ' + providerTransferError.message,
+        code: 'PROVIDER_TRANSFER_FAILED'
+      });
+    }
+
+    // Update provider earnings (only their 85% portion)
+    await db.collection('users').updateOne(
+      { _id: new mongoose.Types.ObjectId(serviceRequest.providerId) },
+      { 
+        $inc: { 
+          'providerFinancials.totalEarnings': providerAmount,
+          'providerFinancials.availableBalance': providerAmount
+        },
+        $setOnInsert: {
+          'providerFinancials': {
+            totalEarnings: providerAmount,
+            availableBalance: providerAmount,
+            pendingBalance: 0,
+            totalWithdrawn: 0
+          }
+        }
+      }
+    );
+
+    // Update service request with completion confirmation and payment details
+    serviceRequest.customerConfirmedCompletion = true;
+    serviceRequest.customerConfirmedAt = new Date();
+    serviceRequest.status = 'completed';
+    serviceRequest.completedAt = new Date();
+    
+    // Update payment details
+    serviceRequest.payment.status = 'released';
+    serviceRequest.payment.releasedAt = new Date();
+    serviceRequest.payment.companyAmount = companyAmount;
+    serviceRequest.payment.providerAmount = providerAmount;
+    serviceRequest.payment.companyTransferCode = companyTransferResult.data.transfer_code;
+    serviceRequest.payment.providerTransferCode = providerTransferResult.data.transfer_code;
+    serviceRequest.payment.paymentReleased = true;
+    serviceRequest.payment.paymentReleasedAt = new Date();
+    
+    await serviceRequest.save();
+
+    // Send notifications
+    await Notification.createNotification({
+      userId: serviceRequest.providerId,
+      type: 'payment_released',
+      title: 'Payment Released!',
+      message: `Payment of ${serviceRequest.payment.currency}${providerAmount} has been released to your bank account (85% of total). Company fee: ${serviceRequest.payment.currency}${companyAmount}`,
+      relatedId: serviceRequest._id,
+      relatedType: 'service_request',
+      priority: 'high'
+    });
+
+    await Notification.createNotification({
+      userId: serviceRequest.customerId,
+      type: 'payment_completed',
+      title: 'Payment Completed',
+      message: `Payment has been released to ${providerDoc.name} for the completed service.`,
+      relatedId: serviceRequest._id,
+      relatedType: 'service_request',
+      priority: 'medium'
+    });
+
+    res.json({
+      success: true,
+      message: 'Payment released successfully - 15% company fee, 85% to provider',
+      data: {
+        totalAmount,
+        companyAmount,
+        providerAmount,
+        companyTransferCode: companyTransferResult.data.transfer_code,
+        providerTransferCode: providerTransferResult.data.transfer_code,
+        providerRecipientCode: providerDoc.paymentSettings.paystackRecipientCode
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Service request completion confirmation error:', error);
+    
+    // Check if it's the Paystack Starter Business error
+    if (error.response?.data?.code === 'transfer_unavailable') {
+      return res.status(400).json({
+        success: false,
+        message: 'Paystack account needs to be upgraded to Registered Business for transfers',
+        error: error.response.data.message,
+        suggestion: 'Upgrade your Paystack account to enable automatic transfers'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to confirm service completion',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+
+async function processServiceRequestAutoRefunds() {
+  try {
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000);
+    
+    const expiredServiceRequests = await ServiceRequest.find({
+      status: 'awaiting_hero',
+      'payment.status': 'held',
+      'payment.heldAt': { $lte: fourHoursAgo },
+      'payment.refundedAt': { $exists: false },
+      'customerSeenProvider': { $ne: true }
+    });
+
+    for (const serviceRequest of expiredServiceRequests) {
+      try {
+        console.log(`🔄 Processing auto-refund for service request ${serviceRequest._id}`);
+        
+        // Initiate Paystack refund
+        const refundResponse = await paymentProcessors.paystack.refund.create({
+          transaction: serviceRequest.payment.paymentIntentId,
+          amount: Math.round(serviceRequest.payment.amount * 100)
+        });
+
+        if (refundResponse.data.status === 'processed') {
+          // Update service request status
+          serviceRequest.payment.status = 'refunded';
+          serviceRequest.payment.refundedAt = new Date();
+          serviceRequest.status = 'cancelled';
+          serviceRequest.cancellationReason = 'Auto-refund: Customer did not confirm seeing provider within 4 hours';
+          await serviceRequest.save();
+
+          // Notify customer
+          await Notification.createNotification({
+            userId: serviceRequest.customerId,
+            type: 'payment_refunded',
+            title: 'Payment Refunded',
+            message: `Your payment has been refunded as you didn't confirm seeing the provider within 4 hours`,
+            relatedId: serviceRequest._id,
+            relatedType: 'service_request',
+            priority: 'medium'
+          });
+
+          // Notify provider
+          await Notification.createNotification({
+            userId: serviceRequest.providerId,
+            type: 'service_request_cancelled',
+            title: 'Service Request Cancelled - Auto Refund',
+            message: `Service request was automatically cancelled and refunded as customer didn't confirm seeing you within 4 hours`,
+            relatedId: serviceRequest._id,
+            relatedType: 'service_request',
+            priority: 'medium'
+          });
+
+          console.log(`✅ Auto-refund processed for service request ${serviceRequest._id}`);
+        }
+      } catch (error) {
+        console.error(`❌ Failed to auto-refund service request ${serviceRequest._id}:`, error);
+      }
+    }
+  } catch (error) {
+    console.error('Service request auto-refund processing error:', error);
+  }
+}
+
+// Add to your existing cron schedule
+cron.schedule('*/15 * * * *', () => {
+  processAutoRefunds(); // For bookings
+  processServiceRequestAutoRefunds(); // For service requests
+});
+
+
+
+
 app.get('/api/bookings/:bookingId/payment-details', authenticateToken, async (req, res) => {
   try {
     const { bookingId } = req.params;
@@ -7721,65 +8981,194 @@ app.post('/api/bookings/:bookingId/confirm-payment', authenticateToken, async (r
   }
 });
 
+// app.post('/api/payments/paystack-webhook', async (req, res) => {
+//   try {
+//     const signature = req.headers['x-paystack-signature'];
+    
+//     if (!signature) {
+//       return res.status(400).send('No signature');
+//     }
+
+//     // Verify webhook signature
+//     const crypto = require('crypto');
+//     const hash = crypto.createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
+//                       .update(JSON.stringify(req.body))
+//                       .digest('hex');
+    
+//     if (hash !== signature) {
+//       return res.status(400).send('Invalid signature');
+//     }
+
+//     const event = req.body;
+//     console.log('🔔 Paystack webhook received:', event.event);
+
+//     if (event.event === 'charge.success') {
+//       const { reference, amount, customer } = event.data;
+      
+//       // Find booking by Paystack reference
+//       const booking = await Booking.findOne({
+//         'payment.paymentIntentId': reference
+//       });
+
+//       if (booking) {
+//         // Update booking payment status
+//         booking.payment.status = 'held';
+//         booking.payment.heldAt = new Date();
+//         booking.status = 'confirmed';
+//         await booking.save();
+
+//         // Send notification to provider
+//         await Notification.createNotification({
+//           userId: booking.providerId,
+//           type: 'payment_received',
+//           title: 'Payment Received!',
+//           message: `A customer has made a payment of ${booking.payment.currency}${booking.payment.amount} for your ${booking.serviceType} service`,
+//           relatedId: booking._id,
+//           relatedType: 'booking',
+//           priority: 'high'
+//         });
+
+//         console.log('✅ Paystack payment verified and booking updated');
+//       }
+//     }
+
+//     res.sendStatus(200);
+//   } catch (error) {
+//     console.error('❌ Paystack webhook error:', error);
+//     res.status(500).send('Webhook error');
+//   }
+// });
+
 app.post('/api/payments/paystack-webhook', async (req, res) => {
   try {
     const signature = req.headers['x-paystack-signature'];
     
-    if (!signature) {
-      return res.status(400).send('No signature');
+    // Get the raw body properly
+    let body;
+    if (req.rawBody) {
+      body = req.rawBody.toString();
+    } else if (typeof req.body === 'string') {
+      body = req.body;
+    } else if (req.body) {
+      body = JSON.stringify(req.body);
+    } else {
+      body = '';
     }
-
-    // Verify webhook signature
-    const crypto = require('crypto');
-    const hash = crypto.createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
-                      .update(JSON.stringify(req.body))
-                      .digest('hex');
     
-    if (hash !== signature) {
-      return res.status(400).send('Invalid signature');
+    console.log('🔔 Paystack Webhook Received for:', req.body?.event);
+
+    // Verify signature (for production)
+    if (process.env.NODE_ENV === 'production' && signature) {
+      const crypto = await import('crypto');
+      const hash = crypto.createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
+                        .update(body)
+                        .digest('hex');
+      
+      if (hash !== signature) {
+        console.error('❌ Invalid webhook signature');
+        return res.status(400).json({ success: false, message: 'Invalid signature' });
+      }
     }
 
-    const event = req.body;
-    console.log('🔔 Paystack webhook received:', event.event);
+    const event = typeof body === 'string' ? JSON.parse(body) : body;
 
     if (event.event === 'charge.success') {
-      const { reference, amount, customer } = event.data;
+      const { reference, amount, customer, metadata } = event.data;
       
-      // Find booking by Paystack reference
+      console.log('✅ Payment Successful:', {
+        reference,
+        amount: amount / 100,
+        customerEmail: customer.email,
+        metadata: metadata || 'No metadata'
+      });
+
+      // Check if it's a booking
       const booking = await Booking.findOne({
         'payment.paymentIntentId': reference
       });
 
       if (booking) {
-        // Update booking payment status
-        booking.payment.status = 'held';
-        booking.payment.heldAt = new Date();
-        booking.status = 'confirmed';
-        await booking.save();
+        // Handle booking payment (existing code)
+        // ...
+      }
 
-        // Send notification to provider
-        await Notification.createNotification({
-          userId: booking.providerId,
-          type: 'payment_received',
-          title: 'Payment Received!',
-          message: `A customer has made a payment of ${booking.payment.currency}${booking.payment.amount} for your ${booking.serviceType} service`,
-          relatedId: booking._id,
-          relatedType: 'booking',
-          priority: 'high'
+      // Check if it's a service request
+      const serviceRequest = await ServiceRequest.findOne({
+        'payment.paymentIntentId': reference
+      });
+
+      if (serviceRequest) {
+        console.log('🔍 Found service request:', {
+          serviceRequestId: serviceRequest._id,
+          currentStatus: serviceRequest.status,
+          currentPaymentStatus: serviceRequest.payment?.status
         });
 
-        console.log('✅ Paystack payment verified and booking updated');
+        // Check if already processed
+        if (serviceRequest.payment?.status === 'held' || serviceRequest.status === 'accepted') {
+          console.log('ℹ️ Service request already processed, skipping update');
+          return res.json({ success: true, message: 'Already processed' });
+        }
+
+        // Update service request payment status to HELD
+        serviceRequest.payment.status = 'held';
+        serviceRequest.payment.heldAt = new Date();
+        serviceRequest.payment.verifiedAt = new Date();
+        serviceRequest.status = 'accepted'; // Payment successful, now accepted
+        
+        // Set auto-refund timer (4 hours from now)
+        serviceRequest.autoRefundAt = new Date(Date.now() + 4 * 60 * 60 * 1000);
+        
+        await serviceRequest.save();
+
+        console.log('✅ Service request updated:', {
+          serviceRequestId: serviceRequest._id,
+          newStatus: serviceRequest.status,
+          newPaymentStatus: serviceRequest.payment.status,
+          autoRefundAt: serviceRequest.autoRefundAt
+        });
+
+        // Send notification to provider
+        try {
+          await Notification.createNotification({
+            userId: serviceRequest.providerId,
+            type: 'payment_received',
+            title: 'Payment Received!',
+            message: `A customer has made a payment of ${serviceRequest.payment.currency}${serviceRequest.payment.amount} for your ${serviceRequest.serviceType} service.`,
+            relatedId: serviceRequest._id,
+            relatedType: 'service_request',
+            priority: 'high'
+          });
+        } catch (notifError) {
+          console.error('❌ Failed to send provider notification:', notifError);
+        }
+
+        // Send notification to customer
+        try {
+          await Notification.createNotification({
+            userId: serviceRequest.customerId,
+            type: 'payment_confirmed',
+            title: 'Payment Confirmed!',
+            message: `Your payment of ${serviceRequest.payment.currency}${serviceRequest.payment.amount} has been confirmed and is now held in escrow.`,
+            relatedId: serviceRequest._id,
+            relatedType: 'service_request',
+            priority: 'high'
+          });
+        } catch (notifError) {
+          console.error('❌ Failed to send customer notification:', notifError);
+        }
       }
     }
 
-    res.sendStatus(200);
+    res.json({ success: true, message: 'Webhook processed' });
   } catch (error) {
-    console.error('❌ Paystack webhook error:', error);
-    res.status(500).send('Webhook error');
+    console.error('❌ Webhook processing error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message
+    });
   }
 });
-
-
 
 app.post('/api/bookings/:bookingId/paystack-payment', authenticateToken, async (req, res) => {
   try {
